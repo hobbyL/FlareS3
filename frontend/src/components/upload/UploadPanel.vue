@@ -11,7 +11,7 @@
         @file-selected="handleUpload"
         @before-upload="beforeUpload"
       >
-        <p class="upload-hint">{{ t('upload.hint5gb') }}</p>
+        <p class="upload-hint">{{ uploadHintText }}</p>
       </Upload>
     </div>
 
@@ -22,20 +22,26 @@
     <Divider />
 
     <div class="upload-options">
-      <FormItem :label="t('upload.expiresIn')">
-        <Radio v-model="expiresIn" :options="expiresOptions" name="expires" />
-      </FormItem>
+      <div class="upload-options-row">
+        <FormItem v-if="uploadConfigOptions.length > 1" :label="t('upload.uploadConfig')" class="upload-options-row-item">
+          <Select
+            v-model="selectedConfigId"
+            :options="uploadConfigOptions"
+            :disabled="configOptionsLoading"
+          />
+        </FormItem>
+        <FormItem v-else-if="uploadConfigOptions.length === 1" :label="t('upload.uploadConfig')" class="upload-options-row-item">
+          <div class="selected-config-label">{{ selectedConfigLabel }}</div>
+        </FormItem>
 
-      <FormItem v-if="r2ConfigOptions.length > 1" :label="t('upload.r2Config')">
-        <Select
-          v-model="selectedR2ConfigId"
-          :options="r2ConfigOptions"
-          :disabled="r2OptionsLoading"
-        />
-      </FormItem>
-      <FormItem v-else-if="r2ConfigOptions.length === 1" :label="t('upload.r2Config')">
-        <div class="selected-config-label">{{ selectedR2ConfigLabel }}</div>
-      </FormItem>
+        <FormItem :label="t('upload.expiresIn')" class="upload-options-row-item">
+          <Select v-model="expiresIn" :options="expiresOptions" />
+        </FormItem>
+
+        <FormItem :label="t('upload.uploadDir')" class="upload-options-row-item">
+          <Input v-model="uploadDir" placeholder="e.g. images/" />
+        </FormItem>
+      </div>
 
       <FormItem :label="t('upload.downloadPermission')">
         <Switch
@@ -100,7 +106,6 @@ import api from '../../services/api'
 import Upload from '../ui/upload/Upload.vue'
 import Divider from '../ui/divider/Divider.vue'
 import FormItem from '../ui/form-item/FormItem.vue'
-import Radio from '../ui/radio/Radio.vue'
 import Switch from '../ui/switch/Switch.vue'
 import Select from '../ui/select/Select.vue'
 import Alert from '../ui/alert/Alert.vue'
@@ -120,24 +125,34 @@ const { t, locale } = useI18n({ useScope: 'global' })
 const uploadRef = ref(null)
 const expiresIn = ref(7)
 const requireLogin = ref(true)
+const uploadDir = ref('')
 
-const selectedR2ConfigId = ref('')
-const r2ConfigOptions = ref([])
-const r2OptionsLoading = ref(false)
+const selectedConfigId = ref('')
+const uploadConfigOptions = ref([])
+const configOptionsLoading = ref(false)
 
-const hasAvailableUploadConfig = computed(() => r2ConfigOptions.value.length > 0)
-const isSelectedR2ConfigValid = computed(() =>
-  r2ConfigOptions.value.some((option) => option.value === selectedR2ConfigId.value)
+const hasAvailableUploadConfig = computed(() => uploadConfigOptions.value.length > 0)
+const isSelectedConfigValid = computed(() =>
+  uploadConfigOptions.value.some((option) => option.value === selectedConfigId.value)
 )
-const selectedR2ConfigLabel = computed(
-  () => r2ConfigOptions.value.find((option) => option.value === selectedR2ConfigId.value)?.label || ''
+const selectedConfigType = computed(() =>
+  uploadConfigOptions.value.find((option) => option.value === selectedConfigId.value)?.type || 'r2'
+)
+const selectedConfigLabel = computed(
+  () => uploadConfigOptions.value.find((option) => option.value === selectedConfigId.value)?.label || ''
 )
 const resolvedUploadConfigId = computed(() =>
-  isSelectedR2ConfigValid.value ? selectedR2ConfigId.value : ''
+  isSelectedConfigValid.value ? selectedConfigId.value : ''
 )
-const isUploadEntryDisabled = computed(() => r2OptionsLoading.value || !hasAvailableUploadConfig.value)
+const isUploadEntryDisabled = computed(() => configOptionsLoading.value || !hasAvailableUploadConfig.value)
+const uploadHintText = computed(() => {
+  if (selectedConfigType.value === 'r2') {
+    return t('upload.hint5gb')
+  }
+  return t('upload.hint100mb')
+})
 const uploadConfigAlertMessage = computed(() => {
-  if (!r2OptionsLoading.value && !hasAvailableUploadConfig.value) {
+  if (!configOptionsLoading.value && !hasAvailableUploadConfig.value) {
     return locale.value.startsWith('zh')
       ? '当前没有可用上传配置，请联系管理员。'
       : 'No upload configuration is available. Please contact an administrator.'
@@ -165,6 +180,7 @@ const latestSuccessExpireText = computed(() => {
 })
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024 * 1024
+const MAX_SERVER_UPLOAD_SIZE = 100 * 1024 * 1024
 const MULTIPART_THRESHOLD = 100 * 1024 * 1024
 const PART_UPLOAD_RETRY_COUNT = 3
 
@@ -310,6 +326,7 @@ const uploadSmallFile = async (taskFile, taskState, updateItem, isCancelled) => 
     expires_in: taskFile.expiresIn,
     require_login: taskFile.requireLogin,
     config_id: taskFile.configId || undefined,
+    dir: taskFile.dir || undefined,
   })
 
   ensureTaskActive(taskState, isCancelled)
@@ -347,6 +364,7 @@ const uploadLargeFile = async (taskFile, taskState, updateItem, isCancelled) => 
       expires_in: taskFile.expiresIn,
       require_login: taskFile.requireLogin,
       config_id: taskFile.configId || undefined,
+      dir: taskFile.dir || undefined,
     })
 
     const { file_id, upload_id, part_size, total_parts } = initResponse
@@ -447,6 +465,49 @@ const uploadLargeFile = async (taskFile, taskState, updateItem, isCancelled) => 
   }
 }
 
+const uploadServerFile = async (taskFile, taskState, updateItem) => {
+  const startTime = Date.now()
+
+  updateItem({
+    progress: 0,
+    uploadedBytes: 0,
+    totalBytes: taskFile.size,
+    speed: t('upload.preparing'),
+    remainingTime: t('upload.calculating'),
+  })
+
+  const result = await api.serverUpload({
+    configId: taskFile.configId,
+    file: taskFile.rawFile,
+    filename: taskFile.name,
+    expiresIn: taskFile.expiresIn,
+    requireLogin: taskFile.requireLogin,
+    dir: taskFile.dir || undefined,
+    onProgress: (percent, loaded, total) => {
+      updateUploadStats(taskState, taskFile, updateItem, loaded, total)
+    },
+  })
+
+  const durationSeconds = Math.max((Date.now() - startTime) / 1000, 0.001)
+  const avgSpeed = taskFile.size / durationSeconds
+  const downloadUrl = result.download_url?.startsWith('http')
+    ? result.download_url
+    : window.location.origin + (result.download_url || '')
+  const shortUrlPath = result.short_url
+  const shortUrl = shortUrlPath?.startsWith('http') ? shortUrlPath : window.location.origin + shortUrlPath
+
+  return {
+    success: true,
+    filename: result.filename || taskFile.name,
+    downloadUrl,
+    shortUrl,
+    fileSize: formatBytes(taskFile.size),
+    avgSpeed: `${formatBytes(avgSpeed)}/s`,
+    duration: formatDuration(durationSeconds),
+    expiresIn: taskFile.expiresIn,
+  }
+}
+
 const uploadQueue = useUploadQueue({
   runTask: async (item, { updateItem, setCancel, isCancelled }) => {
     const taskFile = item.file
@@ -465,10 +526,17 @@ const uploadQueue = useUploadQueue({
     })
 
     try {
-      const result =
-        taskFile.size < MULTIPART_THRESHOLD
-          ? await uploadSmallFile(taskFile, taskState, updateItem, isCancelled)
-          : await uploadLargeFile(taskFile, taskState, updateItem, isCancelled)
+      const isServerUpload = taskFile.configType !== 'r2'
+      let result
+
+      if (isServerUpload) {
+        result = await uploadServerFile(taskFile, taskState, updateItem)
+      } else {
+        result =
+          taskFile.size < MULTIPART_THRESHOLD
+            ? await uploadSmallFile(taskFile, taskState, updateItem, isCancelled)
+            : await uploadLargeFile(taskFile, taskState, updateItem, isCancelled)
+      }
 
       message.success(t('upload.uploadSuccess'))
       emit('uploaded', { filename: taskFile.name })
@@ -488,7 +556,7 @@ const queueItems = computed(() => uploadQueue.items.value)
 const latestSuccessResult = computed(() => uploadQueue.latestSuccessItem.value?.result || null)
 
 const beforeUpload = ({ files }) => {
-  if (r2OptionsLoading.value) {
+  if (configOptionsLoading.value) {
     message.warning(uploadConfigLoadingMessage.value)
     return false
   }
@@ -497,9 +565,15 @@ const beforeUpload = ({ files }) => {
     return false
   }
 
-  const invalidFile = files.find((item) => Number(item?.file?.size || 0) > MAX_FILE_SIZE)
+  const isR2 = selectedConfigType.value === 'r2'
+  const maxSize = isR2 ? MAX_FILE_SIZE : MAX_SERVER_UPLOAD_SIZE
+  const invalidFile = files.find((item) => Number(item?.file?.size || 0) > maxSize)
   if (invalidFile) {
-    message.error(t('upload.fileTooLarge'))
+    message.error(
+      isR2
+        ? t('upload.fileTooLarge')
+        : t('upload.fileTooLargeServer', { max: MAX_SERVER_UPLOAD_SIZE / 1024 / 1024 })
+    )
     return false
   }
 
@@ -515,6 +589,8 @@ const buildQueuedFiles = (files = []) =>
     expiresIn: expiresIn.value,
     requireLogin: requireLogin.value,
     configId: resolvedUploadConfigId.value || undefined,
+    configType: selectedConfigType.value,
+    dir: uploadDir.value.trim() || undefined,
   }))
 
 const handleUpload = ({ files }) => {
@@ -560,27 +636,31 @@ const copyDownloadUrl = () => {
 
 onMounted(async () => {
   try {
-    r2OptionsLoading.value = true
-    const result = await api.getR2Options()
+    configOptionsLoading.value = true
+    const result = await api.getUploadOptions()
     const options = Array.isArray(result.options) ? result.options : []
-    r2ConfigOptions.value = options.map((option) => ({
-      label: option.name,
-      value: option.id,
-    }))
+    uploadConfigOptions.value = options.map((option) => {
+      const typeLabel = option.type === 'koofr' ? 'Koofr' : option.type === 'webdav' ? 'WebDAV' : 'R2'
+      return {
+        label: `${option.name} (${typeLabel})`,
+        value: option.id,
+        type: option.type || 'r2',
+      }
+    })
 
     const defaultConfigId =
       typeof result.default_config_id === 'string' &&
       options.some((option) => option.id === result.default_config_id)
         ? result.default_config_id
         : ''
-    selectedR2ConfigId.value = defaultConfigId || options[0]?.id || ''
+    selectedConfigId.value = defaultConfigId || options[0]?.id || ''
   } catch (error) {
-    r2ConfigOptions.value = []
-    selectedR2ConfigId.value = ''
-    console.error('加载 R2 配置选项失败:', error)
-    message.error(t('upload.loadR2OptionsFailed'))
+    uploadConfigOptions.value = []
+    selectedConfigId.value = ''
+    console.error('加载上传配置选项失败:', error)
+    message.error(t('upload.loadUploadOptionsFailed'))
   } finally {
-    r2OptionsLoading.value = false
+    configOptionsLoading.value = false
   }
 })
 
@@ -608,6 +688,16 @@ onUnmounted(() => {
 .upload-options {
   display: grid;
   gap: var(--nb-space-md);
+}
+
+.upload-options-row {
+  display: flex;
+  gap: var(--nb-space-md);
+}
+
+.upload-options-row-item {
+  flex: 1;
+  min-width: 0;
 }
 
 .selected-config-label {
