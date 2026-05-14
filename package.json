@@ -15,6 +15,11 @@
     "typecheck": "npm --prefix worker exec -- tsc -p worker/tsconfig.json --noEmit",
     "build": "npm --prefix frontend run build",
     "dry-run:worker": "npm --prefix worker run deploy:dry-run && npm --prefix worker run deploy:full:dry-run",
-    "verify:release": "npm run audit:prod && npm run lint && npm run typecheck && npm run test && npm run build && npm run dry-run:worker"
+    "verify:release": "npm run audit:prod && npm run lint && npm run typecheck && npm run test && npm run build && npm run dry-run:worker",
+    "deploy": "wrangler deploy",
+    "preview": "wrangler dev"
+  },
+  "devDependencies": {
+    "wrangler": "^4.90.1"
   }
 }
