@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev --port 18787",
+    "dev": "lsof -ti :18787 | xargs kill -9 2>/dev/null; wrangler dev --port 18787 --config wrangler.toml",
     "deploy": "wrangler deploy",
     "deploy:dry-run": "WRANGLER_LOG_PATH=.wrangler/logs WRANGLER_SEND_METRICS=false wrangler deploy --dry-run",
     "deploy:full": "wrangler deploy --config wrangler.full.toml",
