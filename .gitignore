@@ -34,3 +34,4 @@ AGENTS.md
 .codex/
 .claude/
 .trellis/
+.tmp/
