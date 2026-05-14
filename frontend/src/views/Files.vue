@@ -93,6 +93,20 @@
               {{ t('common.refresh') }}
             </Button>
 
+            <Button
+              v-if="isTrashMode"
+              type="danger"
+              size="small"
+              class="files-clear-trash-btn"
+              :block="isMobile"
+              :loading="deleting && pendingDeleteMode === 'clearTrash'"
+              :disabled="filesStore.loading || deleting || filesStore.total <= 0"
+              @click="handleClearTrash"
+            >
+              <Trash :size="16" style="margin-right: 6px" />
+              {{ t('files.actions.clearTrash') }}
+            </Button>
+
             <Tooltip
               :content="
                 showAdvancedFilters
@@ -325,21 +339,24 @@ const hasAdvancedFiltersActive = computed(() => {
 const toggleAdvancedFilters = () => {
   showAdvancedFilters.value = !showAdvancedFilters.value
 }
-const deleteModalTitle = computed(() =>
-  pendingDeleteMode.value === 'permanent'
+const deleteModalTitle = computed(() => {
+  if (pendingDeleteMode.value === 'clearTrash') return t('files.modals.clearTrashTitle')
+  return pendingDeleteMode.value === 'permanent'
     ? t('files.modals.deletePermanentTitle')
     : t('files.modals.deleteTitle')
-)
-const deleteActionLabel = computed(() =>
-  pendingDeleteMode.value === 'permanent'
+})
+const deleteActionLabel = computed(() => {
+  if (pendingDeleteMode.value === 'clearTrash') return t('files.actions.clearTrash')
+  return pendingDeleteMode.value === 'permanent'
     ? t('files.actions.deletePermanent')
     : t('files.actions.delete')
-)
-const deleteConfirmText = computed(() =>
-  pendingDeleteMode.value === 'permanent'
+})
+const deleteConfirmText = computed(() => {
+  if (pendingDeleteMode.value === 'clearTrash') return t('files.confirmClearTrash')
+  return pendingDeleteMode.value === 'permanent'
     ? t('files.confirmDeletePermanent')
     : t('files.confirmDelete')
-)
+})
 
 const { isMobile, viewMode, setViewMode } = useResponsiveViewMode({
   storageKey: 'flares3:files-view-mode',
@@ -634,7 +651,7 @@ const buildQueryParams = (mode = filesStore.mode) => {
     params.owner_id = filters.value.owner_id
   }
 
-  if (filters.value.upload_status) {
+  if (!isTrash && filters.value.upload_status) {
     params.upload_status = filters.value.upload_status
   }
 
@@ -779,14 +796,33 @@ const handleDeleteConfirm = async () => {
   if (deleting.value) return
 
   const fileId = pendingDeleteId.value
-  if (!fileId) return
+  if (!fileId && pendingDeleteMode.value !== 'clearTrash') return
 
   deleting.value = true
 
   try {
+    if (pendingDeleteMode.value === 'clearTrash') {
+      const result = await api.permanentlyDeleteTrashFiles()
+      message.success(
+        t('files.messages.clearTrashSuccess', {
+          deleted: Number(result?.deleted || 0),
+          queued: Number(result?.queued || 0),
+          total: Number(result?.total || 0),
+        })
+      )
+      closeDeleteModal()
+      pagination.value.page = 1
+      await loadFiles({ page: 1, mode: 'trash' })
+      return
+    }
+
     if (pendingDeleteMode.value === 'permanent') {
-      await api.permanentlyDeleteFile(fileId)
-      message.success(t('files.messages.deletePermanentSuccess'))
+      const result = await api.permanentlyDeleteFile(fileId)
+      message.success(
+        result?.queued
+          ? t('files.messages.deletePermanentQueued')
+          : t('files.messages.deletePermanentSuccess')
+      )
     } else {
       await api.deleteFile(fileId)
       message.success(t('files.messages.deleteSuccess'))
@@ -796,7 +832,7 @@ const handleDeleteConfirm = async () => {
 
     if (viewMode.value === 'card') {
       pagination.value.page = 1
-      await loadFiles({ page: 1 })
+      await loadFiles({ page: 1, mode: filesStore.mode })
     } else {
       if (filesStore.files.length <= 1 && pagination.value.page > 1) {
         pagination.value.page -= 1
@@ -805,9 +841,11 @@ const handleDeleteConfirm = async () => {
     }
   } catch (error) {
     const messageKey =
-      pendingDeleteMode.value === 'permanent'
-        ? 'files.messages.deletePermanentFailed'
-        : 'files.messages.deleteFailed'
+      pendingDeleteMode.value === 'clearTrash'
+        ? 'files.messages.clearTrashFailed'
+        : pendingDeleteMode.value === 'permanent'
+          ? 'files.messages.deletePermanentFailed'
+          : 'files.messages.deleteFailed'
     message.error(t(messageKey))
   } finally {
     deleting.value = false
@@ -822,6 +860,12 @@ const handleDelete = (fileId) => {
 const handleDeletePermanent = (fileId) => {
   pendingDeleteMode.value = 'permanent'
   openDeleteModal(fileId)
+}
+
+const handleClearTrash = () => {
+  if (!isTrashMode.value || deleting.value || filesStore.total <= 0) return
+  pendingDeleteMode.value = 'clearTrash'
+  openDeleteModal('trash')
 }
 
 const handleRestore = async (fileId) => {
@@ -855,7 +899,7 @@ const setFilesMode = async (mode) => {
   if (filesStore.mode === nextMode && pagination.value.page === 1) return
 
   if (nextMode === 'trash') {
-    filters.value.upload_status = 'deleted'
+    filters.value.upload_status = ''
     filters.value.sort_key = 'deleted_at__desc'
   } else {
     if (filters.value.upload_status === 'deleted') {
@@ -890,7 +934,7 @@ watch(
   () => filesStore.mode,
   (mode) => {
     if (mode === 'trash') {
-      filters.value.upload_status = 'deleted'
+      filters.value.upload_status = ''
     }
   },
   { immediate: true }

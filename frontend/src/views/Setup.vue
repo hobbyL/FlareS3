@@ -35,13 +35,13 @@
       <section class="config-list">
         <div v-if="loading" class="config-state">{{ t('setup.state.loading') }}</div>
 
-        <Alert v-else-if="configs.length === 0" type="info" :title="t('setup.state.emptyTitle')">
+        <Alert v-else-if="allConfigs.length === 0" type="info" :title="t('setup.state.emptyTitle')">
           {{ t('setup.state.emptyContent') }}
         </Alert>
 
         <div v-else class="config-cards">
           <Card
-            v-for="row in configs"
+            v-for="row in allConfigs"
             :key="row.id"
             header-bg="var(--nb-surface)"
             header-color="var(--nb-ink)"
@@ -61,12 +61,14 @@
 
             <template #header-extra>
               <div class="config-card-tags">
-                <Tag type="info" size="small">R2</Tag>
-                <Tag :type="getSourceTagType(row.source)" size="small">
+                <Tag :type="getConfigTypeTagType(row.configType)" size="small">
+                  {{ formatConfigType(row.configType) }}
+                </Tag>
+                <Tag v-if="row.configType === 'r2'" :type="getSourceTagType(row.source)" size="small">
                   {{ formatSource(row.source) }}
                 </Tag>
 
-                <Tag v-if="row.id === r2Options.default_config_id" type="success" size="small">
+                <Tag v-if="row.configType === 'r2' && row.id === r2Options.default_config_id" type="success" size="small">
                   {{ t('setup.state.defaultTag') }}
                 </Tag>
               </div>
@@ -74,14 +76,29 @@
 
             <div class="config-detail">
               <div class="kv-group">
-                <div class="kv-row">
-                  <div class="kv-label">{{ t('setup.labels.bucket') }}</div>
-                  <div class="kv-value">
-                    <span class="text-ellipsis">
-                      {{ toDisplayText(row.bucket_name) }}
-                    </span>
+                <!-- R2 specific fields -->
+                <template v-if="row.configType === 'r2'">
+                  <div class="kv-row">
+                    <div class="kv-label">{{ t('setup.labels.bucket') }}</div>
+                    <div class="kv-value">
+                      <span class="text-ellipsis">
+                        {{ toDisplayText(row.bucket_name) }}
+                      </span>
+                    </div>
                   </div>
-                </div>
+                </template>
+
+                <!-- WebDAV / Koofr specific fields -->
+                <template v-else>
+                  <div v-if="row.remote_path && row.remote_path !== '/'" class="kv-row">
+                    <div class="kv-label">{{ t('setup.labels.remotePath') }}</div>
+                    <div class="kv-value">
+                      <span class="text-ellipsis">
+                        {{ row.remote_path }}
+                      </span>
+                    </div>
+                  </div>
+                </template>
 
                 <div class="kv-row">
                   <div class="kv-label">Endpoint</div>
@@ -142,53 +159,55 @@
                   <Network :size="14" />
                 </Button>
 
+                <template v-if="row.configType === 'r2'">
+                  <div class="action-divider"></div>
+
+                  <Button
+                    type="default"
+                    size="small"
+                    :loading="savingDefault && settingDefaultId === row.id"
+                    :disabled="loading || savingDefault || row.id === r2Options.default_config_id"
+                    :aria-label="t('setup.aria.setDefault')"
+                    @click="handleSetDefault(row.id)"
+                  >
+                    <Star
+                      :size="14"
+                      :fill="row.id === r2Options.default_config_id ? 'currentColor' : 'none'"
+                    />
+                  </Button>
+                </template>
+
                 <div class="action-divider"></div>
 
                 <Button
                   type="default"
                   size="small"
-                  :loading="savingDefault && settingDefaultId === row.id"
-                  :disabled="loading || savingDefault || row.id === r2Options.default_config_id"
-                  :aria-label="t('setup.aria.setDefault')"
-                  @click="handleSetDefault(row.id)"
-                >
-                  <Star
-                    :size="14"
-                    :fill="row.id === r2Options.default_config_id ? 'currentColor' : 'none'"
-                  />
-                </Button>
-
-                <div class="action-divider"></div>
-
-                <Button
-                  type="default"
-                  size="small"
-                  :disabled="row.source !== 'db'"
+                  :disabled="row.configType === 'r2' && row.source !== 'db'"
                   :aria-label="
-                    row.source === 'db' ? t('setup.aria.edit') : t('setup.aria.notEditable')
+                    row.configType === 'r2' && row.source !== 'db'
+                      ? t('setup.aria.notEditable')
+                      : t('setup.aria.edit')
                   "
                   @click="openEdit(row)"
                 >
                   <Pencil :size="14" />
                 </Button>
 
-                <template v-if="row.source === 'db'">
-                  <Button
-                    type="danger"
-                    size="small"
-                    :aria-label="t('setup.aria.delete')"
-                    @click="handleDelete(row)"
-                  >
-                    <Trash2 :size="14" />
-                  </Button>
-                </template>
+                <Button
+                  type="danger"
+                  size="small"
+                  :aria-label="t('setup.aria.delete')"
+                  @click="handleDelete(row)"
+                >
+                  <Trash2 :size="14" />
+                </Button>
               </div>
             </template>
           </Card>
         </div>
       </section>
 
-      <R2ConfigModal
+      <StorageConfigModal
         v-model:show="modalVisible"
         :mode="modalMode"
         :submitting="modalSubmitting"
@@ -202,7 +221,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import {
   AlertTriangle,
   Database,
@@ -216,7 +235,7 @@ import {
 import { useI18n } from 'vue-i18n'
 import api from '../services/api'
 import AppLayout from '../components/layout/AppLayout.vue'
-import R2ConfigModal from '../components/setup/R2ConfigModal.vue'
+import StorageConfigModal from '../components/setup/StorageConfigModal.vue'
 import UsageTipsModal from '../components/setup/UsageTipsModal.vue'
 import Card from '../components/ui/card/Card.vue'
 import Button from '../components/ui/button/Button.vue'
@@ -240,23 +259,49 @@ const r2Options = ref({
   options: [],
 })
 
-const configs = ref([])
+const storageConfigs = ref([])
+
+const allConfigs = computed(() => {
+  return storageConfigs.value.map((row) => ({
+    ...row,
+    configType: row.type, // 'r2' | 'webdav' | 'koofr'
+  }))
+})
 
 const modalVisible = ref(false)
 const modalMode = ref('create')
 const modalSubmitting = ref(false)
 const editingId = ref('')
+const editingConfigType = ref('r2')
 const usageTipsVisible = ref(false)
 
 const defaultModalInitialValue = () => ({
+  type: 'r2',
   name: '',
   endpoint: '',
   bucket_name: '',
   quota_gb: '10',
   access_key_id: '',
   secret_access_key: '',
+  remote_path: '/',
+  username: '',
+  password: '',
 })
 const modalInitialValue = ref(defaultModalInitialValue())
+
+const formatConfigType = (type) => {
+  if (type === 'r2') return 'R2'
+  if (type === 'koofr') return 'Koofr'
+  if (type === 'webdav') return 'WebDAV'
+  return type
+}
+
+const getConfigTypeTagType = (type) => {
+  if (type === 'r2') return 'info'
+  if (type === 'koofr') return 'warning'
+  if (type === 'webdav') return 'default'
+  return 'default'
+}
 
 const formatSource = (source) => {
   if (source === 'legacy') return 'LEGACY'
@@ -296,13 +341,13 @@ const getUsageColor = (percent) => {
 const refresh = async () => {
   loading.value = true
   try {
-    const [optionsResult, configsResult] = await Promise.all([
+    const [optionsResult, storageResult] = await Promise.all([
       api.getR2Options(),
-      api.getR2Configs(),
+      api.getStorageConfigs(),
     ])
 
     r2Options.value = optionsResult
-    configs.value = configsResult.configs || []
+    storageConfigs.value = storageResult.configs || []
   } catch (error) {
     message.error(error.response?.data?.error || t('setup.messages.loadFailed'))
   } finally {
@@ -330,7 +375,12 @@ const handleSetDefault = async (id) => {
 const handleTest = async (row) => {
   try {
     testingId.value = row.id
-    const result = await api.testR2Config(row.id)
+    let result
+    if (row.configType === 'r2') {
+      result = await api.testR2Config(row.id)
+    } else {
+      result = await api.testWebDAVConfig(row.id)
+    }
     if (result?.success) message.success(result.message || t('setup.messages.testSuccess'))
     else message.error(result?.message || t('setup.messages.testFailed'))
   } catch (error) {
@@ -343,6 +393,7 @@ const handleTest = async (row) => {
 const openCreate = () => {
   modalMode.value = 'create'
   editingId.value = ''
+  editingConfigType.value = 'r2'
   modalInitialValue.value = defaultModalInitialValue()
   modalVisible.value = true
 }
@@ -350,14 +401,36 @@ const openCreate = () => {
 const openEdit = (row) => {
   modalMode.value = 'edit'
   editingId.value = row.id
-  modalInitialValue.value = {
-    name: row.name || '',
-    endpoint: row.endpoint || '',
-    bucket_name: row.bucket_name || '',
-    quota_gb: row.totalSpace ? formatQuotaGb(row.totalSpace) : '10',
-    access_key_id: '',
-    secret_access_key: '',
+  editingConfigType.value = row.configType
+
+  if (row.configType === 'r2') {
+    modalInitialValue.value = {
+      type: 'r2',
+      name: row.name || '',
+      endpoint: row.endpoint || '',
+      bucket_name: row.bucket_name || '',
+      quota_gb: row.totalSpace ? formatQuotaGb(row.totalSpace) : '10',
+      access_key_id: row.access_key_id || '',
+      secret_access_key: row.secret_access_key || '',
+      remote_path: '/',
+      username: '',
+      password: '',
+    }
+  } else {
+    modalInitialValue.value = {
+      type: row.configType,
+      name: row.name || '',
+      endpoint: row.endpoint || '',
+      bucket_name: '',
+      quota_gb: row.totalSpace ? formatQuotaGb(row.totalSpace) : '10',
+      access_key_id: '',
+      secret_access_key: '',
+      remote_path: row.remote_path || '/',
+      username: row.username || '',
+      password: row.password || '',
+    }
   }
+
   modalVisible.value = true
 }
 
@@ -370,12 +443,10 @@ const formatQuotaGb = (bytesValue) => {
 }
 
 const handleSubmit = async (submittedForm) => {
-  if (
-    !submittedForm?.name ||
-    !submittedForm?.endpoint ||
-    !submittedForm?.bucket_name ||
-    !submittedForm?.quota_gb
-  ) {
+  const formType = submittedForm?.type || 'r2'
+
+  // Common validation
+  if (!submittedForm?.name || !submittedForm?.endpoint) {
     message.error(t('setup.validation.required'))
     return
   }
@@ -391,9 +462,26 @@ const handleSubmit = async (submittedForm) => {
     return
   }
 
-  if (modalMode.value === 'create') {
-    if (!submittedForm.access_key_id || !submittedForm.secret_access_key) {
-      message.error(t('setup.validation.createNeedKeys'))
+  // R2 specific validation
+  if (formType === 'r2') {
+    if (!submittedForm.bucket_name) {
+      message.error(t('setup.validation.required'))
+      return
+    }
+    if (modalMode.value === 'create') {
+      if (!submittedForm.access_key_id || !submittedForm.secret_access_key) {
+        message.error(t('setup.validation.createNeedKeys'))
+        return
+      }
+    }
+  }
+
+  // mount_id auto-detect, remote_path optional
+
+  // WebDAV / Koofr credential validation on create
+  if ((formType === 'webdav' || formType === 'koofr') && modalMode.value === 'create') {
+    if (!submittedForm.username || !submittedForm.password) {
+      message.error(t('setup.validation.createNeedCredentials'))
       return
     }
   }
@@ -401,30 +489,62 @@ const handleSubmit = async (submittedForm) => {
   try {
     modalSubmitting.value = true
 
-    if (modalMode.value === 'create') {
-      await api.createR2Config({
-        name: submittedForm.name,
-        endpoint: submittedForm.endpoint,
-        access_key_id: submittedForm.access_key_id,
-        secret_access_key: submittedForm.secret_access_key,
-        bucket_name: submittedForm.bucket_name,
-        quota_bytes: quotaBytes,
-      })
-      message.success(t('setup.messages.createSuccess'))
-    } else {
-      const payload = {
-        name: submittedForm.name,
-        endpoint: submittedForm.endpoint,
-        bucket_name: submittedForm.bucket_name,
-        quota_bytes: quotaBytes,
+    if (formType === 'r2') {
+      if (modalMode.value === 'create') {
+        await api.createR2Config({
+          name: submittedForm.name,
+          endpoint: submittedForm.endpoint,
+          access_key_id: submittedForm.access_key_id,
+          secret_access_key: submittedForm.secret_access_key,
+          bucket_name: submittedForm.bucket_name,
+          quota_bytes: quotaBytes,
+        })
+        message.success(t('setup.messages.createSuccess'))
+      } else {
+        const payload = {
+          name: submittedForm.name,
+          endpoint: submittedForm.endpoint,
+          bucket_name: submittedForm.bucket_name,
+          quota_bytes: quotaBytes,
+        }
+
+        if (submittedForm.access_key_id) payload.access_key_id = submittedForm.access_key_id
+        if (submittedForm.secret_access_key)
+          payload.secret_access_key = submittedForm.secret_access_key
+
+        await api.updateR2Config(editingId.value, payload)
+        message.success(t('setup.messages.updateSuccess'))
       }
+    } else {
+      // WebDAV / Koofr
+      if (modalMode.value === 'create') {
+        await api.createWebDAVConfig({
+          name: submittedForm.name,
+          type: formType,
+          endpoint: submittedForm.endpoint,
+          remote_path: submittedForm.remote_path || undefined,
+          username: submittedForm.username,
+          password: submittedForm.password,
+          quota_bytes: quotaBytes,
+        })
+        message.success(t('setup.messages.createSuccess'))
+      } else {
+        const payload = {
+          name: submittedForm.name,
+          endpoint: submittedForm.endpoint,
+          quota_bytes: quotaBytes,
+        }
 
-      if (submittedForm.access_key_id) payload.access_key_id = submittedForm.access_key_id
-      if (submittedForm.secret_access_key)
-        payload.secret_access_key = submittedForm.secret_access_key
+        if (formType === 'koofr' || formType === 'webdav') {
+          payload.remote_path = submittedForm.remote_path || '/'
+        }
 
-      await api.updateR2Config(editingId.value, payload)
-      message.success(t('setup.messages.updateSuccess'))
+        if (submittedForm.username) payload.username = submittedForm.username
+        if (submittedForm.password) payload.password = submittedForm.password
+
+        await api.updateWebDAVConfig(editingId.value, payload)
+        message.success(t('setup.messages.updateSuccess'))
+      }
     }
 
     modalVisible.value = false
@@ -440,7 +560,11 @@ const handleDelete = async (row) => {
   if (!confirm(t('setup.messages.deleteConfirm'))) return
 
   try {
-    await api.deleteR2Config(row.id)
+    if (row.configType === 'r2') {
+      await api.deleteR2Config(row.id)
+    } else {
+      await api.deleteWebDAVConfig(row.id)
+    }
     message.success(t('setup.messages.deleteSuccess'))
     await refresh()
   } catch (error) {

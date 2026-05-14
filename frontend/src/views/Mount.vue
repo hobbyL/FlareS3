@@ -57,6 +57,36 @@
               {{ t('common.refresh') }}
             </Button>
 
+            <Button
+              type="primary"
+              size="small"
+              class="mount-action-btn"
+              :block="isMobile"
+              :disabled="loading || uploading || !selectedConfigId"
+              @click="triggerUploadFile"
+            >
+              <Upload :size="16" style="margin-right: 6px" />
+              {{ t('mount.actions.upload') }}
+            </Button>
+            <input
+              ref="uploadFileInput"
+              type="file"
+              style="display: none"
+              @change="handleUploadFileChange"
+            />
+
+            <Button
+              type="default"
+              size="small"
+              class="mount-action-btn"
+              :block="isMobile"
+              :disabled="loading || !selectedConfigId"
+              @click="showNewFolderModal"
+            >
+              <FolderPlus :size="16" style="margin-right: 6px" />
+              {{ t('mount.actions.newFolder') }}
+            </Button>
+
             <div v-if="!isMobile" class="filter-item view-mode">
               <div
                 class="view-mode-toggle"
@@ -242,6 +272,51 @@
           </Button>
         </template>
       </Modal>
+
+      <Modal
+        :show="showFolderModal"
+        :title="t('mount.modals.newFolderTitle')"
+        width="420px"
+        @update:show="handleFolderModalUpdate"
+      >
+        <div class="mount-folder-form">
+          <label class="mount-folder-label">{{ t('mount.newFolderLabel') }}</label>
+          <Input
+            v-model="newFolderName"
+            :placeholder="t('mount.newFolderPlaceholder')"
+            size="small"
+            @keyup.enter="handleCreateFolder"
+          />
+        </div>
+
+        <template #footer>
+          <Button type="default" :disabled="creatingFolder" @click="closeFolderModal">
+            {{ t('common.cancel') }}
+          </Button>
+          <Button type="primary" :loading="creatingFolder" :disabled="!newFolderName.trim()" @click="handleCreateFolder">
+            {{ t('mount.actions.newFolder') }}
+          </Button>
+        </template>
+      </Modal>
+
+      <Modal
+        :show="showUploadProgressModal"
+        :title="t('mount.modals.uploadTitle')"
+        width="420px"
+        :closable="!uploading"
+        @update:show="handleUploadProgressModalUpdate"
+      >
+        <div class="mount-upload-progress">
+          <p v-if="uploading">{{ t('mount.upload.uploading') }}</p>
+          <p v-if="uploading && uploadProgress >= 0">{{ t('mount.upload.progress', { percent: uploadProgress }) }}</p>
+        </div>
+
+        <template #footer>
+          <Button v-if="!uploading" type="default" @click="showUploadProgressModal = false">
+            {{ t('common.close') }}
+          </Button>
+        </template>
+      </Modal>
     </div>
   </AppLayout>
 </template>
@@ -259,6 +334,8 @@ import {
   Search,
   Table2,
   Trash2,
+  Upload,
+  FolderPlus,
 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import api from '../services/api'
@@ -311,6 +388,15 @@ const previewKey = ref('')
 const deleting = ref(false)
 const deletingKey = ref('')
 
+const showFolderModal = ref(false)
+const newFolderName = ref('')
+const creatingFolder = ref(false)
+
+const uploading = ref(false)
+const uploadProgress = ref(-1)
+const showUploadProgressModal = ref(false)
+const uploadFileInput = ref(null)
+
 const showDeleteModal = ref(false)
 const pendingDeleteConfigId = ref('')
 const pendingDeleteKey = ref('')
@@ -327,10 +413,18 @@ const deleteConfirmText = computed(() => {
 })
 
 const configOptions = computed(() =>
-  configs.value.map((row) => ({
-    label: `${row.name || row.id} (${row.bucket_name || row.id})`,
-    value: row.id,
-  }))
+  configs.value.map((row) => {
+    const typeLabel = row.configType === 'r2' ? 'R2' : row.configType === 'koofr' ? 'Koofr' : 'WebDAV'
+    const detailLabel = row.configType === 'r2'
+      ? (row.bucket_name || row.id)
+      : row.configType === 'koofr'
+        ? (row.remote_path && row.remote_path !== '/' ? row.remote_path : 'Koofr')
+        : (row.endpoint || row.id)
+    return {
+      label: `${row.name || row.id} (${typeLabel}: ${detailLabel})`,
+      value: row.id,
+    }
+  })
 )
 
 const currentToken = computed(() => tokenStack.value[tokenStack.value.length - 1] || '')
@@ -667,6 +761,128 @@ const handleDeleteConfirm = async () => {
   }
 }
 
+// ── 新建目录 ──
+
+const showNewFolderModal = () => {
+  if (loading.value || !selectedConfigId.value) return
+  newFolderName.value = ''
+  showFolderModal.value = true
+}
+
+const closeFolderModal = () => {
+  if (creatingFolder.value) return
+  showFolderModal.value = false
+  newFolderName.value = ''
+}
+
+const handleFolderModalUpdate = (nextValue) => {
+  if (creatingFolder.value) return
+  if (!nextValue) {
+    closeFolderModal()
+    return
+  }
+  showFolderModal.value = true
+}
+
+const handleCreateFolder = async () => {
+  const name = String(newFolderName.value || '').trim()
+  if (!name) return
+  if (creatingFolder.value) return
+
+  const configId = String(selectedConfigId.value || '').trim()
+  if (!configId) return
+
+  // 构造 key: 当前 prefix + folder name
+  const currentPrefix = String(prefix.value || '')
+  const folderKey = `${currentPrefix}${name}/`
+
+  creatingFolder.value = true
+  try {
+    await api.createMountedFolder({ configId, key: folderKey })
+    message.success(t('mount.messages.folderCreateSuccess'))
+    closeFolderModal()
+    await handleRefresh()
+  } catch (error) {
+    message.error(error.response?.data?.error || t('mount.messages.folderCreateFailed'))
+  } finally {
+    creatingFolder.value = false
+  }
+}
+
+// ── 上传文件 ──
+
+const triggerUploadFile = () => {
+  if (loading.value || uploading.value || !selectedConfigId.value) return
+  const input = uploadFileInput.value
+  if (input) {
+    input.value = ''
+    input.click()
+  }
+}
+
+const handleUploadFileChange = async (event) => {
+  const files = event.target?.files
+  if (!files || files.length === 0) return
+
+  const file = files[0]
+  const configId = String(selectedConfigId.value || '').trim()
+  if (!configId) return
+
+  // 检查文件大小 (100MB)
+  const MAX_UPLOAD_BYTES = 100 * 1024 * 1024
+  if (file.size > MAX_UPLOAD_BYTES) {
+    message.error(t('mount.messages.uploadTooLarge'))
+    return
+  }
+
+  uploading.value = true
+  uploadProgress.value = -1
+  showUploadProgressModal.value = true
+
+  try {
+    const result = await api.uploadMountedObject({
+      configId,
+      path: prefix.value || '',
+      file,
+      onProgress: (percent) => {
+        uploadProgress.value = percent
+      },
+    })
+
+    // 如果后端返回 presigned URL (R2)，需要前端直传
+    if (result.upload_url) {
+      try {
+        await api.uploadToR2(result.upload_url, file, (percent) => {
+          uploadProgress.value = percent
+        })
+      } catch (uploadError) {
+        message.error(t('mount.messages.uploadFailed'))
+        return
+      }
+    }
+
+    message.success(t('mount.messages.uploadSuccess'))
+    uploadProgress.value = 100
+    await handleRefresh()
+  } catch (error) {
+    message.error(error.response?.data?.error || t('mount.messages.uploadFailed'))
+  } finally {
+    uploading.value = false
+    // 短暂延迟后关闭进度弹窗
+    setTimeout(() => {
+      if (!uploading.value) {
+        showUploadProgressModal.value = false
+        uploadProgress.value = -1
+      }
+    }, 800)
+  }
+}
+
+const handleUploadProgressModalUpdate = (nextValue) => {
+  if (uploading.value) return
+  showUploadProgressModal.value = nextValue
+}
+
 const tableData = computed(() => {
   const basePrefix = String(prefix.value || '')
   const folders = Array.isArray(listResult.value?.folders) ? listResult.value.folders : []
@@ -825,8 +1041,12 @@ const columns = computed(() => [
 const loadConfigs = async () => {
   configsLoading.value = true
   try {
-    const result = await api.getR2Configs()
-    configs.value = result.configs || []
+    const result = await api.getStorageConfigs()
+
+    configs.value = (result.configs || []).map((row) => ({
+      ...row,
+      configType: row.type, // 'r2' | 'webdav' | 'koofr'
+    }))
 
     if (!selectedConfigId.value) {
       selectedConfigId.value =
@@ -1039,6 +1259,26 @@ onMounted(async () => {
   line-height: 1.6;
   color: var(--nb-ink);
   word-break: break-word;
+}
+
+.mount-folder-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nb-space-sm);
+}
+
+.mount-folder-label {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--nb-ink);
+}
+
+.mount-upload-progress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nb-space-sm);
+  text-align: center;
+  color: var(--nb-ink);
 }
 
 .mount-browser-panel {
