@@ -1,9 +1,9 @@
 export default {
   mount: {
     title: 'Mount',
-    subtitle: 'Browse objects in the selected R2 bucket (without DB records).',
+    subtitle: 'Browse objects in the selected storage (without DB records).',
     filters: {
-      config: 'R2 Config',
+      config: 'Storage config',
       prefix: 'Prefix',
       limit: 'Per page',
     },
@@ -24,6 +24,8 @@ export default {
       download: 'Download',
       delete: 'Delete',
       copyKey: 'Copy key',
+      upload: 'Upload',
+      newFolder: 'New Folder',
     },
     table: {
       name: 'Name',
@@ -37,10 +39,10 @@ export default {
     state: {
       loading: 'Loading...',
       empty: 'No objects',
-      noConfigsTitle: 'No R2 configs',
-      noConfigsContent: 'Please add and test an R2 config in the Storage page first.',
-      noConfigSelectedTitle: 'Select an R2 config',
-      noConfigSelectedContent: 'Select a config to browse objects in that bucket.',
+      noConfigsTitle: 'No storage configs',
+      noConfigsContent: 'Please add and test a storage config in the Storage page first.',
+      noConfigSelectedTitle: 'Select a storage config',
+      noConfigSelectedContent: 'Select a config to browse objects in that storage.',
     },
     preview: {
       title: 'Preview',
@@ -54,17 +56,32 @@ export default {
     modals: {
       deleteTitle: 'Confirm object deletion',
       deleteFolderTitle: 'Confirm folder deletion',
+      newFolderTitle: 'New Folder',
+      uploadTitle: 'Upload File',
     },
     confirmDelete: 'Delete object "{name}"?',
     confirmDeleteFolder:
       'Delete folder "{name}" recursively with all contents? This action cannot be undone.',
+    newFolderLabel: 'Folder name',
+    newFolderPlaceholder: 'Enter folder name',
+    upload: {
+      selectFile: 'Select file',
+      dropHere: 'Drop file here',
+      uploading: 'Uploading...',
+      progress: 'Upload progress: {percent}%',
+    },
     messages: {
-      loadConfigsFailed: 'Failed to load R2 configs',
+      loadConfigsFailed: 'Failed to load storage configs',
       loadObjectsFailed: 'Failed to load objects',
       deleteSuccess: 'Object deleted',
       deleteFailed: 'Failed to delete object',
       deleteFolderSuccess: 'Folder and contents deleted ({count} objects)',
       deleteFolderFailed: 'Failed to delete folder',
+      uploadSuccess: 'File uploaded successfully',
+      uploadFailed: 'Failed to upload file',
+      uploadTooLarge: 'File size exceeds limit (max 100MB)',
+      folderCreateSuccess: 'Folder created',
+      folderCreateFailed: 'Failed to create folder',
     },
   },
 }

@@ -3,7 +3,7 @@ export default {
     title: '管理',
     help: '使用提示',
     subtitle:
-      '管理多套 Cloudflare R2 配置，你可以在这里管理多套 Cloudflare R2 配置，并设置默认配置。 上传文件时可选择使用哪套配置。',
+      '管理多套存储配置（Cloudflare R2 / WebDAV / Koofr），你可以在这里管理多套存储配置，并设置默认配置。上传文件时可选择使用哪套配置。',
     actions: {
       addConfig: '添加新配置',
       refreshList: '刷新列表',
@@ -36,23 +36,29 @@ export default {
     state: {
       loading: '加载中...',
       emptyTitle: '暂无配置',
-      emptyContent: '还没有任何 R2 配置，点击“添加新配置”开始创建。',
+      emptyContent: '还没有任何存储配置，点击"添加新配置"开始创建。',
       defaultTag: '默认',
     },
     labels: {
+      configType: '配置类型',
       bucket: '存储桶',
       totalSpace: '总容量',
       usedSpace: '已用容量',
       usagePercent: '使用进度',
       configId: '配置 ID',
       name: '名称',
-      endpoint: 'R2 端点 URL',
+      endpoint: '端点 URL',
       bucketName: 'Bucket Name',
       quotaGb: '总容量 (GB)',
       accessKeyId: 'Access Key ID',
       accessKeyIdOptional: 'Access Key ID（留空不更新）',
       secretAccessKey: 'Secret Access Key',
       secretAccessKeyOptional: 'Secret Access Key（留空不更新）',
+      remotePath: '远程目录',
+      username: '用户名',
+      usernameOptional: '用户名（留空不更新）',
+      password: '密码',
+      passwordOptional: '密码（留空不更新）',
     },
     placeholders: {
       name: '例如：生产环境',
@@ -61,6 +67,12 @@ export default {
       quotaGb: '例如 10',
       accessKeyId: 'R2 访问密钥 ID',
       secretAccessKey: 'R2 访问密钥',
+      webdavEndpoint: 'https://nextcloud.example.com/remote.php/dav/files/user',
+      koofrEndpoint: 'https://app.koofr.net/dav/Koofr',
+      remotePath: '例如 /flares3，留空为根目录',
+      webdavUsername: '用户名',
+      koofrUsername: '邮箱账号',
+      webdavPassword: '密码',
     },
     hint: {
       title: '提示',
@@ -69,10 +81,13 @@ export default {
       tokenCreatePrefix: '访问密钥请在 Cloudflare Dashboard 的',
       tokenCreateSuffix: '中创建（需要 Object Read/Write）。',
       tokenCreate: '访问密钥请在 Cloudflare Dashboard 的 {path} 中创建（需要 Object Read/Write）。',
+      koofrEndpointPrefix: 'Koofr WebDAV 端点通常为',
+      koofrAppPassword: '请使用 Koofr 应用专用密码（在账户偏好设置中生成）。',
+      webdavEndpointHint: '请填写 WebDAV 服务端点 URL，确保可通过 PROPFIND 访问。',
     },
     modal: {
-      createTitle: '新增 R2 配置',
-      editTitle: '编辑 R2 配置',
+      createTitle: '新增存储配置',
+      editTitle: '编辑存储配置',
       save: '保存',
     },
     aria: {
@@ -83,12 +98,14 @@ export default {
       delete: '删除',
     },
     validation: {
-      required: '请填写名称、端点、Bucket 和总容量',
+      required: '请填写名称和端点',
       quotaInvalid: '总容量必须为大于 0 的数字（GB）',
       createNeedKeys: '新增配置需要填写 Access Key 和 Secret Key',
+      koofrNeedMountId: 'Koofr 配置需要填写 Mount ID',
+      createNeedCredentials: '新增配置需要填写用户名和密码',
     },
     messages: {
-      loadFailed: '加载 R2 配置失败',
+      loadFailed: '加载配置失败',
       defaultUpdated: '默认配置已更新',
       setDefaultFailed: '设置默认配置失败',
       testSuccess: '连接测试成功',
@@ -103,7 +120,7 @@ export default {
     usageTips: {
       usage: {
         title: '用量说明',
-        content: '显示的存储用量基于本地数据库统计，可能与 R2 实际用量存在差异。',
+        content: '显示的存储用量基于本地数据库统计，可能与实际用量存在差异。',
       },
       storage: {
         title: '存储空间',

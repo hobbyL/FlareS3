@@ -1,9 +1,9 @@
 export default {
   mount: {
     title: '挂载',
-    subtitle: '直接浏览指定 R2 Bucket 中的对象（不依赖数据库记录）',
+    subtitle: '直接浏览指定存储中的对象（不依赖数据库记录）',
     filters: {
-      config: 'R2 配置',
+      config: '存储配置',
       prefix: '目录前缀（prefix）',
       limit: '每页数量',
     },
@@ -24,6 +24,8 @@ export default {
       download: '下载',
       delete: '删除',
       copyKey: '复制 Key',
+      upload: '上传',
+      newFolder: '新建目录',
     },
     table: {
       name: '名称',
@@ -37,10 +39,10 @@ export default {
     state: {
       loading: '加载中...',
       empty: '暂无对象',
-      noConfigsTitle: '暂无 R2 配置',
-      noConfigsContent: '请先在「管理」页面添加并测试 R2 配置。',
-      noConfigSelectedTitle: '请选择一个 R2 配置',
-      noConfigSelectedContent: '选择配置后即可浏览该 Bucket 的对象列表。',
+      noConfigsTitle: '暂无存储配置',
+      noConfigsContent: '请先在「管理」页面添加并测试存储配置。',
+      noConfigSelectedTitle: '请选择一个存储配置',
+      noConfigSelectedContent: '选择配置后即可浏览该存储的对象列表。',
     },
     preview: {
       title: '预览',
@@ -53,16 +55,31 @@ export default {
     modals: {
       deleteTitle: '确认删除对象',
       deleteFolderTitle: '确认删除目录',
+      newFolderTitle: '新建目录',
+      uploadTitle: '上传文件',
     },
     confirmDelete: '确定删除对象「{name}」吗？',
     confirmDeleteFolder: '确定递归删除目录「{name}」及其全部内容吗？此操作不可恢复。',
+    newFolderLabel: '目录名称',
+    newFolderPlaceholder: '请输入目录名称',
+    upload: {
+      selectFile: '选择文件',
+      dropHere: '拖拽文件到此处',
+      uploading: '上传中...',
+      progress: '上传进度：{percent}%',
+    },
     messages: {
-      loadConfigsFailed: '加载 R2 配置失败',
+      loadConfigsFailed: '加载存储配置失败',
       loadObjectsFailed: '加载对象列表失败',
       deleteSuccess: '对象已删除',
       deleteFailed: '删除对象失败',
       deleteFolderSuccess: '目录及其内容已删除（共 {count} 个对象）',
       deleteFolderFailed: '删除目录失败',
+      uploadSuccess: '文件上传成功',
+      uploadFailed: '文件上传失败',
+      uploadTooLarge: '文件大小超过限制（最大 100MB）',
+      folderCreateSuccess: '目录已创建',
+      folderCreateFailed: '创建目录失败',
     },
   },
 }
