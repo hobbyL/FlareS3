@@ -3,15 +3,16 @@ import { getMaxFileSize } from '../config/env'
 import { jsonResponse, parseJson, getUser, calcPresignedDownloadUrlTtlSeconds } from './utils'
 import {
   abortMultipartUpload,
-  deleteObject,
   buildR2Key,
   completeMultipartUpload,
+  deleteObject,
   generateDownloadUrl,
   generateMultipartUploadUrl,
   generateUploadUrl,
   getObjectSize,
   initiateMultipartUpload,
   listParts,
+  loadR2ConfigById,
   resolveR2ConfigForKey,
   sanitizeFilename,
   summarizeS3Error,
@@ -45,6 +46,7 @@ import {
   uploadObjectSizeMismatchError,
 } from '../services/uploadErrors'
 import { prepareEnqueueFileDeletionIfNeeded } from '../services/deleteQueue'
+import { createProvider } from '../services/storage/factory'
 import {
   prepareConsumeUploadReservation,
   prepareReleaseUploadReservation,
@@ -228,18 +230,33 @@ function isUniqueConstraintError(errorMessage: string, field: 'r2_key' | 'short_
   return normalized.includes(`files.${field}`) || normalized.includes(field)
 }
 
+function sanitizeDir(dir: string): string {
+  const trimmed = String(dir || '').trim().replace(/\\/g, '/').replace(/\/+/g, '/')
+  if (!trimmed || trimmed === '.' || trimmed === '/') return ''
+  let clean = trimmed.startsWith('/') ? trimmed.slice(1) : trimmed
+  clean = clean.endsWith('/') ? clean.slice(0, -1) : clean
+  if (!clean || clean === '.' || clean === '..') return ''
+  const segments = clean.split('/')
+  if (segments.some((s) => s === '..' || s === '.')) return ''
+  return clean
+}
+
 async function allocateUploadFileIdentity(
   env: Env,
   filename: string,
   expiresIn: number,
-  r2ConfigId: string
+  r2ConfigId: string,
+  dir?: string
 ): Promise<{ id: string; r2Key: string; shortCode: string; expiresAt: Date; filename: string }> {
   const baseFilename = sanitizeUploadFilename(filename)
   const expiresAt = calcExpiresAt(expiresIn)
+  const cleanDir = sanitizeDir(dir || '')
 
   for (let suffix = 0; suffix < FILENAME_RENAME_MAX_ATTEMPTS; suffix += 1) {
     const resolvedFilename = buildRenamedFilename(baseFilename, suffix)
-    const r2Key = buildR2Key(r2ConfigId, resolvedFilename)
+    const r2Key = cleanDir
+      ? buildR2Key(r2ConfigId, `${cleanDir}/${resolvedFilename}`)
+      : buildR2Key(r2ConfigId, resolvedFilename)
 
     const occupied = await env.DB.prepare('SELECT id FROM files WHERE r2_key = ? LIMIT 1')
       .bind(r2Key)
@@ -280,8 +297,8 @@ async function createPendingUploadFileRecord(
   const now = new Date().toISOString()
   const result = await env.DB
     .prepare(
-      `INSERT INTO files (id, owner_id, filename, r2_key, size, content_type, expires_in, created_at, expires_at, upload_status, short_code, require_login)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
+      `INSERT INTO files (id, owner_id, filename, r2_key, size, content_type, expires_in, created_at, expires_at, upload_status, short_code, require_login, config_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`
     )
     .bind(
       file.id,
@@ -294,7 +311,8 @@ async function createPendingUploadFileRecord(
       now,
       file.expiresAt.toISOString(),
       file.shortCode,
-      requireLogin ? 1 : 0
+      requireLogin ? 1 : 0,
+      r2ConfigId || null
     )
     .run()
 
@@ -322,6 +340,7 @@ export async function presignUpload(request: Request, env: Env): Promise<Respons
       expires_in: number
       require_login?: boolean
       config_id?: string
+      dir?: string
     }>(request)
 
     const declaredSize = normalizeDeclaredFileSize(body.size)
@@ -329,6 +348,7 @@ export async function presignUpload(request: Request, env: Env): Promise<Respons
       return uploadErrorResponse(invalidUploadRequestError())
     }
     const expiresIn = normalizeExpiresIn(body.expires_in)
+    const dir = body.dir
 
     const maxSize = getMaxFileSize(env)
     if (declaredSize > maxSize) {
@@ -355,7 +375,7 @@ export async function presignUpload(request: Request, env: Env): Promise<Respons
       null
     let lastCreateError: unknown = null
     for (let attempt = 0; attempt < SHORT_CODE_MAX_ATTEMPTS; attempt += 1) {
-      file = await allocateUploadFileIdentity(env, body.filename, expiresIn, loaded.id)
+      file = await allocateUploadFileIdentity(env, body.filename, expiresIn, loaded.id, dir)
       try {
         await createPendingUploadFileRecord(
           env,
@@ -507,6 +527,7 @@ export async function initMultipart(request: Request, env: Env): Promise<Respons
       expires_in: number
       require_login?: boolean
       config_id?: string
+      dir?: string
     }>(request)
 
     const declaredSize = normalizeDeclaredFileSize(body.size)
@@ -514,6 +535,7 @@ export async function initMultipart(request: Request, env: Env): Promise<Respons
       return uploadErrorResponse(invalidUploadRequestError())
     }
     const expiresIn = normalizeExpiresIn(body.expires_in)
+    const dir = body.dir
 
     const maxSize = getMaxFileSize(env)
     if (declaredSize > maxSize) {
@@ -540,7 +562,7 @@ export async function initMultipart(request: Request, env: Env): Promise<Respons
       null
     let lastCreateError: unknown = null
     for (let attempt = 0; attempt < SHORT_CODE_MAX_ATTEMPTS; attempt += 1) {
-      file = await allocateUploadFileIdentity(env, body.filename, expiresIn, loaded.id)
+      file = await allocateUploadFileIdentity(env, body.filename, expiresIn, loaded.id, dir)
       try {
         await createPendingUploadFileRecord(
           env,
@@ -894,6 +916,192 @@ export async function abortMultipart(request: Request, env: Env): Promise<Respon
       mapUnexpectedUploadError(error, {
         code: 'UPLOAD_MULTIPART_ABORT_FAILED',
         message: '取消分片上传失败',
+      })
+    )
+  }
+}
+
+const MAX_SERVER_UPLOAD_BYTES = 100 * 1024 * 1024
+
+function formatServerError(error: unknown): { status: number; message: string } {
+  if (error instanceof Error) {
+    const msg = error.message
+    const m = msg.match(/HTTP\s+(\d+)/)
+    if (m) return { status: Number(m[1]), message: msg }
+    if (msg.includes('Network connection lost') || msg.includes('fetch failed')) {
+      return { status: 502, message: '存储服务连接中断，请稍后重试' }
+    }
+    return { status: 500, message: msg }
+  }
+  return { status: 500, message: String(error || '未知错误') }
+}
+
+export async function serverUpload(request: Request, env: Env): Promise<Response> {
+  const user = getUser(request)
+  if (!user) return jsonResponse({ error: '未授权' }, 401)
+
+  try {
+    const contentType = String(request.headers.get('Content-Type') || '')
+    if (!contentType.includes('multipart/form-data')) {
+      return jsonResponse({ error: '请求格式错误，需要 multipart/form-data' }, 400)
+    }
+
+    const formData = await request.formData()
+    const configId = String(formData.get('config_id') || '').trim()
+    const filename = String(formData.get('filename') || '').trim()
+    const expiresInRaw = Number(formData.get('expires_in') || 7)
+    const requireLogin = formData.get('require_login') !== 'false'
+    const rawFile = formData.get('file')
+    const dirRaw = String(formData.get('dir') || '').trim()
+    const dir = sanitizeDir(dirRaw)
+
+    if (!configId) {
+      return jsonResponse({ error: '缺少 config_id' }, 400)
+    }
+    if (!filename) {
+      return jsonResponse({ error: '缺少 filename' }, 400)
+    }
+    if (!rawFile || !(rawFile instanceof File)) {
+      return jsonResponse({ error: '缺少文件' }, 400)
+    }
+
+    const file = rawFile as File
+    const fileSize = file.size
+    if (fileSize > MAX_SERVER_UPLOAD_BYTES) {
+      return jsonResponse({ error: `文件大小超过限制（最大 ${MAX_SERVER_UPLOAD_BYTES / 1024 / 1024}MB）` }, 413)
+    }
+
+    // R2 配置使用预签名上传，不接受服务端中转
+    const r2Loaded = await loadR2ConfigById(env, configId)
+    if (r2Loaded) {
+      return jsonResponse({ error: 'R2 配置请使用预签名上传' }, 400)
+    }
+
+    const provider = await createProvider(env, configId)
+    if (!provider) {
+      return uploadErrorResponse(uploadConfigNotFoundError())
+    }
+
+    const expiresIn = normalizeExpiresIn(expiresInRaw)
+    const contentTypeStr = file.type || 'application/octet-stream'
+    const declaredSize = normalizeDeclaredFileSize(fileSize)
+    if (declaredSize === null) {
+      return uploadErrorResponse(invalidUploadRequestError())
+    }
+
+    let uploadFile: { id: string; r2Key: string; shortCode: string; expiresAt: Date; filename: string } | null = null
+    let lastError: unknown = null
+    for (let attempt = 0; attempt < SHORT_CODE_MAX_ATTEMPTS; attempt += 1) {
+      const baseFilename = sanitizeUploadFilename(filename)
+      const resolvedFilename = buildRenamedFilename(baseFilename, attempt)
+      const expiresAt = calcExpiresAt(expiresIn)
+      // WebDAV/Koofr: key = dir/filename，remotePath 在 provider 层拼接
+      const r2Key = dir ? `${dir}/${resolvedFilename}` : resolvedFilename
+      const id = crypto.randomUUID()
+      const shortCode = generateRandomCode(6)
+      uploadFile = { id, r2Key, shortCode, expiresAt, filename: resolvedFilename }
+
+      const occupied = await env.DB.prepare('SELECT id FROM files WHERE r2_key = ? LIMIT 1')
+        .bind(r2Key)
+        .first('id')
+      if (occupied) continue
+
+      try {
+        await createPendingUploadFileRecord(
+          env,
+          user.id,
+          uploadFile,
+          declaredSize,
+          contentTypeStr,
+          expiresIn,
+          requireLogin,
+          configId,
+          user.quota_bytes
+        )
+        lastError = null
+        break
+      } catch (error) {
+        lastError = error
+        if (error instanceof Error && error.message === 'create_file_record_conflict') {
+          continue
+        }
+        throw error
+      }
+    }
+    if (!uploadFile || lastError) {
+      throw lastError || new Error('create_file_record_failed')
+    }
+
+    try {
+      // 确保上传目录递归存在（如 wfs/{configId}/）
+      const r2Key = uploadFile.r2Key
+      const lastSlash = r2Key.lastIndexOf('/')
+      if (lastSlash > 0) {
+        const dirParts = r2Key.slice(0, lastSlash).split('/').filter(Boolean)
+        let current = ''
+        for (const part of dirParts) {
+          current += `/${part}`
+          try {
+            await provider.createFolder(`${current}/`)
+          } catch {
+            // 目录已存在或创建失败，继续
+          }
+        }
+      }
+
+      const body = await file.arrayBuffer()
+      await provider.upload(r2Key, body, contentTypeStr, fileSize)
+    } catch (error) {
+      await markFileUploadDeleted(env, uploadFile.id)
+      const formatted = formatServerError(error)
+      return jsonResponse({ error: `上传失败（${formatted.message}）` }, formatted.status)
+    }
+
+    const now = new Date().toISOString()
+    const updateResult = await env.DB.prepare(
+      "UPDATE files SET upload_status = 'completed', size = ? WHERE id = ? AND upload_status = 'pending'"
+    )
+      .bind(fileSize, uploadFile.id)
+      .run()
+
+    if (!updateResult.error) {
+      try {
+        await env.DB.batch([
+          prepareConsumeUploadReservation(env.DB, uploadFile.id, now),
+          prepareAuditLogInsert(
+            env.DB,
+            {
+              actorUserId: user.id,
+              action: 'UPLOAD_SERVER',
+              targetType: 'file',
+              targetId: uploadFile.id,
+              ip: getClientIp(request),
+              userAgent: request.headers.get('User-Agent') || undefined,
+              metadata: { configId, key: uploadFile.r2Key, size: fileSize },
+            },
+            now
+          ),
+        ])
+      } catch {
+        // reservation/audit failure non-fatal
+      }
+    }
+
+    const downloadUrl = `/api/files/${uploadFile.id}/download`
+
+    return jsonResponse({
+      file_id: uploadFile.id,
+      filename: uploadFile.filename,
+      download_url: downloadUrl,
+      short_url: `/s/${uploadFile.shortCode}`,
+      expires_at: uploadFile.expiresAt.toISOString(),
+      r2_config_id: configId,
+    })
+  } catch (error) {
+    return uploadErrorResponse(
+      mapUnexpectedUploadError(error, {
+        code: 'UPLOAD_SERVER_FAILED',
+        message: '服务端上传失败',
       })
     )
   }
