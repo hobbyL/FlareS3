@@ -55,6 +55,11 @@ export default {
     return api.get('/admin/job-runs', { params })
   },
 
+  // 统一存储配置
+  getStorageConfigs() {
+    return api.get('/storage/configs')
+  },
+
   // R2 配置（多配置）
   getR2Options() {
     return api.get('/r2/options')
@@ -88,7 +93,32 @@ export default {
     return api.post('/r2/legacy-files', { id: configId })
   },
 
+  // WebDAV / Koofr 配置
+  getWebDAVConfigs() {
+    return api.get('/webdav/configs')
+  },
+
+  createWebDAVConfig(payload) {
+    return api.post('/webdav/configs', payload)
+  },
+
+  updateWebDAVConfig(configId, payload) {
+    return api.patch(`/webdav/configs/${configId}`, payload)
+  },
+
+  deleteWebDAVConfig(configId) {
+    return api.delete(`/webdav/configs/${configId}`)
+  },
+
+  testWebDAVConfig(configId) {
+    return api.post(`/webdav/configs/${configId}/test`)
+  },
+
   // 文件上传
+  getUploadOptions() {
+    return api.get('/r2/options')
+  },
+
   getUploadURL(data) {
     return api.post('/upload/presign', data)
   },
@@ -112,6 +142,26 @@ export default {
   confirmUpload(fileId) {
     return api.post('/upload/confirm', { file_id: fileId })
   },
+
+  serverUpload({ configId, file, filename, expiresIn, requireLogin, dir, onProgress }) {
+    const formData = new FormData()
+    formData.append('config_id', configId)
+    formData.append('file', file)
+    formData.append('filename', filename || file.name)
+    formData.append('expires_in', String(expiresIn ?? 7))
+    formData.append('require_login', String(requireLogin !== false))
+    if (dir) formData.append('dir', dir)
+    return axios.post('/api/upload/server', formData, {
+      withCredentials: true,
+      timeout: 300000,
+      onUploadProgress: (progressEvent) => {
+        if (onProgress) {
+          const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total)
+          onProgress(percent, progressEvent.loaded, progressEvent.total)
+        }
+      },
+    }).then((res) => res.data)
+  },
   // 文件管理
   getFiles(page = 1, limit = 20, filters = {}) {
     return api.get('/files', { params: { page, limit, ...(filters || {}) } })
@@ -127,6 +177,10 @@ export default {
 
   permanentlyDeleteFile(fileId) {
     return api.delete(`/files/${fileId}/permanent`)
+  },
+
+  permanentlyDeleteTrashFiles() {
+    return api.delete('/files/trash/permanent')
   },
 
   // 挂载
@@ -146,6 +200,27 @@ export default {
       key,
     }
     return api.delete('/mount/object', { params })
+  },
+
+  uploadMountedObject({ configId, path, file, onProgress }) {
+    const formData = new FormData()
+    formData.append('config_id', configId)
+    formData.append('path', path)
+    formData.append('file', file)
+    return axios.post('/api/mount/upload', formData, {
+      withCredentials: true,
+      headers: { 'Content-Type': 'multipart/form-data' },
+      onUploadProgress: (progressEvent) => {
+        if (onProgress) {
+          const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total)
+          onProgress(percent, progressEvent.loaded, progressEvent.total)
+        }
+      },
+    })
+  },
+
+  createMountedFolder({ configId, key }) {
+    return api.post('/mount/folder', { config_id: configId, key })
   },
 
   deleteFile(fileId) {
