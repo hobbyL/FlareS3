@@ -18,6 +18,8 @@ export default {
     refresh: '刷新',
     search: '搜索',
     create: '创建',
+    notFound: '页面不存在',
+    backHome: '返回首页',
     submit: '提交',
     details: '详情',
     copied: '已复制到剪贴板',

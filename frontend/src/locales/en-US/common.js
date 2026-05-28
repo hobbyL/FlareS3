@@ -18,6 +18,8 @@ export default {
     refresh: 'Refresh',
     search: 'Search',
     create: 'Create',
+    notFound: 'Page not found',
+    backHome: 'Back to home',
     submit: 'Submit',
     details: 'Details',
     copied: 'Copied to clipboard',
