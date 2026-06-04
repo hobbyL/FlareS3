@@ -156,7 +156,12 @@
               <template #header>
                 <div class="mount-browser-header">
                   <div class="mount-path">
-                    <Button type="ghost" size="small" :disabled="loading || !prefix" @click="goRoot">
+                    <Button
+                      type="ghost"
+                      size="small"
+                      :disabled="loading || !prefix"
+                      @click="goRoot"
+                    >
                       <Home :size="16" />
                       <span class="btn-label">{{ t('mount.actions.root') }}</span>
                     </Button>
@@ -212,7 +217,10 @@
                     >
                     <template v-for="(item, index) in breadcrumbItems" :key="item.prefix">
                       <span v-if="index > 0" class="breadcrumb-sep">/</span>
-                      <span class="breadcrumb-item clickable" @click="navigateToPrefix(item.prefix)">
+                      <span
+                        class="breadcrumb-item clickable"
+                        @click="navigateToPrefix(item.prefix)"
+                      >
                         {{ item.label }}
                       </span>
                     </template>
@@ -293,7 +301,12 @@
           <Button type="default" :disabled="creatingFolder" @click="closeFolderModal">
             {{ t('common.cancel') }}
           </Button>
-          <Button type="primary" :loading="creatingFolder" :disabled="!newFolderName.trim()" @click="handleCreateFolder">
+          <Button
+            type="primary"
+            :loading="creatingFolder"
+            :disabled="!newFolderName.trim()"
+            @click="handleCreateFolder"
+          >
             {{ t('mount.actions.newFolder') }}
           </Button>
         </template>
@@ -308,7 +321,9 @@
       >
         <div class="mount-upload-progress">
           <p v-if="uploading">{{ t('mount.upload.uploading') }}</p>
-          <p v-if="uploading && uploadProgress >= 0">{{ t('mount.upload.progress', { percent: uploadProgress }) }}</p>
+          <p v-if="uploading && uploadProgress >= 0">
+            {{ t('mount.upload.progress', { percent: uploadProgress }) }}
+          </p>
         </div>
 
         <template #footer>
@@ -414,12 +429,16 @@ const deleteConfirmText = computed(() => {
 
 const configOptions = computed(() =>
   configs.value.map((row) => {
-    const typeLabel = row.configType === 'r2' ? 'R2' : row.configType === 'koofr' ? 'Koofr' : 'WebDAV'
-    const detailLabel = row.configType === 'r2'
-      ? (row.bucket_name || row.id)
-      : row.configType === 'koofr'
-        ? (row.remote_path && row.remote_path !== '/' ? row.remote_path : 'Koofr')
-        : (row.endpoint || row.id)
+    const typeLabel =
+      row.configType === 'r2' ? 'R2' : row.configType === 'koofr' ? 'Koofr' : 'WebDAV'
+    const detailLabel =
+      row.configType === 'r2'
+        ? row.bucket_name || row.id
+        : row.configType === 'koofr'
+          ? row.remote_path && row.remote_path !== '/'
+            ? row.remote_path
+            : 'Koofr'
+          : row.endpoint || row.id
     return {
       label: `${row.name || row.id} (${typeLabel}: ${detailLabel})`,
       value: row.id,
@@ -445,7 +464,9 @@ const paginationDisplayTotal = computed(() => {
   const seen = Math.max(0, (page - 1) * pageSize + count)
   return canNext.value ? `${seen}+` : seen
 })
-const initialPageLoading = computed(() => !hasLoadedOnce.value && (configsLoading.value || loading.value))
+const initialPageLoading = computed(
+  () => !hasLoadedOnce.value && (configsLoading.value || loading.value)
+)
 
 const normalizePrefix = (value) => {
   const raw = String(value || '').trim()
@@ -1107,10 +1128,6 @@ watch(
 onMounted(async () => {
   prefixInput.value = prefix.value
   await loadConfigs()
-
-  if (selectedConfigId.value) {
-    await loadObjects()
-  }
 })
 </script>
 

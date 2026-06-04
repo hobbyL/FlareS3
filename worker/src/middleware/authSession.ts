@@ -41,10 +41,30 @@ export async function authSessionMiddleware(
   }
   const tokenHash = await hashToken(token)
   const session = await env.DB.prepare(
-    `SELECT id, user_id, expires_at, revoked_at FROM sessions WHERE token_hash = ? LIMIT 1`
+    `SELECT s.id AS session_id,
+            s.expires_at,
+            s.revoked_at,
+            u.id AS user_id,
+            u.username,
+            u.role,
+            u.status,
+            u.quota_bytes
+       FROM sessions s
+       INNER JOIN users u ON u.id = s.user_id
+      WHERE s.token_hash = ?
+      LIMIT 1`
   )
     .bind(tokenHash)
-    .first()
+    .first<{
+      session_id: string
+      expires_at: string
+      revoked_at: string | null
+      user_id: string
+      username: string
+      role: string
+      status: string
+      quota_bytes: number
+    }>()
   if (!session || session.revoked_at) {
     return
   }
@@ -52,21 +72,16 @@ export async function authSessionMiddleware(
   if (Number.isNaN(expiresAt.getTime()) || Date.now() > expiresAt.getTime()) {
     return
   }
-  const user = await env.DB.prepare(
-    `SELECT id, username, role, status, quota_bytes FROM users WHERE id = ? LIMIT 1`
-  )
-    .bind(session.user_id)
-    .first()
-  if (!user || user.status !== 'active') {
+  if (session.status !== 'active') {
     return
   }
   const req = request as Request & { user?: AuthUser; sessionId?: string }
   req.user = {
-    id: String(user.id),
-    username: String(user.username),
-    role: user.role as 'admin' | 'user',
-    status: user.status as 'active' | 'disabled' | 'deleted',
-    quota_bytes: Number(user.quota_bytes),
+    id: String(session.user_id),
+    username: String(session.username),
+    role: session.role as 'admin' | 'user',
+    status: session.status as 'active' | 'disabled' | 'deleted',
+    quota_bytes: Number(session.quota_bytes),
   }
-  req.sessionId = String(session.id)
+  req.sessionId = String(session.session_id)
 }

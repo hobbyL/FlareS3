@@ -328,10 +328,12 @@ const sortOptions = computed(() => [
 
 const ownerOptions = computed(() => [
   { label: t('shares.filters.allOwners'), value: '' },
-  ...filterShareOwners(owners.value, ownerSearchQuery.value, filters.value.owner_id).map((user) => ({
-    label: String(user.username ?? ''),
-    value: String(user.id ?? ''),
-  })),
+  ...filterShareOwners(owners.value, ownerSearchQuery.value, filters.value.owner_id).map(
+    (user) => ({
+      label: String(user.username ?? ''),
+      value: String(user.id ?? ''),
+    })
+  ),
 ])
 
 const hasActiveFilters = computed(() => {
@@ -342,17 +344,18 @@ const hasActiveFilters = computed(() => {
   )
   return Boolean(
     queryActive ||
-      normalizeText(filters.value.type) ||
-      normalizeText(filters.value.status) ||
-      expiresRangeActive ||
-      ownerActive
+    normalizeText(filters.value.type) ||
+    normalizeText(filters.value.status) ||
+    expiresRangeActive ||
+    ownerActive
   )
 })
 
 const expiredGovernanceActive = computed(() => {
   return (
     normalizeText(filters.value.status) === 'expired' &&
-    normalizeText(filters.value.sort_key || DEFAULT_SHARE_SORT_KEY) === EXPIRED_GOVERNANCE_SORT_KEY &&
+    normalizeText(filters.value.sort_key || DEFAULT_SHARE_SORT_KEY) ===
+      EXPIRED_GOVERNANCE_SORT_KEY &&
     !normalizeText(filters.value.expires_from_date) &&
     !normalizeText(filters.value.expires_to_date)
   )
@@ -361,7 +364,8 @@ const expiredGovernanceActive = computed(() => {
 const expiringGovernanceActive = computed(() => {
   return (
     normalizeText(filters.value.status) === 'active' &&
-    normalizeText(filters.value.sort_key || DEFAULT_SHARE_SORT_KEY) === EXPIRED_GOVERNANCE_SORT_KEY &&
+    normalizeText(filters.value.sort_key || DEFAULT_SHARE_SORT_KEY) ===
+      EXPIRED_GOVERNANCE_SORT_KEY &&
     !normalizeText(filters.value.expires_from_date) &&
     !normalizeText(filters.value.expires_to_date)
   )
@@ -375,8 +379,12 @@ const emptyStateText = computed(() => {
 const initialPageLoading = computed(
   () => !hasLoadedOnce.value && (loading.value || ownersLoading.value)
 )
-const pageRowIds = computed(() => items.value.map((item) => toShareSelectionKey(item)).filter(Boolean))
-const selectedIdSet = computed(() => new Set(selectedIds.value.map((id) => normalizeText(id)).filter(Boolean)))
+const pageRowIds = computed(() =>
+  items.value.map((item) => toShareSelectionKey(item)).filter(Boolean)
+)
+const selectedIdSet = computed(
+  () => new Set(selectedIds.value.map((id) => normalizeText(id)).filter(Boolean))
+)
 const selectedShares = computed(() => collectSelectedShares(items.value, selectedIds.value))
 const selectedSharesCount = computed(() => selectedShares.value.length)
 const allRowsSelected = computed(() => {
@@ -486,7 +494,10 @@ function persistFiltersToStorage(value) {
   if (typeof window === 'undefined') {
     return
   }
-  window.localStorage.setItem(shareFiltersStorageKey, JSON.stringify(toPersistedShareFilters(value)))
+  window.localStorage.setItem(
+    shareFiltersStorageKey,
+    JSON.stringify(toPersistedShareFilters(value))
+  )
 }
 
 async function copyTextValue(value) {
@@ -829,8 +840,7 @@ const columns = computed(() => {
         h('input', {
           class: 'shares-checkbox',
           type: 'checkbox',
-          disabled:
-            loading.value || batchDisableSubmitting.value || pageRowIds.value.length === 0,
+          disabled: loading.value || batchDisableSubmitting.value || pageRowIds.value.length === 0,
           checked: allRowsSelected.value,
           indeterminate: selectAllIndeterminate.value,
           onChange: (event) => toggleSelectAll(Boolean(event?.target?.checked)),
@@ -925,10 +935,8 @@ const columns = computed(() => {
       align: 'center',
       ellipsis: false,
       render: (row) =>
-        h(
-          Tag,
-          { type: toShareStatusVariant(row?.status), size: 'small' },
-          () => t(toShareStatusLabelKey(row?.status))
+        h(Tag, { type: toShareStatusVariant(row?.status), size: 'small' }, () =>
+          t(toShareStatusLabelKey(row?.status))
         ),
     },
     {
@@ -1033,7 +1041,9 @@ const columns = computed(() => {
       align: 'center',
       ellipsis: true,
       render: (row) =>
-        h(TableCellText, { value: normalizeText(row?.owner_username) || normalizeText(row?.owner_id) }),
+        h(TableCellText, {
+          value: normalizeText(row?.owner_username) || normalizeText(row?.owner_id),
+        }),
     })
   }
 
@@ -1042,10 +1052,7 @@ const columns = computed(() => {
 
 onMounted(async () => {
   filters.value = restoreFiltersFromStorage()
-  if (authStore.isAdmin) {
-    await loadOwnerOptions()
-  }
-  await loadShares()
+  await Promise.all([authStore.isAdmin ? loadOwnerOptions() : Promise.resolve(), loadShares()])
 })
 
 watch(

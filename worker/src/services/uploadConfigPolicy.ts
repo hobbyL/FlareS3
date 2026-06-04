@@ -49,12 +49,15 @@ export async function listUploadConfigOptionsForUser(
   user: AuthUser
 ): Promise<UploadConfigOptionsResult> {
   const result = await listR2ConfigOptions(env)
-  const masterKey = String(env.R2_MASTER_KEY || '').trim()
-  const webdavConfigs = await listWebDAVConfigs(env.DB, masterKey)
+  const webdavConfigs = await listWebDAVConfigs(env.DB)
 
   const allOptions: UploadConfigOption[] = [
     ...result.options.map((opt) => ({ id: opt.id, name: opt.name, type: 'r2' as const })),
-    ...webdavConfigs.map((cfg) => ({ id: cfg.id, name: cfg.name, type: cfg.type as 'webdav' | 'koofr' })),
+    ...webdavConfigs.map((cfg) => ({
+      id: cfg.id,
+      name: cfg.name,
+      type: cfg.type as 'webdav' | 'koofr',
+    })),
   ]
 
   if (user.role === 'admin') {

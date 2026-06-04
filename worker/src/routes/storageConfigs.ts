@@ -1,15 +1,19 @@
 import type { Env } from '../config/env'
 import { getTotalStorage } from '../config/env'
-import { jsonResponse, getUser } from './utils'
+import { jsonResponse } from './utils'
 import { formatBytes } from '../utils/format'
-import { listR2ConfigOptions, loadR2ConfigById } from '../services/r2'
+import { listDbR2Configs, listR2ConfigOptions, loadR2ConfigById } from '../services/r2'
 import { listWebDAVConfigs } from '../services/storage/webdav-config'
 import { getReservedConfigSpace } from '../services/uploadReservations'
 
 const ACTIVE_COMPLETED_STORAGE_USAGE_WHERE = "upload_status = 'completed' AND deleted_at IS NULL"
 
 export async function listAllConfigs(_request: Request, env: Env): Promise<Response> {
-  const { default_config_id, legacy_files_config_id, options: r2Options } = await listR2ConfigOptions(env)
+  const {
+    default_config_id,
+    legacy_files_config_id,
+    options: r2Options,
+  } = await listR2ConfigOptions(env)
   const legacyAssignedId = legacy_files_config_id || default_config_id
 
   type UnifiedConfig = {
@@ -19,10 +23,6 @@ export async function listAllConfigs(_request: Request, env: Env): Promise<Respo
     source?: string
     endpoint: string
     bucket_name?: string
-    access_key_id?: string
-    secret_access_key?: string
-    username?: string
-    password?: string
     remote_path?: string
     mount_id?: string | null
     usedSpace: number
@@ -35,24 +35,29 @@ export async function listAllConfigs(_request: Request, env: Env): Promise<Respo
   const configs: UnifiedConfig[] = []
 
   // R2 配置
+  const dbR2Configs = await listDbR2Configs(env.DB)
+  const dbR2ConfigById = new Map(dbR2Configs.map((cfg) => [cfg.id, cfg]))
   const legacyUsedSpaceRow = await env.DB.prepare(
     `SELECT COALESCE(SUM(size), 0) AS usedSpace FROM files WHERE ${ACTIVE_COMPLETED_STORAGE_USAGE_WHERE} AND r2_key NOT LIKE 'flares3/%/%'`
   ).first('usedSpace')
   const legacyUsedSpace = Number(legacyUsedSpaceRow || 0)
 
   for (const option of r2Options) {
-    const loaded = await loadR2ConfigById(env, option.id)
-    if (!loaded) continue
-
     let totalSpace = getTotalStorage(env)
+    let endpoint = ''
+    let bucketName = ''
+
     if (option.source === 'db') {
-      const quota = await env.DB.prepare('SELECT quota_bytes FROM r2_configs WHERE id = ? LIMIT 1')
-        .bind(option.id)
-        .first('quota_bytes')
-      const quotaBytes = Number(quota)
-      if (Number.isFinite(quotaBytes) && quotaBytes > 0) {
-        totalSpace = quotaBytes
-      }
+      const summary = dbR2ConfigById.get(option.id)
+      if (!summary) continue
+      endpoint = summary.endpoint
+      bucketName = summary.bucketName
+      totalSpace = summary.quotaBytes
+    } else {
+      const loaded = await loadR2ConfigById(env, option.id)
+      if (!loaded) continue
+      endpoint = loaded.config.endpoint
+      bucketName = loaded.config.bucketName
     }
 
     const prefix = `flares3/${option.id}/%`
@@ -73,10 +78,8 @@ export async function listAllConfigs(_request: Request, env: Env): Promise<Respo
       name: option.name,
       type: 'r2',
       source: option.source,
-      endpoint: loaded.config.endpoint,
-      bucket_name: loaded.config.bucketName,
-      access_key_id: loaded.config.accessKeyId,
-      secret_access_key: loaded.config.secretAccessKey,
+      endpoint,
+      bucket_name: bucketName,
       usedSpace,
       totalSpace,
       usedSpaceFormatted: formatBytes(usedSpace),
@@ -86,8 +89,7 @@ export async function listAllConfigs(_request: Request, env: Env): Promise<Respo
   }
 
   // WebDAV / Koofr 配置
-  const masterKey = String(env.R2_MASTER_KEY || '').trim()
-  const webdavConfigs = await listWebDAVConfigs(env.DB, masterKey)
+  const webdavConfigs = await listWebDAVConfigs(env.DB)
   for (const cfg of webdavConfigs) {
     const usagePercent = cfg.quotaBytes ? 0 : 0
     configs.push({
@@ -95,8 +97,6 @@ export async function listAllConfigs(_request: Request, env: Env): Promise<Respo
       name: cfg.name,
       type: cfg.type,
       endpoint: cfg.endpoint,
-      username: cfg.username,
-      password: cfg.password,
       remote_path: cfg.remote_path,
       usedSpace: 0,
       totalSpace: cfg.quotaBytes,

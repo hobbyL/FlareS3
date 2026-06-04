@@ -9,6 +9,11 @@ import { router } from './router'
 import { handleScheduled } from './scheduled'
 import { serializeError, logRequestFailure } from './utils/log'
 
+type TimingEntry = {
+  name: string
+  durationMs: number
+}
+
 function isBackendPath(pathname: string): boolean {
   return (
     pathname === '/api' ||
@@ -47,7 +52,66 @@ async function healthResponse(env: Env): Promise<Response> {
   })
 }
 
+async function measure<T>(
+  timings: TimingEntry[],
+  name: string,
+  action: () => Promise<T>
+): Promise<T> {
+  const startedAt = performance.now()
+  try {
+    return await action()
+  } finally {
+    timings.push({
+      name,
+      durationMs: Math.max(0, performance.now() - startedAt),
+    })
+  }
+}
+
+function formatTimingDuration(durationMs: number): string {
+  return Math.max(0, durationMs).toFixed(1)
+}
+
+function withTimingHeaders(
+  response: Response,
+  timings: TimingEntry[],
+  requestStartedAt: number
+): Response {
+  const allTimings = [
+    ...timings,
+    {
+      name: 'total',
+      durationMs: Math.max(0, performance.now() - requestStartedAt),
+    },
+  ]
+  if (!allTimings.length) return response
+
+  const headers = new Headers(response.headers)
+  const serverTiming = allTimings
+    .map((entry) => `${entry.name};dur=${formatTimingDuration(entry.durationMs)}`)
+    .join(', ')
+  const existingServerTiming = headers.get('Server-Timing')
+  headers.set(
+    'Server-Timing',
+    existingServerTiming ? `${existingServerTiming}, ${serverTiming}` : serverTiming
+  )
+  headers.set(
+    'X-Flares3-Timing',
+    allTimings
+      .map((entry) => `${entry.name}=${formatTimingDuration(entry.durationMs)}ms`)
+      .join('; ')
+  )
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  })
+}
+
 async function handleRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  const requestStartedAt = performance.now()
+  const timings: TimingEntry[] = []
   requestIdMiddleware(request)
   let response: Response | undefined
   let requestError: unknown
@@ -56,24 +120,26 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
     const pathname = new URL(request.url).pathname
 
     if (pathname === '/health' || pathname === '/api/health') {
-      response = await healthResponse(env)
+      response = await measure(timings, 'health', () => healthResponse(env))
     } else if (!isBackendPath(pathname)) {
-      response = await handleFrontendRequest(request, env)
+      response = await measure(timings, 'assets', () => handleFrontendRequest(request, env))
     } else {
-      response = await rateLimitMiddleware(request, env)
+      response = await measure(timings, 'rateLimit', () => rateLimitMiddleware(request, env))
       if (!response) {
-        response = await bootstrapAdmin(request, env)
+        response = await measure(timings, 'bootstrap', () => bootstrapAdmin(request, env))
       }
       if (!response) {
-        response = await authSessionMiddleware(request, env)
+        response = await measure(timings, 'auth', () => authSessionMiddleware(request, env))
       }
       if (!response) {
-        try {
-          response = await router.handle(request, env, ctx)
-        } catch (error) {
-          requestError = error
-          response = new Response('Internal Server Error', { status: 500 })
-        }
+        response = await measure(timings, 'route', async () => {
+          try {
+            return await router.handle(request, env, ctx)
+          } catch (error) {
+            requestError = error
+            return new Response('Internal Server Error', { status: 500 })
+          }
+        })
       }
     }
   } catch (error) {
@@ -85,6 +151,7 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
     response = new Response('Internal Server Error', { status: 500 })
   }
 
+  response = withTimingHeaders(response, timings, requestStartedAt)
   logRequestFailure(request, response, requestError)
   return withCommonHeaders(request, response)
 }

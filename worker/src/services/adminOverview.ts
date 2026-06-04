@@ -28,10 +28,21 @@ type AdminOverviewMetrics = {
   consumedShares: number
 }
 
-async function getTextOverviewMetrics(env: Env, { sevenDaysAgo, thirtyDaysAgo }: {
-  sevenDaysAgo: string
-  thirtyDaysAgo: string
-}): Promise<Pick<AdminOverviewMetrics, 'totalTexts' | 'textsUpdated7d' | 'textsUpdated8To30d' | 'textsStaleOver30d'>> {
+async function getTextOverviewMetrics(
+  env: Env,
+  {
+    sevenDaysAgo,
+    thirtyDaysAgo,
+  }: {
+    sevenDaysAgo: string
+    thirtyDaysAgo: string
+  }
+): Promise<
+  Pick<
+    AdminOverviewMetrics,
+    'totalTexts' | 'textsUpdated7d' | 'textsUpdated8To30d' | 'textsStaleOver30d'
+  >
+> {
   const row = await env.DB.prepare(
     `SELECT COUNT(*) AS totalTexts,
             COALESCE(SUM(CASE WHEN updated_at >= ? THEN 1 ELSE 0 END), 0) AS textsUpdated7d,
@@ -56,7 +67,10 @@ async function getTextOverviewMetrics(env: Env, { sevenDaysAgo, thirtyDaysAgo }:
   }
 }
 
-async function getStandardShareOverviewMetrics(env: Env, nowIso: string): Promise<{
+async function getStandardShareOverviewMetrics(
+  env: Env,
+  nowIso: string
+): Promise<{
   activeShares: number
   expiredShares: number
   exhaustedShares: number
@@ -91,7 +105,10 @@ async function getStandardShareOverviewMetrics(env: Env, nowIso: string): Promis
   }
 }
 
-async function getOneTimeShareOverviewMetrics(env: Env, nowIso: string): Promise<{
+async function getOneTimeShareOverviewMetrics(
+  env: Env,
+  nowIso: string
+): Promise<{
   activeShares: number
   expiredShares: number
   consumedShares: number
@@ -127,74 +144,71 @@ export async function getAdminOverviewData(env: Env): Promise<{
   }
   risks: AdminOverviewRisk[]
 }> {
-  const totalUsers = Number(
-    (await env.DB.prepare('SELECT COUNT(*) AS total FROM users').first<{ total: number }>())?.total || 0
-  )
-  const activeUsers = Number(
-    (
-      await env.DB.prepare("SELECT COUNT(*) AS total FROM users WHERE status = 'active'").first<{
-        total: number
-      }>()
-    )?.total || 0
-  )
-  const disabledUsers = Number(
-    (
-      await env.DB.prepare("SELECT COUNT(*) AS total FROM users WHERE status = 'disabled'").first<{
-        total: number
-      }>()
-    )?.total || 0
-  )
-
-  const filesRow = await env.DB.prepare(
-    `SELECT COUNT(*) AS totalFiles, COALESCE(SUM(size), 0) AS usedSpace FROM files WHERE upload_status = 'completed' AND deleted_at IS NULL`
-  ).first<{ totalFiles: number; usedSpace: number }>()
-  const totalFiles = Number(filesRow?.totalFiles || 0)
-  const usedSpace = Number(filesRow?.usedSpace || 0)
-
   const now = Date.now()
   const nowIso = new Date(now).toISOString()
   const nextWeek = new Date(now + 7 * 24 * 60 * 60 * 1000).toISOString()
   const sevenDaysAgo = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString()
   const thirtyDaysAgo = new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString()
-  const expiringThisWeek = Number(
-    (
-      await env.DB.prepare(
-        `SELECT COUNT(*) AS count FROM files WHERE upload_status IN ('pending','uploading','completed') AND deleted_at IS NULL AND expires_at < ?`
-      )
-        .bind(nextWeek)
-        .first<{ count: number }>()
-    )?.count || 0
-  )
 
-  const textMetrics = await getTextOverviewMetrics(env, { sevenDaysAgo, thirtyDaysAgo })
-  const standardShareMetrics = await getStandardShareOverviewMetrics(env, nowIso)
-  const oneTimeShareMetrics = await getOneTimeShareOverviewMetrics(env, nowIso)
+  const [
+    totalUsersRow,
+    activeUsersRow,
+    disabledUsersRow,
+    filesRow,
+    expiringThisWeekRow,
+    textMetrics,
+    standardShareMetrics,
+    oneTimeShareMetrics,
+    pendingDeleteQueueRow,
+    configCountRow,
+    defaultConfigIdValue,
+    latestFailedJob,
+  ] = await Promise.all([
+    env.DB.prepare('SELECT COUNT(*) AS total FROM users').first<{ total: number }>(),
+    env.DB.prepare("SELECT COUNT(*) AS total FROM users WHERE status = 'active'").first<{
+      total: number
+    }>(),
+    env.DB.prepare("SELECT COUNT(*) AS total FROM users WHERE status = 'disabled'").first<{
+      total: number
+    }>(),
+    env.DB.prepare(
+      `SELECT COUNT(*) AS totalFiles, COALESCE(SUM(size), 0) AS usedSpace FROM files WHERE upload_status = 'completed' AND deleted_at IS NULL`
+    ).first<{ totalFiles: number; usedSpace: number }>(),
+    env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM files WHERE upload_status IN ('pending','uploading','completed') AND deleted_at IS NULL AND expires_at < ?`
+    )
+      .bind(nextWeek)
+      .first<{ count: number }>(),
+    getTextOverviewMetrics(env, { sevenDaysAgo, thirtyDaysAgo }),
+    getStandardShareOverviewMetrics(env, nowIso),
+    getOneTimeShareOverviewMetrics(env, nowIso),
+    env.DB.prepare('SELECT COUNT(*) AS count FROM delete_queue WHERE processed_at IS NULL').first<{
+      count: number
+    }>(),
+    env.DB.prepare('SELECT COUNT(*) AS count FROM r2_configs').first<{ count: number }>(),
+    env.DB.prepare('SELECT value FROM system_config WHERE key = ?')
+      .bind(SYSTEM_DEFAULT_R2_CONFIG_ID_KEY)
+      .first('value'),
+    env.DB.prepare(
+      `SELECT job_name, status, finished_at, error_message FROM job_runs WHERE status IN ('failed','partial') ORDER BY created_at DESC LIMIT 1`
+    ).first<{
+      job_name: string
+      status: 'failed' | 'partial'
+      finished_at: string | null
+      error_message: string | null
+    }>(),
+  ])
 
-  const pendingDeleteQueue = Number(
-    (
-      await env.DB.prepare(
-        'SELECT COUNT(*) AS count FROM delete_queue WHERE processed_at IS NULL'
-      ).first<{ count: number }>()
-    )?.count || 0
-  )
-
-  const configCount = Number(
-    (await env.DB.prepare('SELECT COUNT(*) AS count FROM r2_configs').first<{ count: number }>())?.count || 0
-  )
-  const defaultConfigIdValue = await env.DB.prepare('SELECT value FROM system_config WHERE key = ?')
-    .bind(SYSTEM_DEFAULT_R2_CONFIG_ID_KEY)
-    .first('value')
+  const totalUsers = Number(totalUsersRow?.total || 0)
+  const activeUsers = Number(activeUsersRow?.total || 0)
+  const disabledUsers = Number(disabledUsersRow?.total || 0)
+  const totalFiles = Number(filesRow?.totalFiles || 0)
+  const usedSpace = Number(filesRow?.usedSpace || 0)
+  const expiringThisWeek = Number(expiringThisWeekRow?.count || 0)
+  const pendingDeleteQueue = Number(pendingDeleteQueueRow?.count || 0)
+  const configCount = Number(configCountRow?.count || 0)
   const defaultConfigId = defaultConfigIdValue ? String(defaultConfigIdValue) : null
   const hasUploadConfig = configCount > 0
-
-  const latestFailedJob = await env.DB.prepare(
-    `SELECT job_name, status, finished_at, error_message FROM job_runs WHERE status IN ('failed','partial') ORDER BY created_at DESC LIMIT 1`
-  ).first<{
-    job_name: string
-    status: 'failed' | 'partial'
-    finished_at: string | null
-    error_message: string | null
-  }>()
 
   const risks: AdminOverviewRisk[] = []
 
