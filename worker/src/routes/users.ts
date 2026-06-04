@@ -5,6 +5,7 @@ import { logAudit, prepareAuditLogInsert } from '../services/audit'
 import { prepareEnqueueFileDeletionIfNeeded } from '../services/deleteQueue'
 import { getClientIp } from '../middleware/rateLimit'
 import { prepareReleaseUploadReservation } from '../services/uploadReservations'
+import { invalidateUserAuthTokens } from '../middleware/authSession'
 
 function prepareRevokeUserSessions(
   db: D1Database,
@@ -18,6 +19,7 @@ function prepareRevokeUserSessions(
 
 async function revokeUserSessions(db: D1Database, userId: string): Promise<void> {
   await prepareRevokeUserSessions(db, userId).run()
+  invalidateUserAuthTokens(userId)
 }
 
 function prepareDeactivateUserPublicResources(
@@ -26,7 +28,10 @@ function prepareDeactivateUserPublicResources(
   now: string
 ): D1PreparedStatement[] {
   return [
-    db.prepare('UPDATE texts SET deleted_at = ?, updated_at = ? WHERE owner_id = ? AND deleted_at IS NULL')
+    db
+      .prepare(
+        'UPDATE texts SET deleted_at = ?, updated_at = ? WHERE owner_id = ? AND deleted_at IS NULL'
+      )
       .bind(now, now, userId),
     db.prepare('DELETE FROM text_shares WHERE owner_id = ?').bind(userId),
     db.prepare('DELETE FROM text_one_time_shares WHERE owner_id = ?').bind(userId),
@@ -321,8 +326,11 @@ export async function deleteUser(request: Request, env: Env, userId: string): Pr
 
   const actor = getUser(request)
   const statements: D1PreparedStatement[] = [
-    env.DB.prepare('UPDATE users SET status = ?, updated_at = ? WHERE id = ?')
-      .bind('deleted', now, userId),
+    env.DB.prepare('UPDATE users SET status = ?, updated_at = ? WHERE id = ?').bind(
+      'deleted',
+      now,
+      userId
+    ),
     prepareRevokeUserSessions(env.DB, userId, now),
     ...prepareDeactivateUserPublicResources(env.DB, userId, now),
   ]
@@ -359,6 +367,7 @@ export async function deleteUser(request: Request, env: Env, userId: string): Pr
   )
 
   await env.DB.batch(statements)
+  invalidateUserAuthTokens(userId, Date.parse(now) || Date.now())
 
   return jsonResponse({ success: true, queued: true })
 }

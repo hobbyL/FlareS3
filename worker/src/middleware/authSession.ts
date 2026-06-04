@@ -1,9 +1,15 @@
 import type { Env } from '../config/env'
+import {
+  isLikelySignedAuthToken,
+  verifySignedAuthToken,
+  type VerifiedAuthToken,
+} from '../services/authToken'
 import { hashToken } from '../utils/token'
 
 const COOKIE_NAME = 'flares3_session'
 const SESSION_CACHE_TTL_MS = 15 * 1000
 const MAX_SESSION_CACHE_ENTRIES = 500
+const MAX_INVALIDATION_ENTRIES = 1000
 
 export type AuthUser = {
   id: string
@@ -25,6 +31,18 @@ type SessionCacheEntry = SessionLookupResult & {
 
 const sessionCache = new Map<string, SessionCacheEntry>()
 const sessionLookupPromises = new Map<string, Promise<SessionLookupResult | null>>()
+const invalidatedSignedSessions = new Map<string, number>()
+const invalidatedUserTokens = new Map<string, number>()
+
+function setBoundedInvalidation(map: Map<string, number>, key: string, value: number): void {
+  if (map.size >= MAX_INVALIDATION_ENTRIES && !map.has(key)) {
+    const oldestKey = map.keys().next().value
+    if (oldestKey) {
+      map.delete(oldestKey)
+    }
+  }
+  map.set(key, value)
+}
 
 function parseCookies(request: Request): Record<string, string> {
   const header = request.headers.get('Cookie') || ''
@@ -44,6 +62,42 @@ export function getSessionCookieName(): string {
 export function invalidateSessionCache(tokenHash: string): void {
   sessionCache.delete(tokenHash)
   sessionLookupPromises.delete(tokenHash)
+}
+
+export function invalidateUserAuthTokens(
+  userId: string,
+  invalidatedAtMs: number = Date.now()
+): void {
+  setBoundedInvalidation(invalidatedUserTokens, userId, invalidatedAtMs)
+}
+
+function invalidateSignedSession(sessionId: string, invalidatedAtMs: number = Date.now()): void {
+  setBoundedInvalidation(invalidatedSignedSessions, sessionId, invalidatedAtMs)
+}
+
+function isSignedSessionLocallyInvalidated(session: VerifiedAuthToken): boolean {
+  const sessionInvalidatedAt = invalidatedSignedSessions.get(session.sessionId)
+  if (sessionInvalidatedAt && session.issuedAtMs <= sessionInvalidatedAt) {
+    return true
+  }
+
+  const userInvalidatedAt = invalidatedUserTokens.get(session.user.id)
+  if (userInvalidatedAt && session.issuedAtMs <= userInvalidatedAt) {
+    return true
+  }
+
+  return false
+}
+
+export async function invalidateAuthToken(env: Env, token: string): Promise<string> {
+  const signedSession = await verifySignedAuthToken(env, token)
+  if (signedSession) {
+    invalidateSignedSession(signedSession.sessionId)
+  }
+
+  const tokenHash = await hashToken(token)
+  invalidateSessionCache(tokenHash)
+  return tokenHash
 }
 
 function getCachedSession(tokenHash: string): SessionLookupResult | null {
@@ -160,6 +214,22 @@ export async function authSessionMiddleware(
   if (!token) {
     return
   }
+
+  const signedSession = await verifySignedAuthToken(env, token)
+  if (signedSession) {
+    if (isSignedSessionLocallyInvalidated(signedSession)) {
+      return
+    }
+    const req = request as Request & { user?: AuthUser; sessionId?: string }
+    req.user = signedSession.user
+    req.sessionId = signedSession.sessionId
+    return
+  }
+
+  if (isLikelySignedAuthToken(token)) {
+    return
+  }
+
   const tokenHash = await hashToken(token)
   const session = await loadSession(env, tokenHash)
   if (!session) {

@@ -3,7 +3,8 @@ import { jsonResponse, parseJson } from './utils'
 import { verifyPassword } from '../services/password'
 import { recordFailedAttempt, getClientIp } from '../middleware/rateLimit'
 import { logAudit } from '../services/audit'
-import { getSessionCookieName, invalidateSessionCache } from '../middleware/authSession'
+import { getSessionCookieName, invalidateAuthToken, type AuthUser } from '../middleware/authSession'
+import { createSignedAuthToken } from '../services/authToken'
 import { hashToken } from '../utils/token'
 
 const SESSION_TTL_SECONDS = 8 * 60 * 60
@@ -30,10 +31,17 @@ export async function login(request: Request, env: Env): Promise<Response> {
       return jsonResponse({ error: '用户名或密码不能为空' }, 400)
     }
     const user = await env.DB.prepare(
-      'SELECT id, username, password_hash, role, status FROM users WHERE username = ? LIMIT 1'
+      'SELECT id, username, password_hash, role, status, quota_bytes FROM users WHERE username = ? LIMIT 1'
     )
       .bind(body.username)
-      .first()
+      .first<{
+        id: string
+        username: string
+        password_hash: string
+        role: string
+        status: string
+        quota_bytes: number
+      }>()
 
     const authFailedResponse = jsonResponse(
       { error: '用户名或密码错误', code: 'AUTH_INVALID_CREDENTIALS' },
@@ -68,11 +76,26 @@ export async function login(request: Request, env: Env): Promise<Response> {
       await trackLoginFailure(String(user.id), 'PASSWORD_INCORRECT')
       return authFailedResponse
     }
-    const sessionToken = crypto.randomUUID() + crypto.randomUUID()
-    const tokenHash = await hashToken(sessionToken)
     const sessionId = crypto.randomUUID()
     const now = new Date()
-    const expiresAt = new Date(now.getTime() + SESSION_TTL_SECONDS * 1000).toISOString()
+    const issuedAtMs = now.getTime()
+    const expiresAtSeconds = Math.floor(issuedAtMs / 1000) + SESSION_TTL_SECONDS
+    const expiresAt = new Date(expiresAtSeconds * 1000).toISOString()
+    const authUser: AuthUser = {
+      id: String(user.id),
+      username: String(user.username),
+      role: String(user.role) === 'admin' ? 'admin' : 'user',
+      status: 'active',
+      quota_bytes: Number(user.quota_bytes),
+    }
+    const sessionToken =
+      (await createSignedAuthToken(env, {
+        sessionId,
+        user: authUser,
+        issuedAtMs,
+        expiresAtSeconds,
+      })) || crypto.randomUUID() + crypto.randomUUID()
+    const tokenHash = await hashToken(sessionToken)
     await env.DB.prepare(
       `INSERT INTO sessions (id, user_id, token_hash, expires_at, ip, user_agent, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`
@@ -123,8 +146,7 @@ export async function logout(request: Request, env: Env): Promise<Response> {
     .find((part) => part.startsWith(`${getSessionCookieName()}=`))
   const sessionToken = token || (cookieToken ? cookieToken.split('=')[1] : '')
   if (sessionToken) {
-    const tokenHash = await hashToken(sessionToken)
-    invalidateSessionCache(tokenHash)
+    const tokenHash = await invalidateAuthToken(env, sessionToken)
     await env.DB.prepare('UPDATE sessions SET revoked_at = ? WHERE token_hash = ?')
       .bind(new Date().toISOString(), tokenHash)
       .run()
