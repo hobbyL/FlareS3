@@ -60,12 +60,9 @@ export default {
     return api.get('/storage/configs')
   },
 
-  getStorageConfigSecrets(configId, type, options = {}) {
+  getStorageConfigSecrets(configId, type) {
     return api.get(`/storage/configs/${configId}/secrets`, {
-      params: {
-        ...(type ? { type } : {}),
-        ...(options.reveal === false ? { reveal: '0' } : {}),
-      },
+      params: type ? { type } : undefined,
     })
   },
 

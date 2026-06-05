@@ -288,9 +288,21 @@ const defaultModalInitialValue = () => ({
   password: '',
 })
 const modalInitialValue = ref(defaultModalInitialValue())
-const MASKED_CREDENTIAL_VALUE = '******'
+const editingCredentials = ref({
+  access_key_id: '',
+  secret_access_key: '',
+  username: '',
+  password: '',
+})
 
-const isMaskedCredential = (value) => String(value || '') === MASKED_CREDENTIAL_VALUE
+const resetEditingCredentials = () => {
+  editingCredentials.value = {
+    access_key_id: '',
+    secret_access_key: '',
+    username: '',
+    password: '',
+  }
+}
 
 const formatConfigType = (type) => {
   if (type === 'r2') return 'R2'
@@ -401,6 +413,7 @@ const openCreate = () => {
   modalMode.value = 'create'
   editingId.value = ''
   editingConfigType.value = 'r2'
+  resetEditingCredentials()
   modalInitialValue.value = defaultModalInitialValue()
   modalVisible.value = true
 }
@@ -409,30 +422,46 @@ const openEdit = async (row) => {
   modalMode.value = 'edit'
   editingId.value = row.id
   editingConfigType.value = row.configType
-  let credentialDisplay = null
+  let credentials = null
 
   try {
-    credentialDisplay = await api.getStorageConfigSecrets(row.id, row.configType, {
-      reveal: false,
-    })
+    credentials = await api.getStorageConfigSecrets(row.id, row.configType)
   } catch (error) {
     message.error(error.response?.data?.error || t('setup.messages.loadSecretsFailed'))
   }
 
+  resetEditingCredentials()
+
   if (row.configType === 'r2') {
+    const accessKeyId = credentials?.access_key_id || row.access_key_id || ''
+    const secretAccessKey = credentials?.secret_access_key || row.secret_access_key || ''
+    editingCredentials.value = {
+      access_key_id: accessKeyId,
+      secret_access_key: secretAccessKey,
+      username: '',
+      password: '',
+    }
     modalInitialValue.value = {
       type: 'r2',
       name: row.name || '',
       endpoint: row.endpoint || '',
       bucket_name: row.bucket_name || '',
       quota_gb: row.totalSpace ? formatQuotaGb(row.totalSpace) : '10',
-      access_key_id: credentialDisplay?.access_key_id || row.access_key_id || '',
-      secret_access_key: MASKED_CREDENTIAL_VALUE,
+      access_key_id: accessKeyId,
+      secret_access_key: secretAccessKey,
       remote_path: '/',
       username: '',
       password: '',
     }
   } else {
+    const username = credentials?.username || row.username || ''
+    const password = credentials?.password || row.password || ''
+    editingCredentials.value = {
+      access_key_id: '',
+      secret_access_key: '',
+      username,
+      password,
+    }
     modalInitialValue.value = {
       type: row.configType,
       name: row.name || '',
@@ -442,8 +471,8 @@ const openEdit = async (row) => {
       access_key_id: '',
       secret_access_key: '',
       remote_path: row.remote_path || '/',
-      username: credentialDisplay?.username || row.username || '',
-      password: MASKED_CREDENTIAL_VALUE,
+      username,
+      password,
     }
   }
 
@@ -524,10 +553,16 @@ const handleSubmit = async (submittedForm) => {
           quota_bytes: quotaBytes,
         }
 
-        if (submittedForm.access_key_id && !isMaskedCredential(submittedForm.access_key_id)) {
+        if (
+          submittedForm.access_key_id &&
+          submittedForm.access_key_id !== editingCredentials.value.access_key_id
+        ) {
           payload.access_key_id = submittedForm.access_key_id
         }
-        if (submittedForm.secret_access_key && !isMaskedCredential(submittedForm.secret_access_key)) {
+        if (
+          submittedForm.secret_access_key &&
+          submittedForm.secret_access_key !== editingCredentials.value.secret_access_key
+        ) {
           payload.secret_access_key = submittedForm.secret_access_key
         }
 
@@ -558,10 +593,16 @@ const handleSubmit = async (submittedForm) => {
           payload.remote_path = submittedForm.remote_path || '/'
         }
 
-        if (submittedForm.username && !isMaskedCredential(submittedForm.username)) {
+        if (
+          submittedForm.username &&
+          submittedForm.username !== editingCredentials.value.username
+        ) {
           payload.username = submittedForm.username
         }
-        if (submittedForm.password && !isMaskedCredential(submittedForm.password)) {
+        if (
+          submittedForm.password &&
+          submittedForm.password !== editingCredentials.value.password
+        ) {
           payload.password = submittedForm.password
         }
 
