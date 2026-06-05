@@ -15,6 +15,11 @@ import {
 } from '../services/r2'
 import { listUploadConfigOptionsForUser } from '../services/uploadConfigPolicy'
 import { getReservedConfigSpace } from '../services/uploadReservations'
+import {
+  measureRouteStep,
+  withRouteTimingHeaders,
+  type RouteTimingEntry,
+} from '../utils/routeTiming'
 
 const ACTIVE_COMPLETED_STORAGE_USAGE_WHERE = "upload_status = 'completed' AND deleted_at IS NULL"
 
@@ -30,9 +35,12 @@ type R2ConfigInput = {
 export async function listOptions(request: Request, env: Env): Promise<Response> {
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)
+  const timings: RouteTimingEntry[] = []
 
-  const result = await listUploadConfigOptionsForUser(env, user)
-  return jsonResponse(result)
+  const result = await measureRouteStep(timings, 'configOptions', () =>
+    listUploadConfigOptionsForUser(env, user)
+  )
+  return withRouteTimingHeaders(jsonResponse(result), timings)
 }
 
 export async function listConfigs(_request: Request, env: Env): Promise<Response> {

@@ -2,18 +2,88 @@ import type { Env } from '../config/env'
 import { getTotalStorage } from '../config/env'
 import { jsonResponse } from './utils'
 import { formatBytes } from '../utils/format'
-import { listDbR2Configs, listR2ConfigOptions, loadR2ConfigById } from '../services/r2'
+import { listR2ConfigSummaries } from '../services/r2'
 import { listWebDAVConfigs } from '../services/storage/webdav-config'
-import { getReservedConfigSpace } from '../services/uploadReservations'
+import {
+  measureRouteStep,
+  withRouteTimingHeaders,
+  type RouteTimingEntry,
+} from '../utils/routeTiming'
 
 const ACTIVE_COMPLETED_STORAGE_USAGE_WHERE = "upload_status = 'completed' AND deleted_at IS NULL"
 
+function toUsageMap(
+  rows: Array<{ config_id?: unknown; used_space?: unknown }>
+): Map<string, number> {
+  const usage = new Map<string, number>()
+  for (const row of rows) {
+    const configId = String(row.config_id || '').trim()
+    if (!configId) continue
+    const usedSpace = Number(row.used_space || 0)
+    usage.set(configId, Number.isFinite(usedSpace) && usedSpace > 0 ? usedSpace : 0)
+  }
+  return usage
+}
+
+async function listCompletedR2Usage(db: D1Database): Promise<Map<string, number>> {
+  const rows = await db
+    .prepare(
+      `SELECT SUBSTR(rest, 1, INSTR(rest, '/') - 1) AS config_id,
+              COALESCE(SUM(size), 0) AS used_space
+         FROM (
+                SELECT SUBSTR(r2_key, 9) AS rest, size
+                  FROM files
+                 WHERE ${ACTIVE_COMPLETED_STORAGE_USAGE_WHERE}
+                   AND r2_key LIKE 'flares3/%/%'
+              )
+        WHERE INSTR(rest, '/') > 0
+        GROUP BY SUBSTR(rest, 1, INSTR(rest, '/') - 1)`
+    )
+    .all<{ config_id: string; used_space: number }>()
+
+  return toUsageMap(rows.results || [])
+}
+
+async function listReservedConfigUsage(db: D1Database): Promise<Map<string, number>> {
+  const rows = await db
+    .prepare(
+      `SELECT r2_config_id AS config_id,
+              COALESCE(SUM(reserved_bytes), 0) AS used_space
+         FROM upload_reservations
+        WHERE status = 'active'
+        GROUP BY r2_config_id`
+    )
+    .all<{ config_id: string; used_space: number }>()
+
+  return toUsageMap(rows.results || [])
+}
+
+async function getLegacyUsedSpace(db: D1Database): Promise<number> {
+  const legacyUsedSpaceRow = await db
+    .prepare(
+      `SELECT COALESCE(SUM(size), 0) AS usedSpace FROM files WHERE ${ACTIVE_COMPLETED_STORAGE_USAGE_WHERE} AND r2_key NOT LIKE 'flares3/%/%'`
+    )
+    .first('usedSpace')
+  const legacyUsedSpace = Number(legacyUsedSpaceRow || 0)
+  return Number.isFinite(legacyUsedSpace) && legacyUsedSpace > 0 ? legacyUsedSpace : 0
+}
+
+function getMappedUsage(usage: Map<string, number>, configId: string): number {
+  return Number(usage.get(configId) || 0)
+}
+
 export async function listAllConfigs(_request: Request, env: Env): Promise<Response> {
-  const {
-    default_config_id,
-    legacy_files_config_id,
-    options: r2Options,
-  } = await listR2ConfigOptions(env)
+  const timings: RouteTimingEntry[] = []
+  const [r2Result, webdavConfigs, completedUsage, reservedUsage, legacyUsedSpace] =
+    await Promise.all([
+      measureRouteStep(timings, 'r2ConfigRows', () => listR2ConfigSummaries(env)),
+      measureRouteStep(timings, 'webdavConfigRows', () => listWebDAVConfigs(env.DB)),
+      measureRouteStep(timings, 'completedUsageRows', () => listCompletedR2Usage(env.DB)),
+      measureRouteStep(timings, 'reservedUsageRows', () => listReservedConfigUsage(env.DB)),
+      measureRouteStep(timings, 'legacyUsageRow', () => getLegacyUsedSpace(env.DB)),
+    ])
+
+  const { default_config_id, legacy_files_config_id, configs: r2Configs } = r2Result
   const legacyAssignedId = legacy_files_config_id || default_config_id
 
   type UnifiedConfig = {
@@ -35,51 +105,22 @@ export async function listAllConfigs(_request: Request, env: Env): Promise<Respo
   const configs: UnifiedConfig[] = []
 
   // R2 配置
-  const dbR2Configs = await listDbR2Configs(env.DB)
-  const dbR2ConfigById = new Map(dbR2Configs.map((cfg) => [cfg.id, cfg]))
-  const legacyUsedSpaceRow = await env.DB.prepare(
-    `SELECT COALESCE(SUM(size), 0) AS usedSpace FROM files WHERE ${ACTIVE_COMPLETED_STORAGE_USAGE_WHERE} AND r2_key NOT LIKE 'flares3/%/%'`
-  ).first('usedSpace')
-  const legacyUsedSpace = Number(legacyUsedSpaceRow || 0)
-
-  for (const option of r2Options) {
-    let totalSpace = getTotalStorage(env)
-    let endpoint = ''
-    let bucketName = ''
-
-    if (option.source === 'db') {
-      const summary = dbR2ConfigById.get(option.id)
-      if (!summary) continue
-      endpoint = summary.endpoint
-      bucketName = summary.bucketName
-      totalSpace = summary.quotaBytes
-    } else {
-      const loaded = await loadR2ConfigById(env, option.id)
-      if (!loaded) continue
-      endpoint = loaded.config.endpoint
-      bucketName = loaded.config.bucketName
-    }
-
-    const prefix = `flares3/${option.id}/%`
-    const usedSpaceRow = await env.DB.prepare(
-      `SELECT COALESCE(SUM(size), 0) AS usedSpace FROM files WHERE ${ACTIVE_COMPLETED_STORAGE_USAGE_WHERE} AND r2_key LIKE ?`
-    )
-      .bind(prefix)
-      .first('usedSpace')
-    let usedSpace = Number(usedSpaceRow || 0)
-    usedSpace += await getReservedConfigSpace(env.DB, option.id)
-    if (legacyAssignedId && legacyUsedSpace > 0 && option.id === legacyAssignedId) {
+  for (const config of r2Configs) {
+    const totalSpace = config.source === 'legacy' ? getTotalStorage(env) : config.quotaBytes
+    let usedSpace =
+      getMappedUsage(completedUsage, config.id) + getMappedUsage(reservedUsage, config.id)
+    if (legacyAssignedId && legacyUsedSpace > 0 && config.id === legacyAssignedId) {
       usedSpace += legacyUsedSpace
     }
 
     const usagePercent = totalSpace ? (usedSpace / totalSpace) * 100 : 0
     configs.push({
-      id: option.id,
-      name: option.name,
+      id: config.id,
+      name: config.name,
       type: 'r2',
-      source: option.source,
-      endpoint,
-      bucket_name: bucketName,
+      source: config.source,
+      endpoint: config.endpoint,
+      bucket_name: config.bucketName,
       usedSpace,
       totalSpace,
       usedSpaceFormatted: formatBytes(usedSpace),
@@ -88,8 +129,6 @@ export async function listAllConfigs(_request: Request, env: Env): Promise<Respo
     })
   }
 
-  // WebDAV / Koofr 配置
-  const webdavConfigs = await listWebDAVConfigs(env.DB)
   for (const cfg of webdavConfigs) {
     const usagePercent = cfg.quotaBytes ? 0 : 0
     configs.push({
@@ -106,8 +145,12 @@ export async function listAllConfigs(_request: Request, env: Env): Promise<Respo
     })
   }
 
-  return jsonResponse({
-    default_config_id,
-    configs,
-  })
+  return withRouteTimingHeaders(
+    jsonResponse({
+      default_config_id,
+      legacy_files_config_id,
+      configs,
+    }),
+    timings
+  )
 }

@@ -4,6 +4,11 @@ import { createProvider } from '../services/storage/factory'
 import { StorageError, type StorageProvider } from '../services/storage/types'
 import { logAudit } from '../services/audit'
 import { getClientIp } from '../middleware/rateLimit'
+import {
+  measureRouteStep,
+  withRouteTimingHeaders,
+  type RouteTimingEntry,
+} from '../utils/routeTiming'
 
 function normalizePrefix(value: string | null): string {
   const prefix = String(value ?? '').trim()
@@ -99,6 +104,7 @@ async function ensureMountedObjectExists(provider: StorageProvider, key: string)
 }
 
 export async function listMountedObjects(request: Request, env: Env): Promise<Response> {
+  const timings: RouteTimingEntry[] = []
   const url = new URL(request.url)
   const configId = String(url.searchParams.get('config_id') || '').trim()
   if (!configId) {
@@ -109,34 +115,44 @@ export async function listMountedObjects(request: Request, env: Env): Promise<Re
   const continuationToken = normalizeToken(url.searchParams.get('continuation_token'))
   const limit = clampNumber(url.searchParams.get('limit'), 1, 500, 100)
 
-  const provider = await createProvider(env, configId)
+  const provider = await measureRouteStep(timings, 'providerLoad', () =>
+    createProvider(env, configId)
+  )
   if (!provider) {
-    return jsonResponse({ error: '配置不存在或不可用' }, 404)
+    return withRouteTimingHeaders(jsonResponse({ error: '配置不存在或不可用' }, 404), timings)
   }
 
   try {
-    const result = await provider.list({
-      prefix,
-      delimiter: '/',
-      continuationToken: continuationToken || undefined,
-      maxKeys: limit,
-    })
+    const result = await measureRouteStep(timings, 'providerList', () =>
+      provider.list({
+        prefix,
+        delimiter: '/',
+        continuationToken: continuationToken || undefined,
+        maxKeys: limit,
+      })
+    )
 
-    return jsonResponse({
-      config_id: configId,
-      prefix,
-      delimiter: '/',
-      limit,
-      continuation_token: continuationToken,
-      next_continuation_token: result.next_continuation_token || null,
-      is_truncated: result.is_truncated,
-      key_count: result.key_count,
-      folders: result.common_prefixes,
-      objects: result.contents,
-    })
+    return withRouteTimingHeaders(
+      jsonResponse({
+        config_id: configId,
+        prefix,
+        delimiter: '/',
+        limit,
+        continuation_token: continuationToken,
+        next_continuation_token: result.next_continuation_token || null,
+        is_truncated: result.is_truncated,
+        key_count: result.key_count,
+        folders: result.common_prefixes,
+        objects: result.contents,
+      }),
+      timings
+    )
   } catch (error) {
     const formatted = formatStorageError(error)
-    return jsonResponse({ error: `读取对象列表失败（${formatted.message}）` }, formatted.status)
+    return withRouteTimingHeaders(
+      jsonResponse({ error: `读取对象列表失败（${formatted.message}）` }, formatted.status),
+      timings
+    )
   }
 }
 

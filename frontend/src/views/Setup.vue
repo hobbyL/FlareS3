@@ -341,13 +341,17 @@ const getUsageColor = (percent) => {
 const refresh = async () => {
   loading.value = true
   try {
-    const [optionsResult, storageResult] = await Promise.all([
-      api.getR2Options(),
-      api.getStorageConfigs(),
-    ])
+    const storageResult = await api.getStorageConfigs()
+    const configs = storageResult.configs || []
 
-    r2Options.value = optionsResult
-    storageConfigs.value = storageResult.configs || []
+    r2Options.value = {
+      default_config_id: storageResult.default_config_id || null,
+      legacy_files_config_id: storageResult.legacy_files_config_id || null,
+      options: configs
+        .filter((row) => row.type === 'r2')
+        .map((row) => ({ id: row.id, name: row.name, source: row.source })),
+    }
+    storageConfigs.value = configs
   } catch (error) {
     message.error(error.response?.data?.error || t('setup.messages.loadFailed'))
   } finally {
