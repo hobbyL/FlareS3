@@ -1,7 +1,7 @@
 import type { Env } from '../config/env'
 import { getTotalStorage } from '../config/env'
 import { jsonResponse } from './utils'
-import { validateBase64KeyLength } from '../services/crypto'
+import { decryptString, validateBase64KeyLength } from '../services/crypto'
 import { formatBytes } from '../utils/format'
 import { listR2ConfigSummaries, loadR2ConfigById } from '../services/r2'
 import { listWebDAVConfigs, loadWebDAVConfigById } from '../services/storage/webdav-config'
@@ -12,6 +12,7 @@ import {
 } from '../utils/routeTiming'
 
 const ACTIVE_COMPLETED_STORAGE_USAGE_WHERE = "upload_status = 'completed' AND deleted_at IS NULL"
+const MASKED_CREDENTIAL_VALUE = '******'
 
 function toUsageMap(
   rows: Array<{ config_id?: unknown; used_space?: unknown }>
@@ -75,6 +76,62 @@ function getMappedUsage(usage: Map<string, number>, configId: string): number {
 
 function secretJsonResponse(data: unknown, status = 200): Response {
   return jsonResponse(data, status, { 'Cache-Control': 'no-store' })
+}
+
+async function loadR2CredentialDisplay(
+  env: Env,
+  id: string,
+  masterKey: string
+): Promise<Record<string, unknown> | null> {
+  const row = await env.DB.prepare(
+    'SELECT access_key_id_enc FROM r2_configs WHERE id = ? LIMIT 1'
+  )
+    .bind(id)
+    .first<{ access_key_id_enc: string }>()
+
+  if (row?.access_key_id_enc) {
+    return {
+      type: 'r2',
+      access_key_id: await decryptString(String(row.access_key_id_enc), masterKey),
+      secret_access_key: MASKED_CREDENTIAL_VALUE,
+      secret_access_key_masked: true,
+    }
+  }
+
+  const loaded = await loadR2ConfigById(env, id)
+  if (!loaded) return null
+
+  return {
+    type: 'r2',
+    access_key_id: loaded.config.accessKeyId,
+    secret_access_key: MASKED_CREDENTIAL_VALUE,
+    secret_access_key_masked: true,
+  }
+}
+
+async function loadWebDAVCredentialDisplay(
+  env: Env,
+  id: string,
+  masterKey: string,
+  requestedType: string
+): Promise<Record<string, unknown> | null> {
+  const row = await env.DB.prepare(
+    'SELECT type, username_enc FROM webdav_configs WHERE id = ? LIMIT 1'
+  )
+    .bind(id)
+    .first<{ type: string; username_enc: string }>()
+
+  if (!row) return null
+
+  const configType = String(row.type) === 'koofr' ? 'koofr' : 'webdav'
+  if (requestedType && configType !== requestedType) return null
+
+  return {
+    type: configType,
+    username: await decryptString(String(row.username_enc), masterKey),
+    password: MASKED_CREDENTIAL_VALUE,
+    password_masked: true,
+  }
 }
 
 export async function listAllConfigs(_request: Request, env: Env): Promise<Response> {
@@ -187,8 +244,30 @@ export async function getConfigSecrets(
   if (requestedType && !['r2', 'webdav', 'koofr'].includes(requestedType)) {
     return secretJsonResponse({ error: 'type 必须为 r2、webdav 或 koofr' }, 400)
   }
+  const displayOnly =
+    url.searchParams.get('mode') === 'display' ||
+    ['0', 'false'].includes(String(url.searchParams.get('reveal') || '').toLowerCase())
 
   try {
+    if (displayOnly) {
+      if (!requestedType || requestedType === 'r2') {
+        const r2Display = await loadR2CredentialDisplay(env, id, masterKey)
+        if (r2Display) return secretJsonResponse(r2Display)
+      }
+
+      if (!requestedType || requestedType === 'webdav' || requestedType === 'koofr') {
+        const webdavDisplay = await loadWebDAVCredentialDisplay(
+          env,
+          id,
+          masterKey,
+          requestedType
+        )
+        if (webdavDisplay) return secretJsonResponse(webdavDisplay)
+      }
+
+      return secretJsonResponse({ error: '配置不存在或不可用' }, 404)
+    }
+
     if (!requestedType || requestedType === 'r2') {
       const r2Config = await loadR2ConfigById(env, id)
       if (r2Config) {

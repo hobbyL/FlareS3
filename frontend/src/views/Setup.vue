@@ -212,7 +212,6 @@
         :mode="modalMode"
         :submitting="modalSubmitting"
         :initial-value="modalInitialValue"
-        :load-secrets="loadEditingSecrets"
         @submit="handleSubmit"
       />
 
@@ -289,6 +288,9 @@ const defaultModalInitialValue = () => ({
   password: '',
 })
 const modalInitialValue = ref(defaultModalInitialValue())
+const MASKED_CREDENTIAL_VALUE = '******'
+
+const isMaskedCredential = (value) => String(value || '') === MASKED_CREDENTIAL_VALUE
 
 const formatConfigType = (type) => {
   if (type === 'r2') return 'R2'
@@ -403,10 +405,19 @@ const openCreate = () => {
   modalVisible.value = true
 }
 
-const openEdit = (row) => {
+const openEdit = async (row) => {
   modalMode.value = 'edit'
   editingId.value = row.id
   editingConfigType.value = row.configType
+  let credentialDisplay = null
+
+  try {
+    credentialDisplay = await api.getStorageConfigSecrets(row.id, row.configType, {
+      reveal: false,
+    })
+  } catch (error) {
+    message.error(error.response?.data?.error || t('setup.messages.loadSecretsFailed'))
+  }
 
   if (row.configType === 'r2') {
     modalInitialValue.value = {
@@ -415,8 +426,8 @@ const openEdit = (row) => {
       endpoint: row.endpoint || '',
       bucket_name: row.bucket_name || '',
       quota_gb: row.totalSpace ? formatQuotaGb(row.totalSpace) : '10',
-      access_key_id: row.access_key_id || '',
-      secret_access_key: row.secret_access_key || '',
+      access_key_id: credentialDisplay?.access_key_id || row.access_key_id || '',
+      secret_access_key: MASKED_CREDENTIAL_VALUE,
       remote_path: '/',
       username: '',
       password: '',
@@ -431,23 +442,12 @@ const openEdit = (row) => {
       access_key_id: '',
       secret_access_key: '',
       remote_path: row.remote_path || '/',
-      username: row.username || '',
-      password: row.password || '',
+      username: credentialDisplay?.username || row.username || '',
+      password: MASKED_CREDENTIAL_VALUE,
     }
   }
 
   modalVisible.value = true
-}
-
-const loadEditingSecrets = async (type) => {
-  if (modalMode.value !== 'edit' || !editingId.value) return null
-
-  try {
-    return await api.getStorageConfigSecrets(editingId.value, type || editingConfigType.value)
-  } catch (error) {
-    message.error(error.response?.data?.error || t('setup.messages.loadSecretsFailed'))
-    throw error
-  }
 }
 
 const formatQuotaGb = (bytesValue) => {
@@ -524,9 +524,12 @@ const handleSubmit = async (submittedForm) => {
           quota_bytes: quotaBytes,
         }
 
-        if (submittedForm.access_key_id) payload.access_key_id = submittedForm.access_key_id
-        if (submittedForm.secret_access_key)
+        if (submittedForm.access_key_id && !isMaskedCredential(submittedForm.access_key_id)) {
+          payload.access_key_id = submittedForm.access_key_id
+        }
+        if (submittedForm.secret_access_key && !isMaskedCredential(submittedForm.secret_access_key)) {
           payload.secret_access_key = submittedForm.secret_access_key
+        }
 
         await api.updateR2Config(editingId.value, payload)
         message.success(t('setup.messages.updateSuccess'))
@@ -555,8 +558,12 @@ const handleSubmit = async (submittedForm) => {
           payload.remote_path = submittedForm.remote_path || '/'
         }
 
-        if (submittedForm.username) payload.username = submittedForm.username
-        if (submittedForm.password) payload.password = submittedForm.password
+        if (submittedForm.username && !isMaskedCredential(submittedForm.username)) {
+          payload.username = submittedForm.username
+        }
+        if (submittedForm.password && !isMaskedCredential(submittedForm.password)) {
+          payload.password = submittedForm.password
+        }
 
         await api.updateWebDAVConfig(editingId.value, payload)
         message.success(t('setup.messages.updateSuccess'))

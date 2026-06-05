@@ -31,17 +31,16 @@
           />
         </FormItem>
 
-        <FormItem :label="accessKeyIdLabel">
+        <FormItem :label="t('setup.labels.accessKeyId')">
           <Input v-model="form.access_key_id" :placeholder="t('setup.placeholders.accessKeyId')" />
         </FormItem>
 
-        <FormItem :label="secretAccessKeyLabel">
+        <FormItem :label="t('setup.labels.secretAccessKey')">
           <Input
             v-model="form.secret_access_key"
             type="password"
             password-toggle
             :placeholder="t('setup.placeholders.secretAccessKey')"
-            @password-toggle="loadSavedSecretsIfNeeded"
           />
         </FormItem>
 
@@ -73,17 +72,16 @@
           />
         </FormItem>
 
-        <FormItem :label="usernameLabel">
+        <FormItem :label="t('setup.labels.username')">
           <Input v-model="form.username" :placeholder="usernamePlaceholder" />
         </FormItem>
 
-        <FormItem :label="passwordLabel">
+        <FormItem :label="t('setup.labels.password')">
           <Input
             v-model="form.password"
             type="password"
             password-toggle
             :placeholder="t('setup.placeholders.webdavPassword')"
-            @password-toggle="loadSavedSecretsIfNeeded"
           />
         </FormItem>
 
@@ -111,17 +109,16 @@
           />
         </FormItem>
 
-        <FormItem :label="usernameLabel">
+        <FormItem :label="t('setup.labels.username')">
           <Input v-model="form.username" :placeholder="usernamePlaceholder" />
         </FormItem>
 
-        <FormItem :label="passwordLabel">
+        <FormItem :label="t('setup.labels.password')">
           <Input
             v-model="form.password"
             type="password"
             password-toggle
             :placeholder="t('setup.placeholders.webdavPassword')"
-            @password-toggle="loadSavedSecretsIfNeeded"
           />
         </FormItem>
 
@@ -137,7 +134,7 @@
       <Button type="default" @click="showProxy = false">
         {{ t('common.cancel') }}
       </Button>
-      <Button type="primary" :loading="submitting || secretsLoading" @click="emitSubmit">
+      <Button type="primary" :loading="submitting" @click="emitSubmit">
         {{ t('setup.modal.save') }}
       </Button>
     </template>
@@ -145,7 +142,7 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, reactive, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Modal from '../ui/modal/Modal.vue'
 import FormItem from '../ui/form-item/FormItem.vue'
@@ -159,7 +156,6 @@ const props = defineProps({
   mode: { type: String, default: 'create' },
   submitting: Boolean,
   initialValue: { type: Object, default: () => ({}) },
-  loadSecrets: { type: Function, default: null },
 })
 
 const emit = defineEmits(['update:show', 'submit'])
@@ -178,26 +174,6 @@ const modalTitle = computed(() => {
   const modeKey = normalizedMode.value === 'create' ? 'createTitle' : 'editTitle'
   return t(`setup.modal.${modeKey}`)
 })
-
-const accessKeyIdLabel = computed(() =>
-  normalizedMode.value === 'edit'
-    ? t('setup.labels.accessKeyIdOptional')
-    : t('setup.labels.accessKeyId')
-)
-
-const secretAccessKeyLabel = computed(() =>
-  normalizedMode.value === 'edit'
-    ? t('setup.labels.secretAccessKeyOptional')
-    : t('setup.labels.secretAccessKey')
-)
-
-const usernameLabel = computed(() =>
-  normalizedMode.value === 'edit' ? t('setup.labels.usernameOptional') : t('setup.labels.username')
-)
-
-const passwordLabel = computed(() =>
-  normalizedMode.value === 'edit' ? t('setup.labels.passwordOptional') : t('setup.labels.password')
-)
 
 const KOOFR_ENDPOINT = 'https://app.koofr.net/dav/Koofr'
 
@@ -231,12 +207,10 @@ const defaultFormValue = () => ({
 })
 
 const form = reactive(defaultFormValue())
-const secretsLoading = ref(false)
 
 const resetForm = () => {
   const next = { ...defaultFormValue(), ...(props.initialValue || {}) }
   Object.assign(form, next)
-  secretsLoading.value = false
 }
 
 watch(
@@ -272,46 +246,6 @@ watch(
 
 const emitSubmit = () => {
   emit('submit', { ...form })
-}
-
-const applyLoadedSecrets = (secrets) => {
-  if (!secrets || secrets.type !== form.type) return
-
-  if (secrets.type === 'r2') {
-    if (!form.access_key_id) form.access_key_id = secrets.access_key_id || ''
-    if (!form.secret_access_key) form.secret_access_key = secrets.secret_access_key || ''
-    return
-  }
-
-  if (secrets.type === 'webdav' || secrets.type === 'koofr') {
-    if (!form.username) form.username = secrets.username || ''
-    if (!form.password) form.password = secrets.password || ''
-  }
-}
-
-const needsSavedSecrets = () => {
-  if (form.type === 'r2') {
-    return !form.access_key_id || !form.secret_access_key
-  }
-  if (form.type === 'webdav' || form.type === 'koofr') {
-    return !form.username || !form.password
-  }
-  return false
-}
-
-const loadSavedSecretsIfNeeded = async () => {
-  if (normalizedMode.value !== 'edit' || typeof props.loadSecrets !== 'function') return
-  if (secretsLoading.value || !needsSavedSecrets()) return
-
-  secretsLoading.value = true
-  try {
-    const secrets = await props.loadSecrets(form.type)
-    applyLoadedSecrets(secrets)
-  } catch {
-    // Error display is handled by the parent view.
-  } finally {
-    secretsLoading.value = false
-  }
 }
 </script>
 
