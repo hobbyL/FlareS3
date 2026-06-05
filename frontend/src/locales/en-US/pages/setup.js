@@ -109,6 +109,7 @@ export default {
     },
     messages: {
       loadFailed: 'Failed to load configs',
+      loadSecretsFailed: 'Failed to load config secrets',
       defaultUpdated: 'Default config updated',
       setDefaultFailed: 'Failed to set default config',
       testSuccess: 'Connection test succeeded',

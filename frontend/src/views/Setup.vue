@@ -212,6 +212,7 @@
         :mode="modalMode"
         :submitting="modalSubmitting"
         :initial-value="modalInitialValue"
+        :load-secrets="loadEditingSecrets"
         @submit="handleSubmit"
       />
 
@@ -436,6 +437,17 @@ const openEdit = (row) => {
   }
 
   modalVisible.value = true
+}
+
+const loadEditingSecrets = async (type) => {
+  if (modalMode.value !== 'edit' || !editingId.value) return null
+
+  try {
+    return await api.getStorageConfigSecrets(editingId.value, type || editingConfigType.value)
+  } catch (error) {
+    message.error(error.response?.data?.error || t('setup.messages.loadSecretsFailed'))
+    throw error
+  }
 }
 
 const formatQuotaGb = (bytesValue) => {

@@ -106,6 +106,7 @@ export default {
     },
     messages: {
       loadFailed: '加载配置失败',
+      loadSecretsFailed: '加载配置密钥失败',
       defaultUpdated: '默认配置已更新',
       setDefaultFailed: '设置默认配置失败',
       testSuccess: '连接测试成功',

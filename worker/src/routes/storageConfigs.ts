@@ -1,9 +1,10 @@
 import type { Env } from '../config/env'
 import { getTotalStorage } from '../config/env'
 import { jsonResponse } from './utils'
+import { validateBase64KeyLength } from '../services/crypto'
 import { formatBytes } from '../utils/format'
-import { listR2ConfigSummaries } from '../services/r2'
-import { listWebDAVConfigs } from '../services/storage/webdav-config'
+import { listR2ConfigSummaries, loadR2ConfigById } from '../services/r2'
+import { listWebDAVConfigs, loadWebDAVConfigById } from '../services/storage/webdav-config'
 import {
   measureRouteStep,
   withRouteTimingHeaders,
@@ -70,6 +71,10 @@ async function getLegacyUsedSpace(db: D1Database): Promise<number> {
 
 function getMappedUsage(usage: Map<string, number>, configId: string): number {
   return Number(usage.get(configId) || 0)
+}
+
+function secretJsonResponse(data: unknown, status = 200): Response {
+  return jsonResponse(data, status, { 'Cache-Control': 'no-store' })
 }
 
 export async function listAllConfigs(_request: Request, env: Env): Promise<Response> {
@@ -153,4 +158,61 @@ export async function listAllConfigs(_request: Request, env: Env): Promise<Respo
     }),
     timings
   )
+}
+
+export async function getConfigSecrets(
+  request: Request,
+  env: Env,
+  id: string
+): Promise<Response> {
+  if (!id) return secretJsonResponse({ error: '配置 ID 不能为空' }, 400)
+
+  const masterKey = String(env.R2_MASTER_KEY || '').trim()
+  if (!masterKey) {
+    return secretJsonResponse({ error: '缺少 R2_MASTER_KEY' }, 500)
+  }
+
+  const keyCheck = validateBase64KeyLength(masterKey, 32)
+  if (!keyCheck.valid) {
+    if (keyCheck.reason === 'invalid_base64') {
+      return secretJsonResponse({ error: 'R2_MASTER_KEY 无效：不是合法的 base64 字符串' }, 500)
+    }
+    const suffix =
+      keyCheck.reason === 'invalid_length' ? `（当前解码为 ${keyCheck.byteLength} 字节）` : ''
+    return secretJsonResponse({ error: `R2_MASTER_KEY 无效：需要 32 字节 base64${suffix}` }, 500)
+  }
+
+  const url = new URL(request.url)
+  const requestedType = String(url.searchParams.get('type') || '').trim()
+  if (requestedType && !['r2', 'webdav', 'koofr'].includes(requestedType)) {
+    return secretJsonResponse({ error: 'type 必须为 r2、webdav 或 koofr' }, 400)
+  }
+
+  try {
+    if (!requestedType || requestedType === 'r2') {
+      const r2Config = await loadR2ConfigById(env, id)
+      if (r2Config) {
+        return secretJsonResponse({
+          type: 'r2',
+          access_key_id: r2Config.config.accessKeyId,
+          secret_access_key: r2Config.config.secretAccessKey,
+        })
+      }
+    }
+
+    if (!requestedType || requestedType === 'webdav' || requestedType === 'koofr') {
+      const webdavConfig = await loadWebDAVConfigById(env, id)
+      if (webdavConfig && (!requestedType || webdavConfig.type === requestedType)) {
+        return secretJsonResponse({
+          type: webdavConfig.type,
+          username: webdavConfig.config.username,
+          password: webdavConfig.config.password,
+        })
+      }
+    }
+
+    return secretJsonResponse({ error: '配置不存在或不可用' }, 404)
+  } catch {
+    return secretJsonResponse({ error: '读取配置密钥失败' }, 500)
+  }
 }

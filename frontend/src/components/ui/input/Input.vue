@@ -17,7 +17,7 @@ const props = defineProps({
   passwordToggle: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['update:modelValue', 'keyup'])
+const emit = defineEmits(['update:modelValue', 'keyup', 'password-toggle'])
 
 const themeStore = useThemeStore()
 const currentComponent = computed(() => {
@@ -31,5 +31,6 @@ const currentComponent = computed(() => {
     v-bind="props"
     @update:model-value="emit('update:modelValue', $event)"
     @keyup="emit('keyup', $event)"
+    @password-toggle="emit('password-toggle', $event)"
   />
 </template>

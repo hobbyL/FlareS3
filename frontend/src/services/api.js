@@ -60,6 +60,12 @@ export default {
     return api.get('/storage/configs')
   },
 
+  getStorageConfigSecrets(configId, type) {
+    return api.get(`/storage/configs/${configId}/secrets`, {
+      params: type ? { type } : undefined,
+    })
+  },
+
   // R2 配置（多配置）
   getR2Options() {
     return api.get('/r2/options')

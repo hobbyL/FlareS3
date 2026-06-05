@@ -18,7 +18,7 @@ const props = defineProps({
   passwordToggle: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['update:modelValue', 'keyup'])
+const emit = defineEmits(['update:modelValue', 'keyup', 'password-toggle'])
 
 const inputId = computed(() => `input-${Math.random().toString(36).substr(2, 9)}`)
 
@@ -31,6 +31,7 @@ const effectiveType = computed(() => {
 })
 
 const togglePassword = () => {
+  emit('password-toggle', { visible: !passwordVisible.value })
   passwordVisible.value = !passwordVisible.value
 }
 
