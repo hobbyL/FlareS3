@@ -8,11 +8,6 @@ const vendorChunkGroups = [
     prefixes: ['@vue/'],
   },
   {
-    name: 'vendor-radix',
-    packages: ['radix-vue', '@floating-ui/dom', '@floating-ui/core'],
-    prefixes: ['@vueuse/'],
-  },
-  {
     name: 'vendor-icons',
     packages: ['lucide-vue-next'],
   },
@@ -46,7 +41,7 @@ const findVendorChunkName = (packageName) => {
     if (group.packages.includes(packageName)) return group.name
     if (group.prefixes?.some((prefix) => packageName.startsWith(prefix))) return group.name
   }
-  return 'vendor'
+  return undefined
 }
 
 export default defineConfig({
