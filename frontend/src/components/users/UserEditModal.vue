@@ -79,7 +79,11 @@ const handleSubmit = () => {
     </FormItem>
 
     <FormItem :label="t('users.form.quota')">
-      <Input v-model="form.quota_gb" type="number" :placeholder="t('users.form.quotaPlaceholder')" />
+      <Input
+        v-model="form.quota_gb"
+        type="number"
+        :placeholder="t('users.form.quotaPlaceholder')"
+      />
     </FormItem>
 
     <template #footer>
