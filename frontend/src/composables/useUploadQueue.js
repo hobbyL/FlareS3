@@ -154,9 +154,8 @@ export function useUploadQueue({ runTask }) {
   const removeItem = (itemId) => {
     items.value = items.value.filter((item) => item.id !== itemId)
     if (latestSuccessItem.value?.id === itemId) {
-      latestSuccessItem.value = [...items.value]
-        .reverse()
-        .find((item) => item.status === 'success' && item.result) || null
+      latestSuccessItem.value =
+        [...items.value].reverse().find((item) => item.status === 'success' && item.result) || null
     }
   }
 
@@ -166,9 +165,8 @@ export function useUploadQueue({ runTask }) {
     )
     items.value = items.value.filter((item) => !successIds.has(item.id))
     if (latestSuccessItem.value && successIds.has(latestSuccessItem.value.id)) {
-      latestSuccessItem.value = [...items.value]
-        .reverse()
-        .find((item) => item.status === 'success' && item.result) || null
+      latestSuccessItem.value =
+        [...items.value].reverse().find((item) => item.status === 'success' && item.result) || null
     }
   }
 
