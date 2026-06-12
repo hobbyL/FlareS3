@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "flares3-monorepo",
-  "compatibility_date": "2026-05-14",
+  "compatibility_date": "2026-06-11",
   "observability": {
     "enabled": true
   },
