@@ -1,12 +1,6 @@
 import type { Env } from '../config/env'
 import type { AuthUser } from '../middleware/authSession'
-import {
-  calcPresignedDownloadUrlTtlSeconds,
-  getUser,
-  invalidJsonBodyResponse,
-  jsonResponse,
-  parseJson,
-} from './utils'
+import { getUser, invalidJsonBodyResponse, jsonResponse, parseJson } from './utils'
 import { hashPassword, verifyPassword } from '../services/password'
 import {
   clearSharePasswordFailedAttempts,
@@ -14,14 +8,6 @@ import {
   isSharePasswordBlocked,
   recordSharePasswordFailedAttempt,
 } from '../middleware/rateLimit'
-import {
-  extractR2ConfigIdFromKey,
-  generateDownloadUrl,
-  resolveR2ConfigForKey,
-  sanitizeContentDispositionFilename,
-} from '../services/r2'
-import { createProvider } from '../services/storage/factory'
-import { buildPage, escapeHtml, htmlResponse } from './sharePage'
 import { generateRandomCode } from '../utils/random'
 import { SHARE_SHORT_CODE_LENGTH } from '../utils/codePolicy'
 import {
@@ -32,10 +18,13 @@ import {
   consumeFileShareViewIfAllowed,
   SHARE_VIEW_LIMIT_EXHAUSTED_MESSAGE,
 } from '../services/shareViewGuard'
+import { buildSharedDownloadResponse } from '../services/fileShareDownload'
+import { formatDateTimeLocal } from '../services/shareFormatting'
 import {
-  MAX_UPSTREAM_ERROR_TEXT_BYTES,
-  readBoundedResponseText,
-} from '../services/upstreamResponsePolicy'
+  renderFileConfirmPage,
+  renderFileMessagePage,
+  renderFilePasswordForm,
+} from './fileSharePages'
 
 type LoadFileAuthResult =
   | { response: Response }
@@ -398,21 +387,6 @@ type ResolveFileShareRecordResult =
       }
     }
 
-function formatDateTimeLocal(isoString: string | null): string {
-  if (!isoString) return ''
-  const date = new Date(isoString)
-  const time = date.getTime()
-  if (Number.isNaN(time)) return ''
-
-  const pad = (n: number) => String(n).padStart(2, '0')
-  const y = date.getFullYear()
-  const m = pad(date.getMonth() + 1)
-  const d = pad(date.getDate())
-  const hh = pad(date.getHours())
-  const mm = pad(date.getMinutes())
-  return `${y}-${m}-${d} ${hh}:${mm}`
-}
-
 async function resolveFileShareRecord(
   env: Env,
   code: string
@@ -488,191 +462,6 @@ async function resolveFileShareRecord(
       config_id: row.config_id ? String(row.config_id) : null,
     },
   }
-}
-
-function renderFileMessagePage(title: string, message: string, status = 200): Response {
-  const html = buildPage({
-    title,
-    body: `
-<div class="header">
-  <h1 class="title">${escapeHtml(title)}</h1>
-  <div class="meta"></div>
-</div>
-<div class="body">
-  <p class="muted">${escapeHtml(message)}</p>
-</div>`,
-  })
-
-  return htmlResponse(html, status)
-}
-
-function renderFilePasswordForm({
-  title,
-  meta,
-  error,
-}: {
-  title: string
-  meta: string
-  error?: string
-}): Response {
-  const errorHtml = error
-    ? `<div class="alert alert-error" role="alert">
-  <div class="alert-title">验证失败</div>
-  <p class="alert-message">${escapeHtml(error)}</p>
-</div>`
-    : ''
-  const html = buildPage({
-    title,
-    body: `
-<div class="header">
-  <h1 class="title">${escapeHtml(title)}</h1>
-  <div class="meta">${escapeHtml(meta)}</div>
-</div>
-<div class="body">
-  <div class="centered">
-    <p class="muted">该文件需要访问口令。</p>
-    ${errorHtml}
-    <form method="post">
-      <label for="password">访问口令</label>
-      <div class="input-group">
-        <input
-          id="password"
-          name="password"
-          type="password"
-          autocomplete="current-password"
-          placeholder="请输入访问口令"
-          required
-          autofocus
-        />
-        <button
-          type="button"
-          class="toggle-btn"
-          data-toggle-password
-          data-target="password"
-          aria-pressed="false"
-        >
-          显示
-        </button>
-      </div>
-      <p class="hint">口令区分大小写；输入后按回车即可。</p>
-      <button type="submit">下载文件</button>
-    </form>
-  </div>
-</div>`,
-  })
-
-  return htmlResponse(html, 200)
-}
-
-function renderFileConfirmPage({ title, meta }: { title: string; meta: string }): Response {
-  const html = buildPage({
-    title,
-    body: `
-<div class="header">
-  <h1 class="title">${escapeHtml(title)}</h1>
-  <div class="meta">${escapeHtml(meta)}</div>
-</div>
-<div class="body">
-  <div class="centered">
-    <p class="muted">点击下方按钮开始下载文件。</p>
-    <form method="post">
-      <button type="submit">下载文件</button>
-    </form>
-  </div>
-</div>`,
-  })
-
-  return htmlResponse(html, 200)
-}
-
-type SharedDownloadResult =
-  | { ok: true; response: Response }
-  | { ok: false; error: { status: number; message: string } }
-
-async function buildSanitizedSharedDownloadResponse(
-  upstream: Response,
-  filename: string
-): Promise<SharedDownloadResult> {
-  if (!upstream.ok) {
-    const text = await readBoundedResponseText(
-      upstream,
-      MAX_UPSTREAM_ERROR_TEXT_BYTES,
-      '共享文件下载错误响应',
-      { truncate: true }
-    ).catch(() => '')
-    return {
-      ok: false,
-      error: { status: upstream.status || 502, message: text || '文件下载失败，请稍后重试' },
-    }
-  }
-
-  const headers = new Headers()
-  headers.set('Cache-Control', 'no-store')
-  headers.set('X-Content-Type-Options', 'nosniff')
-
-  const contentType = upstream.headers.get('Content-Type')
-  if (contentType) headers.set('Content-Type', contentType)
-
-  const safeFilename = sanitizeContentDispositionFilename(filename)
-  headers.set('Content-Disposition', `attachment; filename="${safeFilename}"`)
-
-  const contentLength = upstream.headers.get('Content-Length')
-  if (contentLength && /^\d+$/.test(contentLength)) headers.set('Content-Length', contentLength)
-
-  return {
-    ok: true,
-    response: new Response(upstream.body, {
-      status: upstream.status,
-      headers,
-    }),
-  }
-}
-
-async function buildSharedDownloadResponse(
-  env: Env,
-  file: { r2_key: string; filename: string; expires_at: string; config_id?: string | null }
-): Promise<SharedDownloadResult> {
-  const explicitProviderConfigId = String(file.config_id || '').trim()
-  if (explicitProviderConfigId && !extractR2ConfigIdFromKey(file.r2_key)) {
-    const provider = await createProvider(env, explicitProviderConfigId)
-    if (!provider) {
-      return { ok: false, error: { status: 503, message: '存储配置未找到' } }
-    }
-
-    try {
-      const result = await provider.download(file.r2_key, file.filename, 3600)
-      if (result.kind === 'redirect') {
-        const upstream = await fetch(result.url)
-        return buildSanitizedSharedDownloadResponse(upstream, file.filename)
-      }
-      return { ok: true, response: result.response }
-    } catch {
-      return { ok: false, error: { status: 502, message: '文件下载失败，请稍后重试' } }
-    }
-  }
-
-  const loaded = await resolveR2ConfigForKey(env, file.r2_key)
-  if (!loaded) {
-    return { ok: false, error: { status: 503, message: 'R2 未配置' } }
-  }
-
-  const expiresAt = new Date(file.expires_at)
-  const expiresAtMs = expiresAt.getTime()
-  if (Number.isNaN(expiresAtMs)) {
-    return { ok: false, error: { status: 500, message: '文件过期时间无效' } }
-  }
-
-  const ttl = calcPresignedDownloadUrlTtlSeconds(expiresAt)
-  const url = await generateDownloadUrl(loaded.config, file.r2_key, file.filename, ttl)
-
-  let upstream: Response
-  try {
-    upstream = await fetch(url)
-  } catch {
-    return { ok: false, error: { status: 502, message: '文件下载失败，请稍后重试' } }
-  }
-
-  return buildSanitizedSharedDownloadResponse(upstream, file.filename)
 }
 
 export async function viewFileShare(request: Request, env: Env, code: string): Promise<Response> {
