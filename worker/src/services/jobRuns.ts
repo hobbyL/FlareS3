@@ -127,7 +127,8 @@ export async function listJobRuns(
   const offset = (page - 1) * limit
 
   const total = Number(
-    (await db.prepare('SELECT COUNT(*) AS total FROM job_runs').first<{ total: number }>())?.total || 0
+    (await db.prepare('SELECT COUNT(*) AS total FROM job_runs').first<{ total: number }>())
+      ?.total || 0
   )
 
   const rows = await db
