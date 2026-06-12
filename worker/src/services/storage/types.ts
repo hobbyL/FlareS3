@@ -70,6 +70,11 @@ export interface StorageProvider {
   checkExists(key: string): Promise<boolean>
   getSize(key: string): Promise<number | null>
   testConnection(): Promise<void>
-  upload(key: string, body: ArrayBuffer, contentType: string, size: number): Promise<StorageUploadResult>
+  upload(
+    key: string,
+    body: ArrayBuffer,
+    contentType: string,
+    size: number
+  ): Promise<StorageUploadResult>
   createFolder(key: string): Promise<void>
 }
