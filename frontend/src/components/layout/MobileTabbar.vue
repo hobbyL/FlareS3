@@ -239,7 +239,12 @@ onBeforeUnmount(() => {
   <Teleport to="body">
     <Transition name="more-sheet">
       <div v-if="moreSheetOpen" class="more-sheet-overlay" @click.self="closeMoreSheet">
-        <section class="more-sheet" role="dialog" aria-modal="true" :aria-label="t('mobileNav.more')">
+        <section
+          class="more-sheet"
+          role="dialog"
+          aria-modal="true"
+          :aria-label="t('mobileNav.more')"
+        >
           <div class="more-sheet-grabber" aria-hidden="true"></div>
 
           <header class="more-sheet-header">
@@ -251,7 +256,12 @@ onBeforeUnmount(() => {
               </div>
             </div>
 
-            <button type="button" class="sheet-close-btn" :aria-label="t('more.mobileSheet.close')" @click="closeMoreSheet">
+            <button
+              type="button"
+              class="sheet-close-btn"
+              :aria-label="t('more.mobileSheet.close')"
+              @click="closeMoreSheet"
+            >
               <X :size="18" />
             </button>
           </header>
@@ -379,9 +389,14 @@ onBeforeUnmount(() => {
   max-height: calc(100dvh - var(--app-mobile-tabbar-offset, 72px) - 24px);
   overflow: auto;
   border: var(--nb-border);
-  border-radius: 24px 24px var(--nb-radius-lg, var(--nb-radius)) var(--nb-radius-lg, var(--nb-radius));
+  border-radius: 24px 24px var(--nb-radius-lg, var(--nb-radius))
+    var(--nb-radius-lg, var(--nb-radius));
   background:
-    radial-gradient(circle at top left, color-mix(in srgb, var(--nb-primary) 18%, transparent), transparent 36%),
+    radial-gradient(
+      circle at top left,
+      color-mix(in srgb, var(--nb-primary) 18%, transparent),
+      transparent 36%
+    ),
     var(--nb-surface);
   box-shadow: 0 18px 48px color-mix(in srgb, var(--nb-shadow-color, #000) 36%, transparent);
 }
@@ -566,7 +581,11 @@ onBeforeUnmount(() => {
 :root[data-ui-theme='shadcn'] .more-sheet {
   border: 1px solid var(--border);
   background:
-    radial-gradient(circle at top left, color-mix(in srgb, var(--primary) 16%, transparent), transparent 36%),
+    radial-gradient(
+      circle at top left,
+      color-mix(in srgb, var(--primary) 16%, transparent),
+      transparent 36%
+    ),
     var(--background);
 }
 
