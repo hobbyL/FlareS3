@@ -57,7 +57,10 @@ const handleClear = async () => {
 </script>
 
 <template>
-  <div class="brutal-input-wrapper" :class="[`size-${size}`, { 'has-clear': reserveClearSpace, 'has-toggle': passwordToggle }]">
+  <div
+    class="brutal-input-wrapper"
+    :class="[`size-${size}`, { 'has-clear': reserveClearSpace, 'has-toggle': passwordToggle }]"
+  >
     <label v-if="label" class="input-label" :for="inputId">{{ label }}</label>
     <textarea
       v-if="type === 'textarea'"
