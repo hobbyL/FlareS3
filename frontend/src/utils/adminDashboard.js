@@ -80,9 +80,12 @@ function getShareStatusMetric(value, { key, label, shortLabel, tone, loading = f
 
 export function buildDashboardInsightsModel({ metrics = {}, setup = {}, loading = false, t }) {
   const totalUsers = normalizeCount(metrics?.totalUsers)
-  const activeUsers = totalUsers > 0 ? Math.min(normalizeCount(metrics?.activeUsers), totalUsers) : 0
+  const activeUsers =
+    totalUsers > 0 ? Math.min(normalizeCount(metrics?.activeUsers), totalUsers) : 0
   const disabledUsers =
-    totalUsers > 0 ? Math.min(normalizeCount(metrics?.disabledUsers), Math.max(totalUsers - activeUsers, 0)) : 0
+    totalUsers > 0
+      ? Math.min(normalizeCount(metrics?.disabledUsers), Math.max(totalUsers - activeUsers, 0))
+      : 0
   const otherUsers = totalUsers > 0 ? Math.max(totalUsers - activeUsers - disabledUsers, 0) : 0
   const totalTexts = normalizeCount(metrics?.totalTexts)
 
@@ -118,7 +121,10 @@ export function buildDashboardInsightsModel({ metrics = {}, setup = {}, loading 
       loading,
     }),
   ]
-  const maxShareValue = shareStatusBars.reduce((maxValue, item) => Math.max(maxValue, item.value), 0)
+  const maxShareValue = shareStatusBars.reduce(
+    (maxValue, item) => Math.max(maxValue, item.value),
+    0
+  )
   const textFreshnessSegments = [
     {
       key: 'textsUpdated7d',
