@@ -42,13 +42,7 @@ export function buildSetupStatusModel({ configs = [], r2Options = {} } = {}) {
   }
 }
 
-export function buildSetupStatusItems(
-  model,
-  {
-    labels = {},
-    values = {},
-  } = {}
-) {
+export function buildSetupStatusItems(model, { labels = {}, values = {} } = {}) {
   const normalizedModel = model || {}
 
   return [
@@ -65,11 +59,12 @@ export function buildSetupStatusItems(
     {
       key: 'uploadReady',
       label: labels.uploadReady || 'Upload ready',
-      value: normalizedModel.hasUploadConfig &&
+      value:
+        normalizedModel.hasUploadConfig &&
         normalizedModel.hasDefaultConfig &&
         !normalizedModel.defaultConfigInvalid
-        ? values.yes || 'Yes'
-        : values.no || 'No',
+          ? values.yes || 'Yes'
+          : values.no || 'No',
     },
   ]
 }
