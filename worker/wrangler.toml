@@ -1,10 +1,13 @@
 name = "flares3-worker"
 main = "src/index.ts"
-compatibility_date = "2024-09-23"
+compatibility_date = "2026-06-11"
 compatibility_flags = ["nodejs_compat"]
 
 [placement]
 mode = "smart"
+
+[observability]
+enabled = true
 
 [vars]
 MAX_FILE_SIZE = "5368709120"
