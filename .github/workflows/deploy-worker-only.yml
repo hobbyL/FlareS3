@@ -86,6 +86,10 @@ jobs:
         working-directory: "worker"
         run: bash "./scripts/verify-worker-secret.sh" --config "${WRANGLER_CI_CONFIG}" --worker-name "${DEPLOY_WORKER_NAME}"
 
+      - name: Verify AUTH_TOKEN_SECRET secret exists
+        working-directory: "worker"
+        run: bash "./scripts/verify-worker-secret.sh" --config "${WRANGLER_CI_CONFIG}" --worker-name "${DEPLOY_WORKER_NAME}" --secret-name "AUTH_TOKEN_SECRET"
+
       - name: Reconcile legacy D1 columns
         working-directory: "worker"
         run: node "./scripts/reconcile-legacy-d1-columns.mjs" --config "${WRANGLER_CI_CONFIG}" --database "DB" --remote

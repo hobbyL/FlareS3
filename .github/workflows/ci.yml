@@ -30,7 +30,3 @@ jobs:
 
       - name: Day5 release gate
         run: npm run verify:release
-
-      - name: Format check (non-blocking)
-        continue-on-error: true
-        run: npm run format:check

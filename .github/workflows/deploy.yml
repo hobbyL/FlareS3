@@ -121,7 +121,7 @@ jobs:
 
           echo "WRANGLER_CI_CONFIG=wrangler.ci.toml" >> "${GITHUB_ENV}"
 
-      - name: Verify R2_MASTER_KEY secret exists
+      - name: Verify required Worker secrets exist
         working-directory: "worker"
         run: |
           set -euo pipefail
@@ -130,20 +130,20 @@ jobs:
             exit 1
           fi
 
-          KEY_NAME="R2_MASTER_KEY"
-
           # `wrangler secret list` will fail if the Worker doesn't exist yet.
           # In that case we treat it as empty and fail fast so the operator
           # provisions the secret explicitly before deployment.
           SECRETS_JSON="$(npx wrangler --config "${WRANGLER_CI_CONFIG}" secret list --format json 2>/dev/null || echo '[]')"
-          HAS_KEY="$(echo "${SECRETS_JSON}" | jq -r --arg k "${KEY_NAME}" '[.[] | select(.name==$k)] | length')"
 
-          if [ "${HAS_KEY}" = "0" ]; then
-            echo "::error::${KEY_NAME} is missing. Provision it in Cloudflare before deploying so existing R2 credentials remain decryptable."
-            exit 1
-          fi
+          for KEY_NAME in R2_MASTER_KEY AUTH_TOKEN_SECRET; do
+            HAS_KEY="$(echo "${SECRETS_JSON}" | jq -r --arg k "${KEY_NAME}" '[.[] | select(.name==$k)] | length')"
+            if [ "${HAS_KEY}" = "0" ]; then
+              echo "::error::${KEY_NAME} is missing. Provision it in Cloudflare before deploying."
+              exit 1
+            fi
 
-          echo "${KEY_NAME} already exists"
+            echo "${KEY_NAME} already exists"
+          done
 
       - name: Ensure Pages project exists (flares3-pages)
         working-directory: "worker"
