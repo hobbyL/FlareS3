@@ -13,310 +13,53 @@ import {
 } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import type { Env } from '../config/env'
-import { DEFAULT_TOTAL_STORAGE } from '../config/env'
-import { decryptString } from './crypto'
+import {
+  LEGACY_R2_CONFIG_ID,
+  SYSTEM_DEFAULT_R2_CONFIG_ID_KEY,
+  SYSTEM_LEGACY_FILES_CONFIG_ID_KEY,
+  getDefaultR2ConfigId as registryGetDefaultR2ConfigId,
+  getLegacyFilesR2ConfigId as registryGetLegacyFilesR2ConfigId,
+  getLegacyR2ConfigSummary as registryGetLegacyR2ConfigSummary,
+  listDbR2Configs as registryListDbR2Configs,
+  listR2ConfigOptions as registryListR2ConfigOptions,
+  listR2ConfigSummaries as registryListR2ConfigSummaries,
+  loadR2Config as registryLoadR2Config,
+  loadR2ConfigById as registryLoadR2ConfigById,
+  setDefaultR2ConfigId as registrySetDefaultR2ConfigId,
+  setLegacyFilesR2ConfigId as registrySetLegacyFilesR2ConfigId,
+  type LoadedR2Config,
+  type R2Config,
+  type R2ConfigOption,
+  type R2ConfigSource,
+  type R2ConfigSummary,
+} from './r2ConfigRegistry'
 import {
   MAX_UPSTREAM_ERROR_TEXT_BYTES,
   MAX_UPSTREAM_XML_RESPONSE_BYTES,
   readBoundedResponseText,
 } from './upstreamResponsePolicy'
-export const LEGACY_R2_CONFIG_ID = 'legacy'
-export const SYSTEM_DEFAULT_R2_CONFIG_ID_KEY = 'r2_default_config_id'
-export const SYSTEM_LEGACY_FILES_CONFIG_ID_KEY = 'r2_legacy_files_config_id'
+import {
+  buildCompleteMultipartUploadXml,
+  decodeXmlEntities,
+  extractXmlBlocks,
+  extractXmlValue,
+  normalizeCompleteMultipartParts,
+} from './s3Xml'
 
-export type R2Config = {
-  endpoint: string
-  accessKeyId: string
-  secretAccessKey: string
-  bucketName: string
-}
+export { LEGACY_R2_CONFIG_ID, SYSTEM_DEFAULT_R2_CONFIG_ID_KEY, SYSTEM_LEGACY_FILES_CONFIG_ID_KEY }
 
-export type R2ConfigSource = 'legacy' | 'db'
+export type { LoadedR2Config, R2Config, R2ConfigOption, R2ConfigSource, R2ConfigSummary }
 
-export type LoadedR2Config = {
-  id: string
-  source: R2ConfigSource
-  config: R2Config
-}
-
-export type R2ConfigOption = {
-  id: string
-  name: string
-  source: R2ConfigSource
-}
-
-export type R2ConfigSummary = {
-  id: string
-  name: string
-  source: R2ConfigSource
-  endpoint: string
-  bucketName: string
-  quotaBytes: number
-  createdAt?: string
-  updatedAt?: string
-}
-
-async function getSystemConfigValue(db: D1Database, key: string): Promise<string | null> {
-  const value = await db
-    .prepare('SELECT value FROM system_config WHERE key = ?')
-    .bind(key)
-    .first('value')
-  return value ? String(value) : null
-}
-
-async function getSystemConfigValues(db: D1Database, keys: string[]): Promise<Map<string, string>> {
-  if (!keys.length) return new Map()
-
-  const placeholders = keys.map(() => '?').join(',')
-  const rows = await db
-    .prepare(`SELECT key, value FROM system_config WHERE key IN (${placeholders})`)
-    .bind(...keys)
-    .all<{ key: string; value: string }>()
-
-  const values = new Map<string, string>()
-  for (const row of rows.results || []) {
-    values.set(String(row.key), String(row.value))
-  }
-  return values
-}
-
-async function setSystemConfigValue(db: D1Database, key: string, value: string): Promise<void> {
-  const now = new Date().toISOString()
-  await db
-    .prepare(
-      `INSERT INTO system_config (key, value, updated_at)
-     VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = ?`
-    )
-    .bind(key, value, now, value, now)
-    .run()
-}
-
-export async function getDefaultR2ConfigId(env: Env): Promise<string | null> {
-  return getSystemConfigValue(env.DB, SYSTEM_DEFAULT_R2_CONFIG_ID_KEY)
-}
-
-export async function setDefaultR2ConfigId(env: Env, id: string): Promise<void> {
-  await setSystemConfigValue(env.DB, SYSTEM_DEFAULT_R2_CONFIG_ID_KEY, id)
-}
-
-export async function getLegacyFilesR2ConfigId(env: Env): Promise<string | null> {
-  return getSystemConfigValue(env.DB, SYSTEM_LEGACY_FILES_CONFIG_ID_KEY)
-}
-
-export async function setLegacyFilesR2ConfigId(env: Env, id: string | null): Promise<void> {
-  if (!id) {
-    await env.DB.prepare('DELETE FROM system_config WHERE key = ?')
-      .bind(SYSTEM_LEGACY_FILES_CONFIG_ID_KEY)
-      .run()
-    return
-  }
-  await setSystemConfigValue(env.DB, SYSTEM_LEGACY_FILES_CONFIG_ID_KEY, id)
-}
-
-async function getLegacyDbConfig(db: D1Database, masterKey: string): Promise<R2Config | null> {
-  const values = await getSystemConfigValues(db, [
-    'r2_endpoint',
-    'r2_bucket_name',
-    'r2_access_key_id_enc',
-    'r2_secret_access_key_enc',
-  ])
-  const endpoint = values.get('r2_endpoint')
-  if (!endpoint) {
-    return null
-  }
-  const bucketName = values.get('r2_bucket_name')
-  const accessKeyEnc = values.get('r2_access_key_id_enc')
-  const secretKeyEnc = values.get('r2_secret_access_key_enc')
-  if (!bucketName || !accessKeyEnc || !secretKeyEnc) {
-    return null
-  }
-  const accessKeyId = await decryptString(String(accessKeyEnc), masterKey)
-  const secretAccessKey = await decryptString(String(secretKeyEnc), masterKey)
-  return {
-    endpoint: String(endpoint),
-    accessKeyId,
-    secretAccessKey,
-    bucketName: String(bucketName),
-  }
-}
-
-export async function getLegacyR2ConfigSummary(db: D1Database): Promise<R2ConfigSummary | null> {
-  const values = await getSystemConfigValues(db, [
-    'r2_endpoint',
-    'r2_bucket_name',
-    'r2_access_key_id_enc',
-    'r2_secret_access_key_enc',
-  ])
-  const endpoint = values.get('r2_endpoint')
-  const bucketName = values.get('r2_bucket_name')
-  const accessKeyEnc = values.get('r2_access_key_id_enc')
-  const secretKeyEnc = values.get('r2_secret_access_key_enc')
-  if (!endpoint || !bucketName || !accessKeyEnc || !secretKeyEnc) {
-    return null
-  }
-
-  return {
-    id: LEGACY_R2_CONFIG_ID,
-    name: '旧版配置',
-    source: 'legacy',
-    endpoint,
-    bucketName,
-    quotaBytes: DEFAULT_TOTAL_STORAGE,
-  }
-}
-
-async function getDbConfigById(
-  db: D1Database,
-  masterKey: string,
-  id: string
-): Promise<R2Config | null> {
-  const row = await db
-    .prepare(
-      'SELECT endpoint, bucket_name, access_key_id_enc, secret_access_key_enc FROM r2_configs WHERE id = ? LIMIT 1'
-    )
-    .bind(id)
-    .first<{
-      endpoint: string
-      bucket_name: string
-      access_key_id_enc: string
-      secret_access_key_enc: string
-    }>()
-  if (!row) {
-    return null
-  }
-  const accessKeyId = await decryptString(String(row.access_key_id_enc), masterKey)
-  const secretAccessKey = await decryptString(String(row.secret_access_key_enc), masterKey)
-  return {
-    endpoint: String(row.endpoint),
-    accessKeyId,
-    secretAccessKey,
-    bucketName: String(row.bucket_name),
-  }
-}
-
-export async function listDbR2Configs(db: D1Database): Promise<R2ConfigSummary[]> {
-  const rows = await db
-    .prepare(
-      'SELECT id, name, endpoint, bucket_name, quota_bytes, created_at, updated_at FROM r2_configs ORDER BY created_at DESC'
-    )
-    .all<{
-      id: string
-      name: string
-      endpoint: string
-      bucket_name: string
-      quota_bytes: number
-      created_at: string
-      updated_at: string
-    }>()
-  return (rows.results || []).map((row) => ({
-    id: String(row.id),
-    name: String(row.name),
-    source: 'db',
-    endpoint: String(row.endpoint),
-    bucketName: String(row.bucket_name),
-    quotaBytes: Number(row.quota_bytes || DEFAULT_TOTAL_STORAGE),
-    createdAt: String(row.created_at),
-    updatedAt: String(row.updated_at),
-  }))
-}
-
-export async function loadR2ConfigById(env: Env, id: string): Promise<LoadedR2Config | null> {
-  if (!env.R2_MASTER_KEY) {
-    return null
-  }
-
-  if (id === LEGACY_R2_CONFIG_ID) {
-    const legacy = await getLegacyDbConfig(env.DB, env.R2_MASTER_KEY)
-    if (!legacy) return null
-    return { id: LEGACY_R2_CONFIG_ID, source: 'legacy', config: legacy }
-  }
-
-  const dbConfig = await getDbConfigById(env.DB, env.R2_MASTER_KEY, id)
-  if (!dbConfig) {
-    return null
-  }
-  return { id, source: 'db', config: dbConfig }
-}
-
-export async function loadR2Config(env: Env): Promise<LoadedR2Config | null> {
-  const configuredDefault = await getDefaultR2ConfigId(env)
-  if (configuredDefault) {
-    const loaded = await loadR2ConfigById(env, configuredDefault)
-    if (loaded) return loaded
-  }
-
-  if (!env.R2_MASTER_KEY) {
-    return null
-  }
-
-  const legacyFilesConfigId = await getSystemConfigValue(env.DB, SYSTEM_LEGACY_FILES_CONFIG_ID_KEY)
-  if (legacyFilesConfigId) {
-    const loaded = await loadR2ConfigById(env, legacyFilesConfigId)
-    if (loaded) return loaded
-  }
-
-  const legacy = await loadR2ConfigById(env, LEGACY_R2_CONFIG_ID)
-  if (legacy) return legacy
-
-  const configs = await listDbR2Configs(env.DB)
-  for (const config of configs) {
-    const loaded = await loadR2ConfigById(env, config.id)
-    if (loaded) return loaded
-  }
-
-  return null
-}
-export async function listR2ConfigSummaries(env: Env): Promise<{
-  default_config_id: string | null
-  legacy_files_config_id: string | null
-  configs: R2ConfigSummary[]
-}> {
-  const [settings, legacyConfig, dbConfigs] = await Promise.all([
-    getSystemConfigValues(env.DB, [
-      SYSTEM_DEFAULT_R2_CONFIG_ID_KEY,
-      SYSTEM_LEGACY_FILES_CONFIG_ID_KEY,
-    ]),
-    env.R2_MASTER_KEY ? getLegacyR2ConfigSummary(env.DB) : Promise.resolve(null),
-    env.R2_MASTER_KEY ? listDbR2Configs(env.DB) : Promise.resolve([]),
-  ])
-
-  const configs = [...(legacyConfig ? [legacyConfig] : []), ...dbConfigs]
-  const availableIds = new Set(configs.map((cfg) => cfg.id))
-
-  let defaultId = settings.get(SYSTEM_DEFAULT_R2_CONFIG_ID_KEY) || null
-  if (defaultId && !availableIds.has(defaultId)) {
-    defaultId = null
-  }
-
-  let legacyFilesId = settings.get(SYSTEM_LEGACY_FILES_CONFIG_ID_KEY) || null
-  if (legacyFilesId && !availableIds.has(legacyFilesId)) {
-    legacyFilesId = null
-  }
-
-  if (!defaultId) {
-    defaultId = legacyFilesId || configs[0]?.id || null
-  }
-
-  return {
-    default_config_id: defaultId,
-    legacy_files_config_id: legacyFilesId,
-    configs,
-  }
-}
-
-export async function listR2ConfigOptions(env: Env): Promise<{
-  default_config_id: string | null
-  legacy_files_config_id: string | null
-  options: R2ConfigOption[]
-}> {
-  const result = await listR2ConfigSummaries(env)
-
-  return {
-    default_config_id: result.default_config_id,
-    legacy_files_config_id: result.legacy_files_config_id,
-    options: result.configs.map((cfg) => ({ id: cfg.id, name: cfg.name, source: cfg.source })),
-  }
-}
+export const getDefaultR2ConfigId = registryGetDefaultR2ConfigId
+export const setDefaultR2ConfigId = registrySetDefaultR2ConfigId
+export const getLegacyFilesR2ConfigId = registryGetLegacyFilesR2ConfigId
+export const setLegacyFilesR2ConfigId = registrySetLegacyFilesR2ConfigId
+export const getLegacyR2ConfigSummary = registryGetLegacyR2ConfigSummary
+export const listDbR2Configs = registryListDbR2Configs
+export const loadR2ConfigById = registryLoadR2ConfigById
+export const loadR2Config = registryLoadR2Config
+export const listR2ConfigSummaries = registryListR2ConfigSummaries
+export const listR2ConfigOptions = registryListR2ConfigOptions
 
 export function sanitizeFilename(filename: string): string {
   const normalized = String(filename ?? '').replaceAll('\\', '/')
@@ -405,21 +148,6 @@ export function summarizeS3Error(error: unknown): S3ErrorSummary {
     message: typeof err.message === 'string' ? err.message : undefined,
     httpStatusCode: typeof meta.httpStatusCode === 'number' ? meta.httpStatusCode : undefined,
   }
-}
-
-function extractXmlValue(xml: string, tagName: string): string | null {
-  const match = xml.match(new RegExp(`<${tagName}>([^<]+)</${tagName}>`))
-  return match?.[1] ? String(match[1]) : null
-}
-
-function extractXmlBlocks(xml: string, tagName: string): string[] {
-  const regex = new RegExp(`<${tagName}>([\\s\\S]*?)</${tagName}>`, 'g')
-  const blocks: string[] = []
-  let match: RegExpExecArray | null
-  while ((match = regex.exec(xml)) !== null) {
-    blocks.push(match[1] ?? '')
-  }
-  return blocks
 }
 
 function buildS3HttpError(status: number, bodyText: string): Error {
@@ -659,24 +387,8 @@ export async function completeMultipartUpload(
   parts: { PartNumber?: number; ETag?: string }[]
 ): Promise<void> {
   const client = createS3Client(config)
-  const normalized = (parts || [])
-    .map((part) => ({
-      partNumber: Number(part.PartNumber),
-      etag: typeof part.ETag === 'string' ? part.ETag : '',
-    }))
-    .filter((part) => Number.isFinite(part.partNumber) && part.partNumber > 0 && part.etag)
-    .sort((a, b) => a.partNumber - b.partNumber)
-
-  const xmlBody =
-    `<?xml version="1.0" encoding="UTF-8"?>` +
-    `<CompleteMultipartUpload>` +
-    normalized
-      .map(
-        (part) =>
-          `<Part><PartNumber>${part.partNumber}</PartNumber><ETag>${part.etag}</ETag></Part>`
-      )
-      .join('') +
-    `</CompleteMultipartUpload>`
+  const normalized = normalizeCompleteMultipartParts(parts || [])
+  const xmlBody = buildCompleteMultipartUploadXml(normalized)
 
   const response = await fetchSigned(
     client,
@@ -835,34 +547,6 @@ export async function listObjectsV2(
   }
 
   const text = await readS3XmlText(response, 'S3 对象列表响应')
-  const decodeXmlEntities = (value: string): string => {
-    const input = String(value ?? '')
-    if (!input.includes('&')) return input
-
-    let output = input
-      .replaceAll('&quot;', '"')
-      .replaceAll('&apos;', "'")
-      .replaceAll('&lt;', '<')
-      .replaceAll('&gt;', '>')
-
-    output = output.replace(/&#(x?[0-9a-fA-F]+);/g, (match, code) => {
-      const raw = String(code || '')
-      const num =
-        raw.startsWith('x') || raw.startsWith('X')
-          ? Number.parseInt(raw.slice(1), 16)
-          : Number.parseInt(raw, 10)
-      if (!Number.isFinite(num)) return match
-      try {
-        return String.fromCodePoint(num)
-      } catch {
-        return match
-      }
-    })
-
-    output = output.replaceAll('&amp;', '&')
-    return output
-  }
-
   const keyCount = Number(decodeXmlEntities(extractXmlValue(text, 'KeyCount') || '0') || 0)
   const isTruncated =
     String(extractXmlValue(text, 'IsTruncated') || '')
