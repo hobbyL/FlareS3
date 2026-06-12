@@ -1,11 +1,7 @@
 import type { Env } from '../../config/env'
 import { getMaxFileSize } from '../../config/env'
 import { jsonResponse, parseJson, getUser, calcPresignedDownloadUrlTtlSeconds } from '../utils'
-import {
-  generateDownloadUrl,
-  generateUploadUrl,
-  resolveR2ConfigForKey,
-} from '../../services/r2'
+import { generateDownloadUrl, generateUploadUrl, resolveR2ConfigForKey } from '../../services/r2'
 import { logAudit } from '../../services/audit'
 import { getClientIp } from '../../middleware/rateLimit'
 import { resolveUploadConfigForUser } from '../../services/uploadConfigPolicy'
@@ -75,8 +71,13 @@ export async function presignUpload(request: Request, env: Env): Promise<Respons
 
     const contentType = body.content_type || 'application/octet-stream'
     const requireLogin = body.require_login !== false
-    let file: { id: string; r2Key: string; shortCode: string; expiresAt: Date; filename: string } | null =
-      null
+    let file: {
+      id: string
+      r2Key: string
+      shortCode: string
+      expiresAt: Date
+      filename: string
+    } | null = null
     let lastCreateError: unknown = null
     for (let attempt = 0; attempt < SHORT_CODE_MAX_ATTEMPTS; attempt += 1) {
       file = await allocateUploadFileIdentity(env, body.filename, expiresIn, loaded.id, dir)
@@ -184,8 +185,11 @@ export async function confirmUpload(request: Request, env: Env): Promise<Respons
 
     const now = new Date().toISOString()
     await env.DB.batch([
-      env.DB.prepare('UPDATE files SET size = ?, upload_status = ? WHERE id = ?')
-        .bind(sizeValidation.actualSize, 'completed', body.file_id),
+      env.DB.prepare('UPDATE files SET size = ?, upload_status = ? WHERE id = ?').bind(
+        sizeValidation.actualSize,
+        'completed',
+        body.file_id
+      ),
       prepareConsumeUploadReservation(env.DB, body.file_id, now),
     ])
 

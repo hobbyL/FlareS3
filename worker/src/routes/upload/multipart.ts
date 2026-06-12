@@ -15,7 +15,12 @@ import {
 import { prepareAuditLogInsert } from '../../services/audit'
 import { getClientIp } from '../../middleware/rateLimit'
 import { resolveUploadConfigForUser } from '../../services/uploadConfigPolicy'
-import { normalizeDeclaredFileSize } from '../../services/uploadValidation'
+import {
+  MAX_S3_MULTIPART_PARTS,
+  calculateMultipartTotalParts,
+  normalizeDeclaredFileSize,
+  normalizeMultipartPartNumber,
+} from '../../services/uploadValidation'
 import {
   createUploadError,
   fileTooLargeError,
@@ -50,6 +55,38 @@ import {
   createPendingUploadFileRecord,
 } from './helpers'
 
+function invalidMultipartPartCountError(declaredSize: number) {
+  return invalidUploadRequestError({
+    reason: 'MULTIPART_PART_COUNT_EXCEEDED',
+    declaredSize,
+    partSize: PART_SIZE,
+    maxParts: MAX_S3_MULTIPART_PARTS,
+  })
+}
+
+function normalizeCompleteMultipartParts(
+  parts: Array<{ PartNumber?: unknown; ETag?: unknown }>,
+  totalParts: number
+): Array<{ PartNumber: number; ETag: string }> | null {
+  const normalized: Array<{ PartNumber: number; ETag: string }> = []
+  const seenPartNumbers = new Set<number>()
+
+  for (const part of parts) {
+    const partNumber = normalizeMultipartPartNumber(part.PartNumber, totalParts)
+    const rawEtag = typeof part.ETag === 'string' ? part.ETag.trim() : ''
+    if (!partNumber || !rawEtag || seenPartNumbers.has(partNumber)) {
+      return null
+    }
+    seenPartNumbers.add(partNumber)
+    normalized.push({
+      PartNumber: partNumber,
+      ETag: rawEtag.startsWith('"') ? rawEtag : `"${rawEtag}"`,
+    })
+  }
+
+  return normalized.length > 0 ? normalized : null
+}
+
 export async function initMultipart(request: Request, env: Env): Promise<Response> {
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)
@@ -76,6 +113,10 @@ export async function initMultipart(request: Request, env: Env): Promise<Respons
     if (declaredSize > maxSize) {
       return uploadErrorResponse(fileTooLargeError(declaredSize, maxSize))
     }
+    const totalParts = calculateMultipartTotalParts(declaredSize, PART_SIZE)
+    if (totalParts === null || totalParts > MAX_S3_MULTIPART_PARTS) {
+      return uploadErrorResponse(invalidMultipartPartCountError(declaredSize))
+    }
 
     let loaded
     try {
@@ -93,8 +134,13 @@ export async function initMultipart(request: Request, env: Env): Promise<Respons
 
     const contentType = body.content_type || 'application/octet-stream'
     const requireLogin = body.require_login !== false
-    let file: { id: string; r2Key: string; shortCode: string; expiresAt: Date; filename: string } | null =
-      null
+    let file: {
+      id: string
+      r2Key: string
+      shortCode: string
+      expiresAt: Date
+      filename: string
+    } | null = null
     let lastCreateError: unknown = null
     for (let attempt = 0; attempt < SHORT_CODE_MAX_ATTEMPTS; attempt += 1) {
       file = await allocateUploadFileIdentity(env, body.filename, expiresIn, loaded.id, dir)
@@ -141,7 +187,7 @@ export async function initMultipart(request: Request, env: Env): Promise<Respons
       filename: file.filename,
       upload_id: uploadId,
       part_size: PART_SIZE,
-      total_parts: Math.ceil(declaredSize / PART_SIZE),
+      total_parts: totalParts,
       r2_config_id: loaded.id,
     })
   } catch (error) {
@@ -166,7 +212,7 @@ export async function presignMultipart(request: Request, env: Env): Promise<Resp
     }>(request)
 
     const file = await env.DB.prepare(
-      'SELECT id, owner_id, r2_key, expires_at, upload_status, multipart_upload_id FROM files WHERE id = ?'
+      'SELECT id, owner_id, r2_key, expires_at, upload_status, multipart_upload_id, size FROM files WHERE id = ?'
     )
       .bind(body.file_id)
       .first()
@@ -191,8 +237,13 @@ export async function presignMultipart(request: Request, env: Env): Promise<Resp
       return uploadErrorResponse(multipartUploadIdMismatchError())
     }
 
-    const partNumber = Number(body.part_number)
-    if (!Number.isFinite(partNumber) || partNumber <= 0) {
+    const totalParts = calculateMultipartTotalParts(Number(file.size), PART_SIZE)
+    if (totalParts === null || totalParts > MAX_S3_MULTIPART_PARTS) {
+      return uploadErrorResponse(invalidMultipartPartCountError(Number(file.size)))
+    }
+
+    const partNumber = normalizeMultipartPartNumber(body.part_number, totalParts)
+    if (!partNumber) {
       return uploadErrorResponse(multipartPartNumberInvalidError())
     }
 
@@ -271,21 +322,23 @@ export async function completeMultipart(request: Request, env: Env): Promise<Res
     const loaded = await resolveR2ConfigForKey(env, String(file.r2_key))
     if (!loaded) return uploadErrorResponse(uploadConfigUnavailableError())
 
+    const totalParts = calculateMultipartTotalParts(Number(file.size), PART_SIZE)
+    if (totalParts === null || totalParts > MAX_S3_MULTIPART_PARTS) {
+      return uploadErrorResponse(invalidMultipartPartCountError(Number(file.size)))
+    }
+
     const requestParts = Array.isArray(body.parts) ? body.parts : []
-    const parts: Array<{ PartNumber?: number; ETag?: string }> =
+    const rawParts =
       requestParts.length > 0
-        ? requestParts
-            .map((part) => {
-              const partNumber = Number(part.part_number)
-              const rawEtag = typeof part.etag === 'string' ? part.etag.trim() : ''
-              if (!Number.isFinite(partNumber) || partNumber <= 0 || !rawEtag) {
-                return null
-              }
-              const etag = rawEtag.startsWith('"') ? rawEtag : `"${rawEtag}"`
-              return { PartNumber: partNumber, ETag: etag }
-            })
-            .filter((part): part is { PartNumber: number; ETag: string } => Boolean(part))
+        ? requestParts.map((part) => ({
+            PartNumber: part.part_number,
+            ETag: part.etag,
+          }))
         : await listParts(loaded.config, String(file.r2_key), storedUploadId)
+    const parts = normalizeCompleteMultipartParts(rawParts, totalParts)
+    if (!parts) {
+      return uploadErrorResponse(multipartPartNumberInvalidError())
+    }
 
     await completeMultipartUpload(loaded.config, String(file.r2_key), storedUploadId, parts)
 
