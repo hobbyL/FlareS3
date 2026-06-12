@@ -4,16 +4,16 @@
   "type": "module",
   "scripts": {
     "dev": "lsof -ti :18787 | xargs kill -9 2>/dev/null; wrangler dev --port 18787 --config wrangler.toml",
-    "deploy": "wrangler deploy",
-    "deploy:dry-run": "WRANGLER_LOG_PATH=.wrangler/logs WRANGLER_SEND_METRICS=false wrangler deploy --dry-run",
+    "deploy": "wrangler deploy --config wrangler.toml",
+    "deploy:dry-run": "WRANGLER_LOG_PATH=.wrangler/logs WRANGLER_SEND_METRICS=false wrangler deploy --config wrangler.toml --dry-run",
     "deploy:full": "wrangler deploy --config wrangler.full.toml",
     "deploy:full:dry-run": "WRANGLER_LOG_PATH=.wrangler/logs WRANGLER_SEND_METRICS=false wrangler deploy --config wrangler.full.toml --dry-run",
     "test:build": "WORKER_DIR=${npm_package_json%/package.json} && cd \"$WORKER_DIR\" && rm -rf .test-dist && tsc -p tsconfig.test.json --outDir .test-dist && node -e \"require('fs').writeFileSync('.test-dist/package.json', '{\\\"type\\\":\\\"commonjs\\\"}\\n')\"",
-    "test": "WORKER_DIR=${npm_package_json%/package.json} && cd \"$WORKER_DIR\" && npm run test:build && WORKER_TEST_OUTDIR=$WORKER_DIR/.test-dist node --test tests/*.test.cjs",
+    "test": "WORKER_DIR=${npm_package_json%/package.json} && cd \"$WORKER_DIR\" && npm run test:build && WORKER_TEST_OUTDIR=$WORKER_DIR/.test-dist node --test \"../tests/worker/**/*.test.cjs\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint \"src/**/*.ts\"",
-    "format:check": "prettier --check \"src/**/*.ts\"",
-    "format": "prettier --write \"src/**/*.ts\""
+    "format:check": "prettier --check \"src/**/*.ts\" \"../tests/worker/**/*.cjs\"",
+    "format": "prettier --write \"src/**/*.ts\" \"../tests/worker/**/*.cjs\""
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1062.0",
@@ -34,6 +34,6 @@
     "eslint-config-prettier": "^9.1.0",
     "prettier": "^3.2.5",
     "typescript": "^5.5.4",
-    "wrangler": "^4.85.0"
+    "wrangler": "^4.100.0"
   }
 }
