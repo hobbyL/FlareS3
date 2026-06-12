@@ -96,7 +96,8 @@ export default {
     risks: {
       title: 'Operational risks',
       okTitle: 'No high-priority risks detected',
-      okContent: 'Upload configuration, job execution, and storage indicators currently look healthy.',
+      okContent:
+        'Upload configuration, job execution, and storage indicators currently look healthy.',
       codes: {
         missing_default_upload_config: {
           title: 'Default upload config is missing',

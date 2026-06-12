@@ -112,7 +112,8 @@ export default {
     downloadFile: '下载文件',
     confirmDelete: '确定要删除这个文件吗？',
     confirmDeletePermanent: '彻底删除后将不可恢复，是否继续？',
-    confirmClearTrash: '将彻底删除你回收站中的所有文件，且不可恢复。管理员也只会清空自己的回收站，是否继续？',
+    confirmClearTrash:
+      '将彻底删除你回收站中的所有文件，且不可恢复。管理员也只会清空自己的回收站，是否继续？',
     messages: {
       loadUsersFailed: '加载用户失败',
       loadFilesFailed: '加载文件失败',

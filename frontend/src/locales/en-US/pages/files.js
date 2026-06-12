@@ -112,7 +112,8 @@ export default {
     downloadFile: 'Download',
     confirmDelete: 'Delete this file?',
     confirmDeletePermanent: 'This operation cannot be undone. Continue?',
-    confirmClearTrash: 'This will permanently delete all files in your trash and cannot be undone. Admins also only empty their own trash. Continue?',
+    confirmClearTrash:
+      'This will permanently delete all files in your trash and cannot be undone. Admins also only empty their own trash. Continue?',
     messages: {
       loadUsersFailed: 'Failed to load users',
       loadFilesFailed: 'Failed to load files',
@@ -121,7 +122,8 @@ export default {
       deletePermanentSuccess: 'File permanently deleted',
       deletePermanentQueued: 'File queued for permanent deletion',
       deletePermanentFailed: 'Failed to permanently delete file',
-      clearTrashSuccess: 'Trash emptied: {deleted} deleted directly, {queued} queued, {total} processed',
+      clearTrashSuccess:
+        'Trash emptied: {deleted} deleted directly, {queued} queued, {total} processed',
       clearTrashFailed: 'Failed to empty trash',
       restoreSuccess: 'File restored',
       restoreFailed: 'Failed to restore file',
