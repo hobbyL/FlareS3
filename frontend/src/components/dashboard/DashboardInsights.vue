@@ -96,9 +96,17 @@ const getTextFreshnessColumns = (segments) => {
 
           <div class="user-status-summary">
             <div class="user-status-legend">
-              <div v-for="segment in insights.userStatus.segments" :key="segment.key" class="user-status-legend-item">
+              <div
+                v-for="segment in insights.userStatus.segments"
+                :key="segment.key"
+                class="user-status-legend-item"
+              >
                 <div class="user-status-legend-copy">
-                  <span class="user-status-legend-dot" :data-tone="segment.tone" aria-hidden="true"></span>
+                  <span
+                    class="user-status-legend-dot"
+                    :data-tone="segment.tone"
+                    aria-hidden="true"
+                  ></span>
                   <span class="user-status-legend-label">{{ segment.label }}</span>
                 </div>
                 <span class="user-status-legend-value">{{ segment.displayValue }}</span>
@@ -138,7 +146,9 @@ const getTextFreshnessColumns = (segments) => {
     <div class="dashboard-insights-column dashboard-insights-column--secondary">
       <Card class="dashboard-insights-card dashboard-insights-card--health">
         <div class="dashboard-insights-card-head">
-          <div class="dashboard-insights-section-title">{{ t('dashboard.insights.health.title') }}</div>
+          <div class="dashboard-insights-section-title">
+            {{ t('dashboard.insights.health.title') }}
+          </div>
         </div>
 
         <div class="dashboard-insights-stack">
@@ -163,7 +173,11 @@ const getTextFreshnessColumns = (segments) => {
                     {{ insights.configHealth.statusLabel }}
                   </div>
                   <div class="config-health-value">
-                    {{ t('dashboard.insights.configHealth.countLabel', { count: insights.configHealth.value }) }}
+                    {{
+                      t('dashboard.insights.configHealth.countLabel', {
+                        count: insights.configHealth.value,
+                      })
+                    }}
                   </div>
                 </div>
                 <div class="config-health-hint">{{ insights.configHealth.hint }}</div>
@@ -211,9 +225,15 @@ const getTextFreshnessColumns = (segments) => {
           </div>
           <div
             class="text-freshness-list"
-            :style="{ gridTemplateColumns: getTextFreshnessColumns(insights.textFreshness.segments) }"
+            :style="{
+              gridTemplateColumns: getTextFreshnessColumns(insights.textFreshness.segments),
+            }"
           >
-            <div v-for="segment in insights.textFreshness.segments" :key="segment.key" class="text-freshness-item">
+            <div
+              v-for="segment in insights.textFreshness.segments"
+              :key="segment.key"
+              class="text-freshness-item"
+            >
               <span class="text-freshness-item-label">{{ segment.label }}</span>
               <span class="text-freshness-item-value">{{ segment.displayValue }}</span>
             </div>
@@ -542,11 +562,19 @@ const getTextFreshnessColumns = (segments) => {
 }
 
 .file-alert-item[data-tone='warning'] {
-  border-color: color-mix(in srgb, var(--nb-warning, #f59e0b) 18%, var(--nb-border, var(--nb-gray-200)));
+  border-color: color-mix(
+    in srgb,
+    var(--nb-warning, #f59e0b) 18%,
+    var(--nb-border, var(--nb-gray-200))
+  );
 }
 
 .file-alert-item[data-tone='info'] {
-  border-color: color-mix(in srgb, var(--nb-info, #2563eb) 16%, var(--nb-border, var(--nb-gray-200)));
+  border-color: color-mix(
+    in srgb,
+    var(--nb-info, #2563eb) 16%,
+    var(--nb-border, var(--nb-gray-200))
+  );
 }
 
 .file-alert-item-copy {
