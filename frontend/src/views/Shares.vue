@@ -86,6 +86,8 @@ import { useUserOptionsStore } from '../stores/userOptions'
 import api from '../services/api'
 import AppLayout from '../components/layout/AppLayout.vue'
 import { useMessage } from '../composables/useMessage'
+import { useShareFilters } from '../composables/useShareFilters.js'
+import { useShareSelection } from '../composables/useShareSelection.js'
 import { useIsMobile } from '../composables/useViewport.js'
 import SharesConfirmModal from '../components/shares/SharesConfirmModal.vue'
 import SharesHeaderToolbar from '../components/shares/SharesHeaderToolbar.vue'
@@ -93,29 +95,15 @@ import SharesListPanel from '../components/shares/SharesListPanel.vue'
 import { buildSharesTableColumns } from '../components/shares/shareTableColumns.js'
 import {
   BATCH_DISABLE_SHARE_ACTION_KEY,
-  createDefaultShareFilters,
   buildAbsoluteShareUrl,
-  buildExpiredGovernanceFilters,
-  buildExpiringGovernanceFilters,
-  buildSharesQueryParams,
-  buildShareSelectedIdSet,
   canOpenShare,
-  collectSelectedShares,
-  filterShareOwners,
   formatShareDateTime,
   getBatchDisableFeedbackMeta,
   getShareActionKey,
   getShareConfirmMeta,
-  hasActiveShareFilters,
   hasEditableConfig,
-  isExpiredShareGovernanceActive,
-  isExpiringShareGovernanceActive,
   isShareActionLoading,
   normalizeShareText as normalizeText,
-  persistShareFiltersToStorage,
-  restoreShareFiltersFromStorage,
-  toShareSelectionKey,
-  updateShareSelection,
 } from '../utils/shares.js'
 
 const FileShareModal = defineAsyncComponent(() => import('../components/files/FileShareModal.vue'))
@@ -133,13 +121,41 @@ const hasLoadedOnce = ref(false)
 const pagination = ref({ page: 1, pageSize: 20, itemCount: 0 })
 const activeAction = ref('')
 
-const filters = ref(createDefaultShareFilters())
 const isMobile = useIsMobile()
 
 const ownersLoading = computed(() => userOptionsStore.loading)
 const owners = computed(() => userOptionsStore.users)
-const ownerSearchQuery = ref('')
-const selectedIds = ref([])
+const isAdmin = computed(() => authStore.isAdmin)
+const {
+  filters,
+  ownerSearchQuery,
+  typeOptions,
+  statusOptions,
+  sortOptions,
+  ownerOptions,
+  hasActiveFilters,
+  expiredGovernanceActive,
+  expiringGovernanceActive,
+  handleFilterUpdate,
+  handleOwnerSearchQueryUpdate,
+  focusExpired,
+  focusExpiring,
+  buildQueryParams,
+  restore: restoreFilters,
+  persist: persistFilters,
+} = useShareFilters({ t, isAdmin, owners })
+const {
+  selectedIds,
+  pageRowIds,
+  selectedIdSet,
+  selectedShares,
+  selectedSharesCount,
+  allRowsSelected,
+  selectAllIndeterminate,
+  clearSelection,
+  toggleSelectAll,
+  toggleRowSelection,
+} = useShareSelection(items)
 
 const activeRecord = ref(null)
 const fileShareModalVisible = ref(false)
@@ -155,61 +171,6 @@ const activeTextId = computed(() =>
 )
 const activeResourceName = computed(() => normalizeText(activeRecord.value?.resource_name))
 
-const typeOptions = computed(() => [
-  { label: t('shares.filters.allTypes'), value: '' },
-  { label: t('shares.types.file'), value: 'file' },
-  { label: t('shares.types.text'), value: 'text' },
-  { label: t('shares.types.textOneTime'), value: 'text_one_time' },
-])
-
-const statusOptions = computed(() => [
-  { label: t('shares.filters.allStatuses'), value: '' },
-  { label: t('shares.status.active'), value: 'active' },
-  { label: t('shares.status.expired'), value: 'expired' },
-  { label: t('shares.status.exhausted'), value: 'exhausted' },
-  { label: t('shares.status.consumed'), value: 'consumed' },
-])
-
-const sortOptions = computed(() => [
-  { label: t('shares.filters.sortUpdatedDesc'), value: 'updated_at__desc' },
-  { label: t('shares.filters.sortExpiresAsc'), value: 'expires_at__asc' },
-  { label: t('shares.filters.sortExpiresDesc'), value: 'expires_at__desc' },
-])
-
-const ownerOptions = computed(() => [
-  { label: t('shares.filters.allOwners'), value: '' },
-  ...filterShareOwners(owners.value, ownerSearchQuery.value, filters.value.owner_id).map(
-    (user) => ({
-      label: String(user.username ?? ''),
-      value: String(user.id ?? ''),
-    })
-  ),
-])
-
-function handleFilterUpdate({ key, value } = {}) {
-  if (!key) return
-  filters.value = {
-    ...filters.value,
-    [key]: value,
-  }
-}
-
-function handleOwnerSearchQueryUpdate(value) {
-  ownerSearchQuery.value = String(value ?? '')
-}
-
-const hasActiveFilters = computed(() => {
-  return hasActiveShareFilters(filters.value, { isAdmin: authStore.isAdmin })
-})
-
-const expiredGovernanceActive = computed(() => {
-  return isExpiredShareGovernanceActive(filters.value)
-})
-
-const expiringGovernanceActive = computed(() => {
-  return isExpiringShareGovernanceActive(filters.value)
-})
-
 const emptyStateText = computed(() => {
   if (loadFailed.value) return t('shares.state.loadFailed')
   if (hasActiveFilters.value) return t('shares.state.filteredEmpty')
@@ -218,25 +179,6 @@ const emptyStateText = computed(() => {
 const initialPageLoading = computed(
   () => !hasLoadedOnce.value && (loading.value || ownersLoading.value)
 )
-const pageRowIds = computed(() =>
-  items.value.map((item) => toShareSelectionKey(item)).filter(Boolean)
-)
-const selectedIdSet = computed(() => buildShareSelectedIdSet(selectedIds.value))
-const selectedShares = computed(() => collectSelectedShares(items.value, selectedIds.value))
-const selectedSharesCount = computed(() => selectedShares.value.length)
-const allRowsSelected = computed(() => {
-  const ids = pageRowIds.value
-  if (!ids.length) return false
-  const set = selectedIdSet.value
-  return ids.every((id) => set.has(id))
-})
-const someRowsSelected = computed(() => {
-  const ids = pageRowIds.value
-  if (!ids.length) return false
-  const set = selectedIdSet.value
-  return ids.some((id) => set.has(id))
-})
-const selectAllIndeterminate = computed(() => someRowsSelected.value && !allRowsSelected.value)
 const batchDisableSubmitting = computed(() => activeAction.value === batchDisableActionKey)
 
 const confirmMeta = computed(() =>
@@ -277,10 +219,6 @@ function getActionKey(action, record) {
 
 function isActionLoading(action, record) {
   return isShareActionLoading(activeAction.value, action, record)
-}
-
-function buildQueryParams() {
-  return buildSharesQueryParams(filters.value, { isAdmin: authStore.isAdmin })
 }
 
 async function copyTextValue(value) {
@@ -369,7 +307,7 @@ function handleRefresh() {
 
 function handleFocusExpired() {
   if (loading.value || batchDisableSubmitting.value) return
-  filters.value = buildExpiredGovernanceFilters(filters.value)
+  focusExpired()
   activeAction.value = 'focus-expired'
   pagination.value.page = 1
   loadShares()
@@ -377,7 +315,7 @@ function handleFocusExpired() {
 
 function handleFocusExpiring() {
   if (loading.value || batchDisableSubmitting.value) return
-  filters.value = buildExpiringGovernanceFilters(filters.value)
+  focusExpiring()
   activeAction.value = 'focus-expiring'
   pagination.value.page = 1
   loadShares()
@@ -438,22 +376,6 @@ function openConfirmAction(kind, record) {
 
 function closeConfirmModal() {
   pendingConfirmAction.value = null
-}
-
-function clearSelection() {
-  selectedIds.value = []
-}
-
-function toggleSelectAll(checked) {
-  if (checked) {
-    selectedIds.value = [...pageRowIds.value]
-    return
-  }
-  clearSelection()
-}
-
-function toggleRowSelection(rowId, checked) {
-  selectedIds.value = updateShareSelection(selectedIds.value, rowId, checked)
 }
 
 function handleBatchDisable() {
@@ -620,17 +542,11 @@ const columns = computed(() =>
 )
 
 onMounted(async () => {
-  filters.value = restoreShareFiltersFromStorage()
+  restoreFilters()
   await Promise.all([authStore.isAdmin ? loadOwnerOptions() : Promise.resolve(), loadShares()])
 })
 
-watch(
-  filters,
-  (value) => {
-    persistShareFiltersToStorage(value)
-  },
-  { deep: true }
-)
+watch(filters, persistFilters, { deep: true })
 </script>
 
 <style scoped>
