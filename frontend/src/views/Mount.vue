@@ -95,6 +95,8 @@ import { useI18n } from 'vue-i18n'
 import api from '../services/api'
 import AppLayout from '../components/layout/AppLayout.vue'
 import { useMessage } from '../composables/useMessage'
+import { useMountBrowser } from '../composables/useMountBrowser.js'
+import { useMountConfigs } from '../composables/useMountConfigs.js'
 import { useResponsiveViewMode } from '../composables/useResponsiveViewMode.js'
 import MountBrowserPanel from '../components/mount/MountBrowserPanel.vue'
 import MountDeleteConfirmModal from '../components/mount/MountDeleteConfirmModal.vue'
@@ -104,11 +106,9 @@ import MountUploadProgressModal from '../components/mount/MountUploadProgressMod
 import { buildMountTableColumns } from '../components/mount/mountTableColumns.js'
 import {
   buildMountDownloadUrl,
-  buildMountedObjectRows,
   formatMountBytes,
   formatMountDateTime,
   getMountObjectBasename,
-  getMountParentPrefix,
   isMountedObjectPreviewSupported,
   normalizeMountPrefix,
 } from '../utils/mountObjects.js'
@@ -120,22 +120,38 @@ const MountedObjectPreviewModal = defineAsyncComponent(
 const { t, locale } = useI18n({ useScope: 'global' })
 const message = useMessage()
 
-const configsLoading = ref(false)
-const configs = ref([])
-const selectedConfigId = ref('')
-const hasLoadedOnce = ref(false)
-
-const prefix = ref('')
-const prefixInput = ref('')
-
-const limit = ref(20)
-const pageSizeOptions = [10, 20, 50]
-
-const tokenStack = ref([null])
-const listResult = ref(null)
-const loading = ref(false)
-const activeAction = ref('')
-const loadRequestSerial = ref(0)
+const { configsLoading, configs, selectedConfigId, configOptions, loadConfigs } = useMountConfigs({
+  api,
+  t,
+  message,
+})
+const {
+  hasLoadedOnce,
+  prefix,
+  prefixInput,
+  limit,
+  pageSizeOptions,
+  tokenStack,
+  loading,
+  activeAction,
+  pageNumber,
+  canNext,
+  paginationTotal,
+  paginationDisplayTotal,
+  breadcrumbItems,
+  tableData,
+  loadObjects,
+  navigateToPrefix,
+  goRoot,
+  goUp,
+  openFolder,
+  handleApplyPrefix,
+  handleRefresh,
+  nextPage,
+  handlePaginationPageChange,
+  handlePaginationPageSizeChange,
+  resetForConfig,
+} = useMountBrowser({ api, t, message, selectedConfigId })
 
 const viewModeKey = 'flares3:mount-view-mode'
 const { isMobile, viewMode, setViewMode } = useResponsiveViewMode({
@@ -172,189 +188,12 @@ const deleteConfirmText = computed(() => {
   return t(key, { name: pendingDeleteName.value })
 })
 
-const configOptions = computed(() =>
-  configs.value.map((row) => {
-    const typeLabel =
-      row.configType === 'r2' ? 'R2' : row.configType === 'koofr' ? 'Koofr' : 'WebDAV'
-    const detailLabel =
-      row.configType === 'r2'
-        ? row.bucket_name || row.id
-        : row.configType === 'koofr'
-          ? row.remote_path && row.remote_path !== '/'
-            ? row.remote_path
-            : 'Koofr'
-          : row.endpoint || row.id
-    return {
-      label: `${row.name || row.id} (${typeLabel}: ${detailLabel})`,
-      value: row.id,
-    }
-  })
-)
-
-const currentToken = computed(() => tokenStack.value[tokenStack.value.length - 1] || '')
-const pageNumber = computed(() => tokenStack.value.length)
-const canPrev = computed(() => tokenStack.value.length > 1)
-const canNext = computed(() => Boolean(listResult.value?.next_continuation_token))
-
-const paginationTotal = computed(() => {
-  const pageSize = Number(limit.value || 100)
-  const pages = pageNumber.value + (canNext.value ? 1 : 0)
-  return pageSize * pages
-})
-
-const paginationDisplayTotal = computed(() => {
-  const pageSize = Number(limit.value || 100)
-  const page = pageNumber.value
-  const count = Number(listResult.value?.key_count || 0)
-  const seen = Math.max(0, (page - 1) * pageSize + count)
-  return canNext.value ? `${seen}+` : seen
-})
 const initialPageLoading = computed(
   () => !hasLoadedOnce.value && (configsLoading.value || loading.value)
 )
 const isPreviewSupported = isMountedObjectPreviewSupported
 const formatBytes = formatMountBytes
 const formatDateTime = (isoString) => formatMountDateTime(isoString, locale.value)
-
-const breadcrumbItems = computed(() => {
-  const raw = String(prefix.value || '')
-  const trimmed = raw.endsWith('/') ? raw.slice(0, -1) : raw
-  const parts = trimmed.split('/').filter(Boolean)
-  const items = []
-  let acc = ''
-  for (const part of parts) {
-    acc += `${part}/`
-    items.push({ label: part, prefix: acc })
-  }
-  return items
-})
-
-const goRoot = async () => {
-  await navigateToPrefix('')
-}
-
-const goUp = async () => {
-  if (!prefix.value) return
-  const parent = getMountParentPrefix(prefix.value)
-  await navigateToPrefix(parent)
-}
-
-const openFolder = async (folderPrefix) => {
-  await navigateToPrefix(String(folderPrefix || ''))
-}
-
-const loadObjects = async () => {
-  const configId = String(selectedConfigId.value || '').trim()
-  if (!configId) return false
-
-  const requestSerial = ++loadRequestSerial.value
-  loading.value = true
-
-  try {
-    const result = await api.listMountedObjects({
-      configId,
-      prefix: prefix.value,
-      continuationToken: currentToken.value || undefined,
-      limit: Number(limit.value || 100),
-    })
-
-    if (requestSerial !== loadRequestSerial.value) return false
-
-    listResult.value = result
-    hasLoadedOnce.value = true
-    return true
-  } catch (error) {
-    if (requestSerial === loadRequestSerial.value) {
-      message.error(error.response?.data?.error || t('mount.messages.loadObjectsFailed'))
-    }
-    return false
-  } finally {
-    if (requestSerial === loadRequestSerial.value) {
-      loading.value = false
-      activeAction.value = ''
-    }
-  }
-}
-
-const navigateToPrefix = async (value) => {
-  if (loading.value) return
-
-  prefix.value = normalizeMountPrefix(value)
-  prefixInput.value = prefix.value
-  tokenStack.value = [null]
-  await loadObjects()
-}
-
-const handleApplyPrefix = async () => {
-  await navigateToPrefix(prefixInput.value)
-}
-
-const handleRefresh = async () => {
-  if (loading.value) return
-  activeAction.value = 'refresh'
-  tokenStack.value = [tokenStack.value[0]]
-  await loadObjects()
-}
-
-const prevPage = async () => {
-  if (loading.value) return
-  if (!canPrev.value) return
-
-  const removed = tokenStack.value.pop()
-  const ok = await loadObjects()
-  if (!ok) {
-    tokenStack.value.push(removed)
-  }
-}
-
-const nextPage = async () => {
-  if (loading.value) return
-  const nextToken = String(listResult.value?.next_continuation_token || '').trim()
-  if (!nextToken) return
-
-  activeAction.value = 'loadMore'
-  tokenStack.value.push(nextToken)
-  const ok = await loadObjects()
-  if (!ok) {
-    tokenStack.value.pop()
-  }
-}
-
-const handlePaginationPageChange = async (targetPage) => {
-  if (loading.value) return
-
-  const nextPageNumber = Number(targetPage)
-  if (!Number.isFinite(nextPageNumber) || nextPageNumber < 1) return
-
-  const currentPageNumber = pageNumber.value
-  if (nextPageNumber === currentPageNumber) return
-
-  if (nextPageNumber < currentPageNumber) {
-    if (nextPageNumber === currentPageNumber - 1) {
-      await prevPage()
-      return
-    }
-
-    const previousStack = [...tokenStack.value]
-    tokenStack.value = tokenStack.value.slice(0, nextPageNumber)
-    const ok = await loadObjects()
-    if (!ok) {
-      tokenStack.value = previousStack
-    }
-    return
-  }
-
-  if (nextPageNumber === currentPageNumber + 1) {
-    await nextPage()
-  }
-}
-
-const handlePaginationPageSizeChange = (value) => {
-  const nextSize = Number(value)
-  if (!Number.isFinite(nextSize) || nextSize <= 0) return
-  if (nextSize === Number(limit.value)) return
-  limit.value = nextSize
-}
 
 const openPreview = (key) => {
   if (!isMountedObjectPreviewSupported(key)) {
@@ -575,14 +414,6 @@ const handleUploadProgressModalUpdate = (nextValue) => {
   showUploadProgressModal.value = nextValue
 }
 
-const tableData = computed(() => {
-  return buildMountedObjectRows({
-    basePrefix: prefix.value,
-    folders: listResult.value?.folders,
-    objects: listResult.value?.objects,
-  })
-})
-
 const columns = computed(() =>
   buildMountTableColumns({
     t,
@@ -597,27 +428,6 @@ const columns = computed(() =>
   })
 )
 
-const loadConfigs = async () => {
-  configsLoading.value = true
-  try {
-    const result = await api.getStorageConfigs()
-
-    configs.value = (result.configs || []).map((row) => ({
-      ...row,
-      configType: row.type, // 'r2' | 'webdav' | 'koofr'
-    }))
-
-    if (!selectedConfigId.value) {
-      selectedConfigId.value =
-        String(result.default_config_id || '').trim() || String(configs.value?.[0]?.id || '').trim()
-    }
-  } catch (error) {
-    message.error(error.response?.data?.error || t('mount.messages.loadConfigsFailed'))
-  } finally {
-    configsLoading.value = false
-  }
-}
-
 watch(
   () => selectedConfigId.value,
   async (value) => {
@@ -625,16 +435,7 @@ watch(
     previewKey.value = ''
     closeDeleteModal()
 
-    if (!value) {
-      listResult.value = null
-      tokenStack.value = [null]
-      return
-    }
-
-    prefix.value = ''
-    prefixInput.value = ''
-    tokenStack.value = [null]
-    await loadObjects()
+    await resetForConfig(value)
   }
 )
 
