@@ -17,7 +17,6 @@ scripts/
 .ace-tool/
 docs/
 .test-dist/
-*test*
 # worker 测试编译配置必须提交到仓库
 !worker/tsconfig.test.json
 .superpowers/
