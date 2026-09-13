@@ -50,6 +50,32 @@ function validateStorageEndpoint(type: WebDAVConfigType, endpoint: unknown): str
   return endpointCheck.url
 }
 
+/**
+ * 获取所有 WebDAV/Koofr 配置
+ *
+ * @route GET /api/webdav/configs
+ * @param _request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含所有 WebDAV/Koofr 配置列表
+ *
+ * @example
+ * // 成功响应 (200)
+ * {
+ *   "configs": [
+ *     {
+ *       "id": "uuid",
+ *       "name": "WebDAV 配置",
+ *       "type": "webdav",
+ *       "endpoint": "https://webdav.example.com",
+ *       "remote_path": "/files",
+ *       "quotaBytes": 10737418240,
+ *       "quotaBytesFormatted": "10.00 GB",
+ *       "createdAt": "2026-09-14T00:00:00.000Z",
+ *       "updatedAt": "2026-09-14T00:00:00.000Z"
+ *     }
+ *   ]
+ * }
+ */
 export async function listConfigs(_request: Request, env: Env): Promise<Response> {
   const configs = await listWebDAVConfigs(env.DB)
 
@@ -68,6 +94,53 @@ export async function listConfigs(_request: Request, env: Env): Promise<Response
   return jsonResponse({ configs: result })
 }
 
+/**
+ * 创建 WebDAV/Koofr 配置
+ *
+ * @route POST /api/webdav/configs
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含创建的配置 ID
+ *
+ * @example
+ * // 请求体（WebDAV）
+ * {
+ *   "name": "WebDAV 配置",
+ *   "type": "webdav",
+ *   "endpoint": "https://webdav.example.com",
+ *   "remote_path": "/files",
+ *   "username": "user",
+ *   "password": "pass",
+ *   "quota_bytes": 10737418240
+ * }
+ *
+ * // 请求体（Koofr）
+ * {
+ *   "name": "Koofr 配置",
+ *   "type": "koofr",
+ *   "endpoint": "https://app.koofr.net",
+ *   "mount_id": "mount123",
+ *   "remote_path": "/files",
+ *   "username": "user",
+ *   "password": "pass",
+ *   "quota_bytes": 10737418240
+ * }
+ *
+ * // 成功响应 (200)
+ * {
+ *   "success": true,
+ *   "id": "uuid"
+ * }
+ *
+ * // 字段缺失 (400)
+ * { "error": "名称、endpoint、用户名和密码为必填项" }
+ *
+ * // 类型无效 (400)
+ * { "error": "type 必须为 webdav 或 koofr" }
+ *
+ * // 配额无效 (400)
+ * { "error": "quota_bytes 必须为大于 0 的数字" }
+ */
 export async function createConfig(request: Request, env: Env): Promise<Response> {
   const masterKey = String(env.R2_MASTER_KEY || '').trim()
   if (!masterKey) {
@@ -125,6 +198,39 @@ export async function createConfig(request: Request, env: Env): Promise<Response
   }
 }
 
+/**
+ * 更新 WebDAV/Koofr 配置
+ *
+ * @route PATCH /api/webdav/configs/:id
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @param id - 配置 ID
+ * @returns JSON 响应，包含操作结果
+ *
+ * @example
+ * // 请求体（所有字段均为可选）
+ * {
+ *   "name": "更新后的名称",
+ *   "type": "webdav",
+ *   "endpoint": "https://webdav.example.com",
+ *   "remote_path": "/new-path",
+ *   "username": "newuser",
+ *   "password": "newpass",
+ *   "quota_bytes": 21474836480
+ * }
+ *
+ * // 成功响应 (200)
+ * { "success": true }
+ *
+ * // 配置不存在 (404)
+ * { "error": "配置不存在" }
+ *
+ * // 无更新字段 (400)
+ * { "error": "无有效更新字段" }
+ *
+ * // 类型无效 (400)
+ * { "error": "type 必须为 webdav 或 koofr" }
+ */
 export async function updateConfig(request: Request, env: Env, id: string): Promise<Response> {
   if (!id) return jsonResponse({ error: '配置 ID 不能为空' }, 400)
 
@@ -187,6 +293,28 @@ export async function updateConfig(request: Request, env: Env, id: string): Prom
   }
 }
 
+/**
+ * 删除 WebDAV/Koofr 配置
+ *
+ * @route DELETE /api/webdav/configs/:id
+ * @param _request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @param id - 配置 ID
+ * @returns JSON 响应，包含操作结果
+ *
+ * @example
+ * // 成功响应 (200)
+ * { "success": true }
+ *
+ * // 配置 ID 为空 (400)
+ * { "error": "配置 ID 不能为空" }
+ *
+ * // 配置不存在 (404)
+ * { "error": "配置不存在" }
+ *
+ * // 配置有关联文件 (409)
+ * { "error": "该配置仍有关联文件或上传预约，无法删除" }
+ */
 export async function deleteConfig(_request: Request, env: Env, id: string): Promise<Response> {
   if (!id) return jsonResponse({ error: '配置 ID 不能为空' }, 400)
 
@@ -230,6 +358,40 @@ export async function deleteConfig(_request: Request, env: Env, id: string): Pro
   }
 }
 
+/**
+ * 测试 WebDAV/Koofr 配置连接
+ *
+ * @route POST /api/webdav/configs/:id/test
+ * @param _request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @param id - 配置 ID
+ * @returns JSON 响应，包含测试结果
+ *
+ * @example
+ * // 成功响应 (200)
+ * {
+ *   "success": true,
+ *   "message": "连接测试成功"
+ * }
+ *
+ * // 缺少 id (400)
+ * {
+ *   "success": false,
+ *   "message": "缺少 id"
+ * }
+ *
+ * // 配置不存在 (404)
+ * {
+ *   "success": false,
+ *   "message": "配置不存在或不可用"
+ * }
+ *
+ * // 连接失败 (400)
+ * {
+ *   "success": false,
+ *   "message": "连接测试失败（UNAUTHORIZED / HTTP 401 / Authentication failed）"
+ * }
+ */
 export async function testById(_request: Request, env: Env, id: string): Promise<Response> {
   if (!id) return jsonResponse({ success: false, message: '缺少 id' }, 400)
 

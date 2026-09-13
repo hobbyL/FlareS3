@@ -89,6 +89,48 @@ function secretJsonResponse(data: unknown, status = 200): Response {
   return jsonResponse(data, status, { 'Cache-Control': 'no-store' })
 }
 
+/**
+ * 获取所有存储配置（统一 R2 和 WebDAV/Koofr）
+ *
+ * @route GET /api/storage/configs
+ * @param _request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含所有存储配置的统一列表
+ *
+ * @example
+ * // 成功响应 (200)
+ * {
+ *   "default_config_id": "uuid",
+ *   "legacy_files_config_id": "uuid",
+ *   "configs": [
+ *     {
+ *       "id": "uuid",
+ *       "name": "R2 配置",
+ *       "type": "r2",
+ *       "source": "database",
+ *       "endpoint": "https://xxx.r2.cloudflarestorage.com",
+ *       "bucket_name": "my-bucket",
+ *       "usedSpace": 1048576,
+ *       "totalSpace": 10737418240,
+ *       "usedSpaceFormatted": "1.00 MB",
+ *       "totalSpaceFormatted": "10.00 GB",
+ *       "usagePercent": 0.01
+ *     },
+ *     {
+ *       "id": "uuid",
+ *       "name": "WebDAV 配置",
+ *       "type": "webdav",
+ *       "endpoint": "https://webdav.example.com",
+ *       "remote_path": "/files",
+ *       "usedSpace": 2097152,
+ *       "totalSpace": 5368709120,
+ *       "usedSpaceFormatted": "2.00 MB",
+ *       "totalSpaceFormatted": "5.00 GB",
+ *       "usagePercent": 0.04
+ *     }
+ *   ]
+ * }
+ */
 export async function listAllConfigs(_request: Request, env: Env): Promise<Response> {
   const timings: RouteTimingEntry[] = []
   const [r2Result, webdavConfigs, completedUsage, reservedUsage, legacyUsedSpace] =
@@ -173,6 +215,46 @@ export async function listAllConfigs(_request: Request, env: Env): Promise<Respo
   )
 }
 
+/**
+ * 获取存储配置的敏感信息（密钥/密码）
+ *
+ * @route GET /api/storage/configs/:id/secrets
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @param id - 配置 ID
+ * @returns JSON 响应，包含配置的敏感信息
+ *
+ * @example
+ * // 查询参数
+ * // type: 配置类型（r2 | webdav | koofr）
+ *
+ * // 成功响应（R2）(200)
+ * {
+ *   "type": "r2",
+ *   "endpoint": "https://xxx.r2.cloudflarestorage.com",
+ *   "bucket_name": "my-bucket",
+ *   "access_key_id": "xxxx",
+ *   "secret_access_key": "xxxx"
+ * }
+ *
+ * // 成功响应（WebDAV/Koofr）(200)
+ * {
+ *   "type": "webdav",
+ *   "endpoint": "https://webdav.example.com",
+ *   "remote_path": "/files",
+ *   "username": "user",
+ *   "password": "pass"
+ * }
+ *
+ * // 配置 ID 为空 (400)
+ * { "error": "配置 ID 不能为空" }
+ *
+ * // 配置不存在 (404)
+ * { "error": "配置不存在或密钥不可用" }
+ *
+ * // type 无效 (400)
+ * { "error": "type 必须为 r2、webdav 或 koofr" }
+ */
 export async function getConfigSecrets(request: Request, env: Env, id: string): Promise<Response> {
   if (!id) return secretJsonResponse({ error: '配置 ID 不能为空' }, 400)
 

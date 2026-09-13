@@ -72,6 +72,38 @@ async function isLastActiveAdmin(db: D1Database, userId: string): Promise<boolea
   return activeAdmins <= 1
 }
 
+/**
+ * 获取用户列表
+ *
+ * @route GET /api/users
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含用户列表和分页信息
+ *
+ * @example
+ * // 查询参数
+ * // page: 页码（默认 1）
+ * // limit: 每页数量（默认 20，最大 100）
+ * // status: 用户状态过滤（active/inactive）
+ * // role: 用户角色过滤（admin/user）
+ * // q: 搜索关键词（用户名）
+ *
+ * // 成功响应 (200)
+ * {
+ *   "total": 10,
+ *   "users": [
+ *     {
+ *       "id": "uuid",
+ *       "username": "admin",
+ *       "role": "admin",
+ *       "status": "active",
+ *       "quota_bytes": 10737418240,
+ *       "created_at": "2026-09-14T00:00:00.000Z",
+ *       "last_login_at": "2026-09-14T00:00:00.000Z"
+ *     }
+ *   ]
+ * }
+ */
 export async function listUsers(request: Request, env: Env): Promise<Response> {
   const timings: RouteTimingEntry[] = []
   const url = new URL(request.url)
@@ -138,6 +170,35 @@ export async function listUsers(request: Request, env: Env): Promise<Response> {
   )
 }
 
+/**
+ * 创建用户
+ *
+ * @route POST /api/users
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含创建的用户 ID
+ *
+ * @example
+ * // 请求体
+ * {
+ *   "username": "newuser",
+ *   "password": "password123",
+ *   "role": "user",
+ *   "quota_bytes": 10737418240
+ * }
+ *
+ * // 成功响应 (200)
+ * {
+ *   "id": "uuid",
+ *   "username": "newuser"
+ * }
+ *
+ * // 用户名已存在 (409)
+ * { "error": "用户名已存在" }
+ *
+ * // 配额无效 (400)
+ * { "error": "配额无效" }
+ */
 export async function createUser(request: Request, env: Env): Promise<Response> {
   try {
     const body = await parseJson<{
@@ -187,6 +248,32 @@ export async function createUser(request: Request, env: Env): Promise<Response> 
   }
 }
 
+/**
+ * 更新用户信息
+ *
+ * @route PATCH /api/users/:id
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @param userId - 用户 ID
+ * @returns JSON 响应，包含操作结果
+ *
+ * @example
+ * // 请求体
+ * {
+ *   "status": "active",
+ *   "role": "user",
+ *   "quota_bytes": 10737418240
+ * }
+ *
+ * // 成功响应 (200)
+ * { "success": true }
+ *
+ * // 用户不存在 (404)
+ * { "error": "用户不存在" }
+ *
+ * // 最后一个管理员 (400)
+ * { "error": "必须保留至少一个启用中的管理员" }
+ */
 export async function updateUser(request: Request, env: Env, userId: string): Promise<Response> {
   try {
     const body = await parseJson<{
@@ -288,6 +375,27 @@ export async function updateUser(request: Request, env: Env, userId: string): Pr
   }
 }
 
+/**
+ * 重置用户密码
+ *
+ * @route POST /api/users/:id/reset-password
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @param userId - 用户 ID
+ * @returns JSON 响应，包含操作结果
+ *
+ * @example
+ * // 请求体
+ * {
+ *   "password": "newpassword123"
+ * }
+ *
+ * // 成功响应 (200)
+ * { "success": true }
+ *
+ * // 密码为空 (400)
+ * { "error": "密码不能为空" }
+ */
 export async function resetPassword(request: Request, env: Env, userId: string): Promise<Response> {
   try {
     const body = await parseJson<{ password: string }>(request)
@@ -321,6 +429,28 @@ export async function resetPassword(request: Request, env: Env, userId: string):
   }
 }
 
+/**
+ * 删除用户
+ *
+ * @route DELETE /api/users/:id
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @param userId - 用户 ID
+ * @returns JSON 响应，包含操作结果
+ *
+ * @example
+ * // 成功响应 (200)
+ * {
+ *   "success": true,
+ *   "queued": true
+ * }
+ *
+ * // 用户不存在 (404)
+ * { "error": "用户不存在" }
+ *
+ * // 管理员不可删除 (400)
+ * { "error": "管理员用户不允许删除" }
+ */
 export async function deleteUser(request: Request, env: Env, userId: string): Promise<Response> {
   const target = await env.DB.prepare('SELECT role FROM users WHERE id = ? LIMIT 1')
     .bind(userId)

@@ -28,6 +28,33 @@ import {
   createPendingUploadFileRecord,
 } from './helpers'
 
+/**
+ * 获取预签名上传 URL（小文件上传）
+ *
+ * @route POST /api/upload/presign
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含预签名上传 URL
+ *
+ * @example
+ * // 请求体
+ * {
+ *   "filename": "example.jpg",
+ *   "content_type": "image/jpeg",
+ *   "size": 1024000,
+ *   "expires_in": 86400,
+ *   "require_login": false,
+ *   "config_id": "default",
+ *   "dir": "uploads"
+ * }
+ *
+ * // 成功响应 (200)
+ * {
+ *   "file_id": "uuid",
+ *   "upload_url": "https://...",
+ *   "r2_config_id": "default"
+ * }
+ */
 export async function presignUpload(request: Request, env: Env): Promise<Response> {
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)
@@ -143,6 +170,30 @@ export async function presignUpload(request: Request, env: Env): Promise<Respons
   }
 }
 
+/**
+ * 确认小文件上传完成
+ *
+ * @route POST /api/upload/confirm
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含文件信息和下载链接
+ *
+ * @example
+ * // 请求体
+ * {
+ *   "file_id": "uuid"
+ * }
+ *
+ * // 成功响应 (200)
+ * {
+ *   "file_id": "uuid",
+ *   "filename": "example.jpg",
+ *   "download_url": "https://...",
+ *   "short_url": "/s/abc123",
+ *   "expires_at": "2026-09-15T00:00:00.000Z",
+ *   "r2_config_id": "default"
+ * }
+ */
 export async function confirmUpload(request: Request, env: Env): Promise<Response> {
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)

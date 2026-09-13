@@ -103,6 +103,45 @@ function validateFileShareTarget(file: {
   return null
 }
 
+/**
+ * 获取文件分享信息
+ *
+ * @route GET /api/files/:id/share
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @param fileId - 文件 ID
+ * @returns JSON 响应，包含文件分享信息
+ *
+ * @example
+ * // 成功响应（有分享）(200)
+ * {
+ *   "share": {
+ *     "id": "uuid",
+ *     "file_id": "uuid",
+ *     "owner_id": "uuid",
+ *     "share_code": "abc123",
+ *     "has_password": true,
+ *     "expires_in": 604800,
+ *     "expires_at": "2026-09-21T00:00:00.000Z",
+ *     "max_views": 100,
+ *     "views": 10,
+ *     "created_at": "2026-09-14T00:00:00.000Z",
+ *     "updated_at": "2026-09-14T00:00:00.000Z"
+ *   }
+ * }
+ *
+ * // 成功响应（无分享）(200)
+ * { "share": null }
+ *
+ * // 未授权 (401)
+ * { "error": "未授权" }
+ *
+ * // 文件不存在 (404)
+ * { "error": "文件不存在" }
+ *
+ * // 无权限 (403)
+ * { "error": "无权限" }
+ */
 export async function getFileShare(request: Request, env: Env, fileId: string): Promise<Response> {
   const auth = await loadFileAndAuthorize(request, env, fileId)
   if ('response' in auth) {
@@ -132,6 +171,56 @@ export async function getFileShare(request: Request, env: Env, fileId: string): 
   return jsonResponse({ share: result })
 }
 
+/**
+ * 创建或更新文件分享
+ *
+ * @route POST /api/files/:id/share
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @param fileId - 文件 ID
+ * @returns JSON 响应，包含创建或更新后的分享信息
+ *
+ * @example
+ * // 请求体
+ * {
+ *   "max_views": 100,
+ *   "expires_at": "2026-09-21T00:00:00.000Z",
+ *   "password": "secret123",
+ *   "regenerate": false
+ * }
+ *
+ * // 成功响应 (200)
+ * {
+ *   "share": {
+ *     "id": "uuid",
+ *     "file_id": "uuid",
+ *     "owner_id": "uuid",
+ *     "share_code": "abc123",
+ *     "has_password": true,
+ *     "expires_in": 604800,
+ *     "expires_at": "2026-09-21T00:00:00.000Z",
+ *     "max_views": 100,
+ *     "views": 0,
+ *     "created_at": "2026-09-14T00:00:00.000Z",
+ *     "updated_at": "2026-09-14T00:00:00.000Z"
+ *   }
+ * }
+ *
+ * // 文件未完成上传 (400)
+ * { "error": "文件未完成上传" }
+ *
+ * // 文件已过期 (410)
+ * { "error": "文件已过期" }
+ *
+ * // max_views 无效 (400)
+ * { "error": "max_views 无效" }
+ *
+ * // expires_at 无效 (400)
+ * { "error": "expires_at 无效" }
+ *
+ * // expires_at 需要晚于当前时间 (400)
+ * { "error": "expires_at 需要晚于当前时间" }
+ */
 export async function upsertFileShare(
   request: Request,
   env: Env,
@@ -338,6 +427,31 @@ export async function upsertFileShare(
   return jsonResponse({ share: responseShare })
 }
 
+/**
+ * 删除文件分享
+ *
+ * @route DELETE /api/files/:id/share
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @param fileId - 文件 ID
+ * @returns JSON 响应，包含操作结果
+ *
+ * @example
+ * // 成功响应（分享已删除）(200)
+ * {
+ *   "success": true,
+ *   "deleted": true
+ * }
+ *
+ * // 成功响应（分享不存在）(200)
+ * {
+ *   "success": true,
+ *   "deleted": false
+ * }
+ *
+ * // 关闭分享失败 (400)
+ * { "error": "关闭分享失败" }
+ */
 export async function deleteFileShare(
   request: Request,
   env: Env,
@@ -464,6 +578,50 @@ async function resolveFileShareRecord(
   }
 }
 
+/**
+ * 访问文件分享页面
+ *
+ * @route GET|POST /s/:code
+ * @param request - HTTP 请求对象
+ * @param env - Cloudflare Workers 环境变量
+ * @param code - 分享短码
+ * @returns HTML 响应或文件下载重定向
+ *
+ * @example
+ * // GET 请求（无密码）
+ * // 返回确认页面，提示点击下载
+ *
+ * // GET 请求（有密码）
+ * // 返回密码输入表单
+ *
+ * // POST 请求（无密码）
+ * // 消费访问次数，返回文件下载
+ *
+ * // POST 请求（有密码）
+ * // FormData: password=xxxx
+ * // 验证密码，消费访问次数，返回文件下载
+ *
+ * // 短码为空 (400)
+ * // HTML: "短码不能为空"
+ *
+ * // 分享不存在 (404)
+ * // HTML: "分享链接不存在"
+ *
+ * // 文件不存在 (404)
+ * // HTML: "文件不存在"
+ *
+ * // 链接已过期 (410)
+ * // HTML: "链接已过期"
+ *
+ * // 访问次数已用完 (410)
+ * // HTML: "访问次数已用完"
+ *
+ * // 密码错误
+ * // HTML: 密码表单 + "口令不正确"
+ *
+ * // 密码尝试次数过多
+ * // HTML: 密码表单 + "尝试次数过多，请 10 分钟后重试"
+ */
 export async function viewFileShare(request: Request, env: Env, code: string): Promise<Response> {
   const normalized = String(code || '').trim()
   if (!normalized) {

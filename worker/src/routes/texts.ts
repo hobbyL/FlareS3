@@ -20,6 +20,38 @@ function clampString(value: string, maxLength: number): string {
   return value.length > maxLength ? value.slice(0, maxLength) : value
 }
 
+/**
+ * 获取文本列表
+ *
+ * @route GET /api/texts
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含文本列表和分页信息
+ *
+ * @example
+ * // 查询参数
+ * // page: 页码（默认 1）
+ * // limit: 每页数量（默认 20，最大 100）
+ * // q: 搜索关键词
+ * // owner_id: 所有者 ID（仅管理员可用）
+ *
+ * // 成功响应 (200)
+ * {
+ *   "total": 50,
+ *   "texts": [
+ *     {
+ *       "id": "uuid",
+ *       "owner_id": "uuid",
+ *       "owner_username": "admin",
+ *       "title": "示例文本",
+ *       "content_preview": "内容预览...",
+ *       "content_length": 1000,
+ *       "created_at": "2026-09-14T00:00:00.000Z",
+ *       "updated_at": "2026-09-14T00:00:00.000Z"
+ *     }
+ *   ]
+ * }
+ */
 export async function listTexts(request: Request, env: Env): Promise<Response> {
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)
@@ -86,6 +118,35 @@ export async function listTexts(request: Request, env: Env): Promise<Response> {
   )
 }
 
+/**
+ * 获取单个文本详情
+ *
+ * @route GET /api/texts/:id
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @param textId - 文本 ID
+ * @returns JSON 响应，包含文本详情
+ *
+ * @example
+ * // 成功响应 (200)
+ * {
+ *   "text": {
+ *     "id": "uuid",
+ *     "owner_id": "uuid",
+ *     "owner_username": "admin",
+ *     "title": "示例文本",
+ *     "content": "完整内容...",
+ *     "created_at": "2026-09-14T00:00:00.000Z",
+ *     "updated_at": "2026-09-14T00:00:00.000Z"
+ *   }
+ * }
+ *
+ * // 文本不存在 (404)
+ * { "error": "文本不存在" }
+ *
+ * // 无权限 (403)
+ * { "error": "无权限" }
+ */
 export async function getText(request: Request, env: Env, textId: string): Promise<Response> {
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)
@@ -112,6 +173,33 @@ export async function getText(request: Request, env: Env, textId: string): Promi
   return jsonResponse({ text: row })
 }
 
+/**
+ * 创建文本
+ *
+ * @route POST /api/texts
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含创建的文本 ID
+ *
+ * @example
+ * // 请求体
+ * {
+ *   "title": "示例文本",
+ *   "content": "文本内容..."
+ * }
+ *
+ * // 成功响应 (200)
+ * {
+ *   "id": "uuid",
+ *   "title": "示例文本"
+ * }
+ *
+ * // 内容为空 (400)
+ * { "error": "内容不能为空" }
+ *
+ * // 内容过长 (413)
+ * { "error": "内容过长" }
+ */
 export async function createText(request: Request, env: Env): Promise<Response> {
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)
@@ -161,6 +249,31 @@ export async function createText(request: Request, env: Env): Promise<Response> 
   return jsonResponse({ success: true, id })
 }
 
+/**
+ * 更新文本
+ *
+ * @route PATCH /api/texts/:id
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @param textId - 文本 ID
+ * @returns JSON 响应，包含操作结果
+ *
+ * @example
+ * // 请求体
+ * {
+ *   "title": "更新后的标题",
+ *   "content": "更新后的内容..."
+ * }
+ *
+ * // 成功响应 (200)
+ * { "success": true }
+ *
+ * // 文本不存在 (404)
+ * { "error": "文本不存在" }
+ *
+ * // 无权限 (403)
+ * { "error": "无权限" }
+ */
 export async function updateText(request: Request, env: Env, textId: string): Promise<Response> {
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)
@@ -241,6 +354,25 @@ export async function updateText(request: Request, env: Env, textId: string): Pr
   return jsonResponse({ success: true })
 }
 
+/**
+ * 删除文本（软删除）
+ *
+ * @route DELETE /api/texts/:id
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @param textId - 文本 ID
+ * @returns JSON 响应，包含操作结果
+ *
+ * @example
+ * // 成功响应 (200)
+ * { "success": true }
+ *
+ * // 文本不存在 (404)
+ * { "error": "文本不存在" }
+ *
+ * // 无权限 (403)
+ * { "error": "无权限" }
+ */
 export async function deleteText(request: Request, env: Env, textId: string): Promise<Response> {
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)

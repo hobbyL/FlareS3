@@ -22,6 +22,38 @@ function buildSessionCookie(request: Request, token: string, maxAge: number): st
   return `${getSessionCookieName()}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure}`
 }
 
+/**
+ * 用户登录
+ *
+ * @route POST /api/auth/login
+ * @param request - HTTP 请求对象
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含用户信息和会话 Cookie
+ *
+ * @example
+ * // 请求体
+ * {
+ *   "username": "admin",
+ *   "password": "password123"
+ * }
+ *
+ * // 成功响应 (200)
+ * {
+ *   "success": true,
+ *   "user": {
+ *     "id": "uuid",
+ *     "username": "admin",
+ *     "role": "admin",
+ *     "status": "active"
+ *   }
+ * }
+ *
+ * // 失败响应 (401)
+ * {
+ *   "error": "用户名或密码错误",
+ *   "code": "AUTH_INVALID_CREDENTIALS"
+ * }
+ */
 export async function login(request: Request, env: Env): Promise<Response> {
   try {
     const ip = getClientIp(request)
@@ -144,6 +176,20 @@ export async function login(request: Request, env: Env): Promise<Response> {
   }
 }
 
+/**
+ * 用户登出
+ *
+ * @route POST /api/auth/logout
+ * @param request - HTTP 请求对象
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，并清除会话 Cookie
+ *
+ * @example
+ * // 成功响应 (200)
+ * {
+ *   "success": true
+ * }
+ */
 export async function logout(request: Request, env: Env): Promise<Response> {
   const token = request.headers.get('Authorization')?.replace('Bearer ', '').trim()
   const cookieHeader = request.headers.get('Cookie') || ''
@@ -163,6 +209,30 @@ export async function logout(request: Request, env: Env): Promise<Response> {
   })
 }
 
+/**
+ * 获取当前用户认证状态
+ *
+ * @route GET /api/auth/status
+ * @param request - HTTP 请求对象（需要认证）
+ * @returns JSON 响应，包含认证状态和用户信息
+ *
+ * @example
+ * // 已认证响应 (200)
+ * {
+ *   "authenticated": true,
+ *   "user": {
+ *     "id": "uuid",
+ *     "username": "admin",
+ *     "role": "admin",
+ *     "status": "active"
+ *   }
+ * }
+ *
+ * // 未认证响应 (401)
+ * {
+ *   "authenticated": false
+ * }
+ */
 export async function status(request: Request): Promise<Response> {
   const req = request as Request & {
     user?: { id: string; username: string; role: string; status: string }

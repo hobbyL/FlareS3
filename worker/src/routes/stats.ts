@@ -3,6 +3,30 @@ import { getTotalStorage } from '../config/env'
 import { formatBytes } from '../utils/format'
 import { jsonResponse, getUser } from './utils'
 
+/**
+ * 获取存储统计信息
+ *
+ * @route GET /api/stats
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含存储使用情况和统计信息
+ *
+ * @example
+ * // 成功响应 (200)
+ * {
+ *   "usedSpace": 1048576,
+ *   "totalSpace": 10737418240,
+ *   "usedSpaceFormatted": "1.00 MB",
+ *   "totalSpaceFormatted": "10.00 GB",
+ *   "usagePercent": 0.01,
+ *   "fileCount": 5,
+ *   "expiringToday": 2,
+ *   "expiringThisWeek": 8
+ * }
+ *
+ * // 未授权 (401)
+ * { "error": "未授权" }
+ */
 export async function getStats(request: Request, env: Env): Promise<Response> {
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)

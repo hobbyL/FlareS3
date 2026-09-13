@@ -44,6 +44,58 @@ function formatDuration(ms: number): string {
   return `${remMinutes}分钟`
 }
 
+/**
+ * 获取文件列表
+ *
+ * @route GET /api/files
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含文件列表和分页信息
+ *
+ * @example
+ * // 查询参数
+ * // page: 页码（默认 1）
+ * // limit: 每页数量（默认 20，最大 100）
+ * // scope: 范围过滤（mine: 仅我的文件，仅管理员可用）
+ * // filename: 文件名模糊搜索
+ * // owner_id: 所有者 ID 过滤（仅管理员可用）
+ * // upload_status: 上传状态过滤（completed | deleted）
+ * // created_from: 创建时间起始
+ * // created_to: 创建时间结束
+ * // sort_by: 排序字段（created_at | filename | size | expires_at）
+ * // sort_order: 排序方向（asc | desc）
+ *
+ * // 成功响应 (200)
+ * {
+ *   "total": 50,
+ *   "page": 1,
+ *   "limit": 20,
+ *   "files": [
+ *     {
+ *       "id": "uuid",
+ *       "owner_id": "uuid",
+ *       "owner_username": "admin",
+ *       "filename": "example.pdf",
+ *       "r2_key": "uploads/example.pdf",
+ *       "size": 1048576,
+ *       "content_type": "application/pdf",
+ *       "expires_in": 2592000,
+ *       "created_at": "2026-09-14T00:00:00.000Z",
+ *       "expires_at": "2026-10-14T00:00:00.000Z",
+ *       "upload_status": "completed",
+ *       "short_code": "abc123",
+ *       "require_login": 0,
+ *       "config_id": "uuid",
+ *       "r2_config_id": "uuid",
+ *       "remaining_time": "30天 0小时 0分钟",
+ *       "download_url": "https://example.com/download"
+ *     }
+ *   ]
+ * }
+ *
+ * // 未授权 (401)
+ * { "error": "未授权" }
+ */
 export async function listFiles(request: Request, env: Env): Promise<Response> {
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)
@@ -171,6 +223,52 @@ export async function listFiles(request: Request, env: Env): Promise<Response> {
   )
 }
 
+/**
+ * 获取回收站文件列表
+ *
+ * @route GET /api/files/trash
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含回收站文件列表和分页信息
+ *
+ * @example
+ * // 查询参数
+ * // page: 页码（默认 1）
+ * // limit: 每页数量（默认 20，最大 100）
+ * // scope: 范围过滤（mine: 仅我的文件，仅管理员可用）
+ * // filename: 文件名模糊搜索
+ * // owner_id: 所有者 ID 过滤（仅管理员可用）
+ * // deleted_from: 删除时间起始
+ * // deleted_to: 删除时间结束
+ * // sort_by: 排序字段（created_at | filename | size | expires_at | deleted_at）
+ * // sort_order: 排序方向（asc | desc）
+ *
+ * // 成功响应 (200)
+ * {
+ *   "total": 10,
+ *   "page": 1,
+ *   "limit": 20,
+ *   "files": [
+ *     {
+ *       "id": "uuid",
+ *       "owner_id": "uuid",
+ *       "owner_username": "admin",
+ *       "filename": "deleted.pdf",
+ *       "r2_key": "uploads/deleted.pdf",
+ *       "size": 1048576,
+ *       "content_type": "application/pdf",
+ *       "created_at": "2026-09-10T00:00:00.000Z",
+ *       "deleted_at": "2026-09-14T00:00:00.000Z",
+ *       "upload_status": "deleted",
+ *       "config_id": "uuid",
+ *       "r2_config_id": "uuid"
+ *     }
+ *   ]
+ * }
+ *
+ * // 未授权 (401)
+ * { "error": "未授权" }
+ */
 export async function listTrashFiles(request: Request, env: Env): Promise<Response> {
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)

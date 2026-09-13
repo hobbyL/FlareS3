@@ -87,6 +87,36 @@ function normalizeCompleteMultipartParts(
   return normalized.length > 0 ? normalized : null
 }
 
+/**
+ * 初始化分片上传（大文件上传）
+ *
+ * @route POST /api/upload/multipart/init
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含上传 ID 和分片信息
+ *
+ * @example
+ * // 请求体
+ * {
+ *   "filename": "large-file.zip",
+ *   "content_type": "application/zip",
+ *   "size": 500000000,
+ *   "expires_in": 86400,
+ *   "require_login": false,
+ *   "config_id": "default",
+ *   "dir": "uploads"
+ * }
+ *
+ * // 成功响应 (200)
+ * {
+ *   "file_id": "uuid",
+ *   "filename": "large-file.zip",
+ *   "upload_id": "multipart-upload-id",
+ *   "part_size": 10485760,
+ *   "total_parts": 48,
+ *   "r2_config_id": "default"
+ * }
+ */
 export async function initMultipart(request: Request, env: Env): Promise<Response> {
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)
@@ -200,6 +230,28 @@ export async function initMultipart(request: Request, env: Env): Promise<Respons
   }
 }
 
+/**
+ * 获取分片上传的预签名 URL
+ *
+ * @route POST /api/upload/multipart/presign
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含指定分片的预签名上传 URL
+ *
+ * @example
+ * // 请求体
+ * {
+ *   "file_id": "uuid",
+ *   "upload_id": "multipart-upload-id",
+ *   "part_number": 1
+ * }
+ *
+ * // 成功响应 (200)
+ * {
+ *   "upload_url": "https://...",
+ *   "part_number": 1
+ * }
+ */
 export async function presignMultipart(request: Request, env: Env): Promise<Response> {
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)
@@ -271,6 +323,123 @@ export async function presignMultipart(request: Request, env: Env): Promise<Resp
     )
   }
 }
+
+/**
+ * 获取已上传的分片列表（用于断点续传）
+ *
+ * @route GET /api/upload/multipart/parts
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含已上传的分片列表
+ *
+ * @example
+ * // 请求参数
+ * // GET /api/upload/multipart/parts?file_id=uuid&upload_id=multipart-upload-id
+ *
+ * // 成功响应 (200)
+ * {
+ *   "file_id": "uuid",
+ *   "upload_id": "multipart-upload-id",
+ *   "parts": [
+ *     { "PartNumber": 1, "ETag": "\"abc123...\"" },
+ *     { "PartNumber": 2, "ETag": "\"def456...\"" }
+ *   ]
+ * }
+ */
+export async function getMultipartParts(request: Request, env: Env): Promise<Response> {
+  const user = getUser(request)
+  if (!user) return jsonResponse({ error: '未授权' }, 401)
+
+  try {
+    const url = new URL(request.url)
+    const fileId = url.searchParams.get('file_id')
+    const uploadId = url.searchParams.get('upload_id')
+
+    if (!fileId || !uploadId) {
+      return uploadErrorResponse(
+        createUploadError({
+          status: 400,
+          code: 'INVALID_REQUEST',
+          message: 'file_id 和 upload_id 参数必需',
+        })
+      )
+    }
+
+    const file = await env.DB.prepare(
+      'SELECT id, owner_id, r2_key, expires_at, upload_status, multipart_upload_id, size FROM files WHERE id = ?'
+    )
+      .bind(fileId)
+      .first()
+
+    if (!file || file.owner_id !== user.id) {
+      return uploadErrorResponse(uploadFileNotFoundError())
+    }
+
+    if (isExpired(file.expires_at)) {
+      return uploadErrorResponse(uploadFileExpiredError())
+    }
+
+    if (file.upload_status !== 'uploading') {
+      return uploadErrorResponse(multipartNotInitializedError())
+    }
+
+    const storedUploadId = String(file.multipart_upload_id || '').trim()
+    if (!storedUploadId) {
+      return uploadErrorResponse(multipartUploadIdMissingError())
+    }
+    if (storedUploadId !== uploadId.trim()) {
+      return uploadErrorResponse(multipartUploadIdMismatchError())
+    }
+
+    const loaded = await resolveR2ConfigForKey(env, String(file.r2_key))
+    if (!loaded) return uploadErrorResponse(uploadConfigUnavailableError())
+
+    const parts = await listParts(loaded.config, String(file.r2_key), storedUploadId)
+
+    return jsonResponse({
+      file_id: fileId,
+      upload_id: uploadId,
+      parts: parts || [],
+    })
+  } catch (error) {
+    return uploadErrorResponse(
+      mapUnexpectedUploadError(error, {
+        code: 'GET_MULTIPART_PARTS_FAILED',
+        message: '获取已上传分片失败',
+      })
+    )
+  }
+}
+
+/**
+ * 完成分片上传
+ *
+ * @route POST /api/upload/multipart/complete
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含文件信息和下载链接
+ *
+ * @example
+ * // 请求体
+ * {
+ *   "file_id": "uuid",
+ *   "upload_id": "multipart-upload-id",
+ *   "parts": [
+ *     { "part_number": 1, "etag": "\"abc123...\"" },
+ *     { "part_number": 2, "etag": "\"def456...\"" }
+ *   ]
+ * }
+ *
+ * // 成功响应 (200)
+ * {
+ *   "file_id": "uuid",
+ *   "filename": "large-file.zip",
+ *   "download_url": "https://...",
+ *   "short_url": "/s/abc123",
+ *   "expires_at": "2026-09-15T00:00:00.000Z",
+ *   "r2_config_id": "default"
+ * }
+ */
 export async function completeMultipart(request: Request, env: Env): Promise<Response> {
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)
@@ -405,6 +574,26 @@ export async function completeMultipart(request: Request, env: Env): Promise<Res
   }
 }
 
+/**
+ * 取消分片上传
+ *
+ * @route POST /api/upload/multipart/abort
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含取消结果
+ *
+ * @example
+ * // 请求体
+ * {
+ *   "file_id": "uuid"
+ * }
+ *
+ * // 成功响应 (200)
+ * {
+ *   "success": true,
+ *   "queued": false
+ * }
+ */
 export async function abortMultipart(request: Request, env: Env): Promise<Response> {
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)

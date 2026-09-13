@@ -33,6 +33,27 @@ type R2ConfigInput = {
   quota_bytes: number
 }
 
+/**
+ * 获取上传配置选项
+ *
+ * @route GET /api/r2/options
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含可用的上传配置选项
+ *
+ * @example
+ * // 成功响应 (200)
+ * {
+ *   "configs": [
+ *     {
+ *       "id": "uuid",
+ *       "name": "默认 R2",
+ *       "availableSpace": 10737418240,
+ *       "totalSpace": 10737418240
+ *     }
+ *   ]
+ * }
+ */
 export async function listOptions(request: Request, env: Env): Promise<Response> {
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)
@@ -44,6 +65,34 @@ export async function listOptions(request: Request, env: Env): Promise<Response>
   return withRouteTimingHeaders(jsonResponse(result), timings)
 }
 
+/**
+ * 获取所有 R2 配置
+ *
+ * @route GET /api/r2/configs
+ * @param _request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含所有 R2 配置列表及默认配置 ID
+ *
+ * @example
+ * // 成功响应 (200)
+ * {
+ *   "default_config_id": "uuid",
+ *   "configs": [
+ *     {
+ *       "id": "uuid",
+ *       "name": "默认 R2",
+ *       "source": "database",
+ *       "endpoint": "https://xxx.r2.cloudflarestorage.com",
+ *       "bucket_name": "my-bucket",
+ *       "usedSpace": 1048576,
+ *       "totalSpace": 10737418240,
+ *       "usedSpaceFormatted": "1.00 MB",
+ *       "totalSpaceFormatted": "10.00 GB",
+ *       "usagePercent": 0.01
+ *     }
+ *   ]
+ * }
+ */
 export async function listConfigs(_request: Request, env: Env): Promise<Response> {
   const {
     default_config_id,
@@ -118,6 +167,40 @@ export async function listConfigs(_request: Request, env: Env): Promise<Response
   })
 }
 
+/**
+ * 创建 R2 配置
+ *
+ * @route POST /api/r2/configs
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含创建的配置 ID
+ *
+ * @example
+ * // 请求体
+ * {
+ *   "name": "新 R2 配置",
+ *   "endpoint": "https://xxx.r2.cloudflarestorage.com",
+ *   "access_key_id": "access_key",
+ *   "secret_access_key": "secret_key",
+ *   "bucket_name": "my-bucket",
+ *   "quota_bytes": 10737418240
+ * }
+ *
+ * // 成功响应 (200)
+ * {
+ *   "success": true,
+ *   "id": "uuid"
+ * }
+ *
+ * // 字段缺失 (400)
+ * { "error": "所有字段都是必填的" }
+ *
+ * // 配额无效 (400)
+ * { "error": "quota_bytes 必须为大于 0 的数字" }
+ *
+ * // 缺少主密钥 (500)
+ * { "error": "缺少 R2_MASTER_KEY" }
+ */
 export async function createConfig(request: Request, env: Env): Promise<Response> {
   const masterKey = String(env.R2_MASTER_KEY || '').trim()
   if (!masterKey) {
@@ -197,6 +280,38 @@ export async function createConfig(request: Request, env: Env): Promise<Response
   }
 }
 
+/**
+ * 更新 R2 配置
+ *
+ * @route PATCH /api/r2/configs/:id
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @param id - R2 配置 ID
+ * @returns JSON 响应，包含操作结果
+ *
+ * @example
+ * // 请求体（所有字段均为可选）
+ * {
+ *   "name": "更新后的名称",
+ *   "endpoint": "https://xxx.r2.cloudflarestorage.com",
+ *   "access_key_id": "new_access_key",
+ *   "secret_access_key": "new_secret_key",
+ *   "bucket_name": "new-bucket",
+ *   "quota_bytes": 21474836480
+ * }
+ *
+ * // 成功响应 (200)
+ * { "success": true }
+ *
+ * // 配置不存在 (404)
+ * { "error": "配置不存在" }
+ *
+ * // 不可修改的配置 (400)
+ * { "error": "该配置不可修改" }
+ *
+ * // 配额无效 (400)
+ * { "error": "quota_bytes 必须为大于 0 的数字" }
+ */
 export async function updateConfig(request: Request, env: Env, id: string): Promise<Response> {
   if (!id) return jsonResponse({ error: '配置 ID 不能为空' }, 400)
   if (id === LEGACY_R2_CONFIG_ID) {
@@ -296,6 +411,28 @@ export async function updateConfig(request: Request, env: Env, id: string): Prom
   }
 }
 
+/**
+ * 删除 R2 配置
+ *
+ * @route DELETE /api/r2/configs/:id
+ * @param _request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @param id - R2 配置 ID
+ * @returns JSON 响应，包含操作结果
+ *
+ * @example
+ * // 成功响应 (200)
+ * { "success": true }
+ *
+ * // 配置 ID 为空 (400)
+ * { "error": "配置 ID 不能为空" }
+ *
+ * // 不可删除的配置 (400)
+ * { "error": "该配置不可删除" }
+ *
+ * // 配置有关联文件 (409)
+ * { "error": "该配置仍有关联文件或上传预约，无法删除" }
+ */
 export async function deleteConfig(_request: Request, env: Env, id: string): Promise<Response> {
   if (!id) return jsonResponse({ error: '配置 ID 不能为空' }, 400)
   if (id === LEGACY_R2_CONFIG_ID) {
@@ -346,6 +483,29 @@ export async function deleteConfig(_request: Request, env: Env, id: string): Pro
   }
 }
 
+/**
+ * 设置默认 R2 配置
+ *
+ * @route POST /api/r2/default
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含操作结果
+ *
+ * @example
+ * // 请求体
+ * {
+ *   "id": "uuid"
+ * }
+ *
+ * // 成功响应 (200)
+ * { "success": true }
+ *
+ * // 缺少 id (400)
+ * { "error": "缺少 id" }
+ *
+ * // 配置不存在 (404)
+ * { "error": "配置不存在或不可用" }
+ */
 export async function setDefault(request: Request, env: Env): Promise<Response> {
   try {
     const body = await parseJson<{ id: string }>(request)
@@ -368,6 +528,34 @@ export async function setDefault(request: Request, env: Env): Promise<Response> 
   }
 }
 
+/**
+ * 设置旧文件 R2 配置
+ *
+ * @route POST /api/r2/legacy-files
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含操作结果
+ *
+ * @example
+ * // 请求体（设置配置）
+ * {
+ *   "id": "uuid"
+ * }
+ *
+ * // 请求体（清除配置）
+ * {
+ *   "id": null
+ * }
+ *
+ * // 成功响应 (200)
+ * { "success": true }
+ *
+ * // 缺少 id (400)
+ * { "error": "缺少 id" }
+ *
+ * // 配置不存在 (404)
+ * { "error": "配置不存在或不可用" }
+ */
 export async function setLegacyFiles(request: Request, env: Env): Promise<Response> {
   try {
     const body = await parseJson<{ id?: string | null }>(request)
@@ -396,6 +584,40 @@ export async function setLegacyFiles(request: Request, env: Env): Promise<Respon
   }
 }
 
+/**
+ * 测试 R2 配置连接
+ *
+ * @route POST /api/r2/configs/:id/test
+ * @param _request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @param id - R2 配置 ID
+ * @returns JSON 响应，包含测试结果
+ *
+ * @example
+ * // 成功响应 (200)
+ * {
+ *   "success": true,
+ *   "message": "连接测试成功"
+ * }
+ *
+ * // 缺少 id (400)
+ * {
+ *   "success": false,
+ *   "message": "缺少 id"
+ * }
+ *
+ * // 配置不存在 (404)
+ * {
+ *   "success": false,
+ *   "message": "配置不存在或不可用"
+ * }
+ *
+ * // 连接失败 (400)
+ * {
+ *   "success": false,
+ *   "message": "连接测试失败（AccessDenied / HTTP 403 / Access Denied）；请确认 R2 API Token 已启用 Object Read/Write 且已授权该 Bucket"
+ * }
+ */
 export async function testById(_request: Request, env: Env, id: string): Promise<Response> {
   if (!id) return jsonResponse({ success: false, message: '缺少 id' }, 400)
   try {

@@ -22,6 +22,25 @@ import { getExplicitProviderConfigId } from '../services/fileStorage'
 
 export { listFiles, listTrashFiles } from './fileListing'
 
+/**
+ * 下载文件
+ *
+ * @route GET /api/files/:id/download
+ * @param request - HTTP 请求对象
+ * @param env - Cloudflare Workers 环境变量
+ * @param fileId - 文件 ID
+ * @returns 重定向到预签名下载 URL 或错误响应
+ *
+ * @example
+ * // 成功响应 (302)
+ * // 重定向到预签名下载 URL
+ *
+ * // 文件不存在 (404)
+ * { "error": "文件不存在" }
+ *
+ * // 文件已过期 (410)
+ * { "error": "文件已过期" }
+ */
 export async function downloadFile(request: Request, env: Env, fileId: string): Promise<Response> {
   const file = await env.DB.prepare(
     `SELECT f.id, f.owner_id, f.filename, f.r2_key, f.expires_at, f.upload_status, f.require_login, f.config_id,
@@ -113,6 +132,30 @@ export async function downloadFile(request: Request, env: Env, fileId: string): 
   return jsonResponse({ error: '存储配置未找到' }, 503)
 }
 
+/**
+ * 预览文件
+ *
+ * @route GET /api/files/:id/preview
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @param fileId - 文件 ID
+ * @returns 文件内容或预览信息
+ *
+ * @example
+ * // 文本文件响应 (200)
+ * // Content-Type: text/plain
+ * // Body: 文件内容（限制 1MB）
+ *
+ * // 图片文件响应 (200)
+ * // Content-Type: image/jpeg
+ * // Body: 图片二进制数据
+ *
+ * // 文件不存在 (404)
+ * { "error": "文件不存在" }
+ *
+ * // 无权限 (403)
+ * { "error": "无权限" }
+ */
 export async function previewFile(request: Request, env: Env, fileId: string): Promise<Response> {
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)
@@ -221,6 +264,25 @@ export async function previewFile(request: Request, env: Env, fileId: string): P
   return limitedPreviewResponse(response, mode.responseContentType)
 }
 
+/**
+ * 恢复已删除的文件
+ *
+ * @route POST /api/files/:id/restore
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @param fileId - 文件 ID
+ * @returns JSON 响应，包含操作结果
+ *
+ * @example
+ * // 成功响应 (200)
+ * { "message": "文件已恢复" }
+ *
+ * // 文件不存在 (404)
+ * { "error": "文件不存在" }
+ *
+ * // 无权限 (403)
+ * { "error": "无权限" }
+ */
 export async function restoreFile(request: Request, env: Env, fileId: string): Promise<Response> {
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)
@@ -307,6 +369,24 @@ export async function restoreFile(request: Request, env: Env, fileId: string): P
   return jsonResponse({ success: true })
 }
 
+/**
+ * 永久删除回收站中的所有文件
+ *
+ * @route DELETE /api/files/trash/permanent
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含删除统计
+ *
+ * @example
+ * // 成功响应 (200)
+ * {
+ *   "deleted": 5,
+ *   "queued": 2
+ * }
+ *
+ * // 未授权 (401)
+ * { "error": "未授权" }
+ */
 export async function permanentlyDeleteTrashFiles(request: Request, env: Env): Promise<Response> {
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)
@@ -383,6 +463,25 @@ export async function permanentlyDeleteTrashFiles(request: Request, env: Env): P
   return jsonResponse({ success: true, deleted, queued, total: files.length })
 }
 
+/**
+ * 永久删除单个文件
+ *
+ * @route DELETE /api/files/:id/permanent
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @param fileId - 文件 ID
+ * @returns JSON 响应，包含操作结果
+ *
+ * @example
+ * // 成功响应 (200)
+ * { "success": true }
+ *
+ * // 文件不存在 (404)
+ * { "error": "文件不存在" }
+ *
+ * // 无权限 (403)
+ * { "error": "无权限" }
+ */
 export async function permanentlyDeleteFile(
   request: Request,
   env: Env,
@@ -462,6 +561,25 @@ export async function permanentlyDeleteFile(
   return jsonResponse({ success: true, queued })
 }
 
+/**
+ * 删除文件（移至回收站）
+ *
+ * @route DELETE /api/files/:id
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @param fileId - 文件 ID
+ * @returns JSON 响应，包含操作结果
+ *
+ * @example
+ * // 成功响应 (200)
+ * { "success": true }
+ *
+ * // 文件不存在 (404)
+ * { "error": "文件不存在" }
+ *
+ * // 无权限 (403)
+ * { "error": "无权限" }
+ */
 export async function deleteFile(request: Request, env: Env, fileId: string): Promise<Response> {
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)

@@ -45,6 +45,36 @@ async function loadTextAndAuthorize(
   return { user, text, ownerId }
 }
 
+/**
+ * 创建一次性文本分享
+ *
+ * @route POST /api/texts/:id/one-time-share
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @param textId - 文本 ID
+ * @returns JSON 响应，包含一次性分享信息
+ *
+ * @example
+ * // 成功响应 (200)
+ * {
+ *   "share": {
+ *     "share_code": "abc123",
+ *     "expires_at": "2026-09-14T01:00:00.000Z"
+ *   }
+ * }
+ *
+ * // 未授权 (401)
+ * { "error": "未授权" }
+ *
+ * // 文本不存在 (404)
+ * { "error": "文本不存在" }
+ *
+ * // 无权限 (403)
+ * { "error": "无权限" }
+ *
+ * // 生成失败 (500)
+ * { "error": "生成一次性分享链接失败" }
+ */
 export async function createTextOneTimeShare(
   request: Request,
   env: Env,
@@ -103,6 +133,28 @@ export async function createTextOneTimeShare(
   return jsonResponse({ error: '生成一次性分享链接失败' }, 500)
 }
 
+/**
+ * 删除一次性文本分享
+ *
+ * @route DELETE /api/texts/:id/one-time-share
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @param textId - 文本 ID
+ * @returns JSON 响应，包含操作结果
+ *
+ * @example
+ * // 成功响应（分享已删除）(200)
+ * {
+ *   "success": true,
+ *   "deleted": true
+ * }
+ *
+ * // 成功响应（分享不存在）(200)
+ * {
+ *   "success": true,
+ *   "deleted": false
+ * }
+ */
 export async function deleteTextOneTimeShare(
   request: Request,
   env: Env,
@@ -133,6 +185,37 @@ export async function deleteTextOneTimeShare(
   })
 }
 
+/**
+ * 尝试访问一次性文本分享
+ *
+ * @route GET|POST /s/:code
+ * @param request - HTTP 请求对象
+ * @param env - Cloudflare Workers 环境变量
+ * @param code - 分享短码
+ * @returns HTML 响应或 null（如果短码不匹配一次性分享）
+ *
+ * @example
+ * // GET 请求
+ * // 返回确认页面，提示点击查看
+ *
+ * // POST 请求
+ * // 消费链接（设置 consumed_at），返回内容页面
+ *
+ * // 短码不匹配
+ * // 返回 null（由调用方继续尝试其他分享类型）
+ *
+ * // 内容不存在 (404)
+ * // HTML: "内容不存在"
+ *
+ * // 链接已过期 (410)
+ * // HTML: "链接已过期"
+ *
+ * // 链接已失效（已消费）(410)
+ * // HTML: "链接已失效"
+ *
+ * // 方法不允许 (405)
+ * // "Method Not Allowed"
+ */
 export async function tryViewTextOneTimeShare(
   request: Request,
   env: Env,

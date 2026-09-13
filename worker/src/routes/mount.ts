@@ -142,6 +142,47 @@ async function ensureMountedObjectExists(
   }
 }
 
+/**
+ * 列出挂载对象
+ *
+ * @route GET /api/mount/objects
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含对象列表和分页信息
+ *
+ * @example
+ * // 查询参数
+ * // config_id: 存储配置 ID（必需）
+ * // prefix: 路径前缀（可选）
+ * // continuation_token: 分页标记（可选）
+ * // limit: 每页数量（默认 100，最大 500）
+ *
+ * // 成功响应 (200)
+ * {
+ *   "config_id": "default",
+ *   "prefix": "uploads/",
+ *   "delimiter": "/",
+ *   "limit": 100,
+ *   "continuation_token": null,
+ *   "next_continuation_token": "token123",
+ *   "is_truncated": true,
+ *   "key_count": 100,
+ *   "folders": ["uploads/images/", "uploads/videos/"],
+ *   "objects": [
+ *     {
+ *       "key": "uploads/file.txt",
+ *       "size": 1024,
+ *       "last_modified": "2026-09-14T00:00:00.000Z"
+ *     }
+ *   ]
+ * }
+ *
+ * // 缺少配置 ID (400)
+ * { "error": "缺少 config_id" }
+ *
+ * // 配置不存在 (404)
+ * { "error": "配置不存在或不可用" }
+ */
 export async function listMountedObjects(request: Request, env: Env): Promise<Response> {
   const timings: RouteTimingEntry[] = []
   const url = new URL(request.url)
@@ -201,6 +242,29 @@ export async function listMountedObjects(request: Request, env: Env): Promise<Re
   }
 }
 
+/**
+ * 下载挂载对象
+ *
+ * @route GET /api/mount/download
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns 重定向到下载 URL 或文件内容
+ *
+ * @example
+ * // 查询参数
+ * // config_id: 存储配置 ID（必需）
+ * // key: 对象键名（必需）
+ *
+ * // 成功响应 (302)
+ * // 重定向到预签名下载 URL
+ *
+ * // 缺少参数 (400)
+ * { "error": "缺少 config_id" }
+ * { "error": "缺少 key" }
+ *
+ * // 配置不存在 (404)
+ * { "error": "配置不存在或不可用" }
+ */
 export async function downloadMountedObject(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url)
   const configId = String(url.searchParams.get('config_id') || '').trim()
@@ -240,6 +304,33 @@ export async function downloadMountedObject(request: Request, env: Env): Promise
   }
 }
 
+/**
+ * 预览挂载对象
+ *
+ * @route GET /api/mount/preview
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns 文件预览内容或重定向
+ *
+ * @example
+ * // 查询参数
+ * // config_id: 存储配置 ID（必需）
+ * // key: 对象键名（必需）
+ *
+ * // 文本文件响应 (200)
+ * // Content-Type: text/plain
+ * // Body: 文件内容（限制 1MB）
+ *
+ * // 图片文件响应 (302)
+ * // 重定向到预签名 URL
+ *
+ * // 缺少参数 (400)
+ * { "error": "缺少 config_id" }
+ * { "error": "缺少 key" }
+ *
+ * // 不支持预览 (415)
+ * { "error": "不支持预览该文件类型" }
+ */
 export async function previewMountedObject(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url)
   const configId = String(url.searchParams.get('config_id') || '').trim()
@@ -290,6 +381,38 @@ export async function previewMountedObject(request: Request, env: Env): Promise<
   }
 }
 
+/**
+ * 删除挂载对象
+ *
+ * @route DELETE /api/mount/object
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含删除统计
+ *
+ * @example
+ * // 查询参数
+ * // config_id: 存储配置 ID（必需）
+ * // key: 对象键名（必需，可以是文件或目录）
+ *
+ * // 删除文件成功 (200)
+ * {
+ *   "success": true,
+ *   "deleted_count": 1
+ * }
+ *
+ * // 删除目录成功 (200)
+ * {
+ *   "success": true,
+ *   "deleted_count": 15
+ * }
+ *
+ * // 缺少参数 (400)
+ * { "error": "缺少 config_id" }
+ * { "error": "缺少 key" }
+ *
+ * // 对象不存在 (404)
+ * { "error": "对象不存在" }
+ */
 export async function deleteMountedObject(request: Request, env: Env): Promise<Response> {
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)
@@ -377,6 +500,43 @@ export async function deleteMountedObject(request: Request, env: Env): Promise<R
 const MAX_MOUNT_UPLOAD_BYTES = 100 * 1024 * 1024 // 100MB
 const MAX_MOUNT_MULTIPART_REQUEST_BYTES = MAX_MOUNT_UPLOAD_BYTES + 1024 * 1024
 
+/**
+ * 上传文件到挂载目录
+ *
+ * @route POST /api/mount/upload
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含上传结果
+ *
+ * @example
+ * // 请求格式 1: multipart/form-data
+ * // FormData 字段:
+ * // - config_id: 存储配置 ID（必需）
+ * // - path: 目标路径（必需）
+ * // - file: 文件对象（必需）
+ *
+ * // 请求格式 2: application/octet-stream
+ * // 查询参数:
+ * // - config_id: 存储配置 ID（必需）
+ * // - path: 目标路径（必需）
+ * // - filename: 文件名（必需）
+ * // Body: 文件二进制数据
+ *
+ * // 成功响应 (200)
+ * {
+ *   "success": true,
+ *   "key": "uploads/file.txt",
+ *   "size": 1024
+ * }
+ *
+ * // 缺少参数 (400)
+ * { "error": "缺少 config_id" }
+ * { "error": "缺少 path" }
+ * { "error": "缺少文件" }
+ *
+ * // 文件过大 (413)
+ * { "error": "上传文件超出限制（100MB）" }
+ */
 export async function uploadMountedObject(request: Request, env: Env): Promise<Response> {
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)
@@ -499,6 +659,34 @@ export async function uploadMountedObject(request: Request, env: Env): Promise<R
 
 // ── 创建目录 ──
 
+/**
+ * 创建挂载目录
+ *
+ * @route POST /api/mount/folder
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含操作结果
+ *
+ * @example
+ * // 请求体
+ * {
+ *   "config_id": "default",
+ *   "key": "uploads/images/"
+ * }
+ *
+ * // 成功响应 (200)
+ * {
+ *   "success": true,
+ *   "key": "uploads/images/"
+ * }
+ *
+ * // 缺少参数 (400)
+ * { "error": "缺少 config_id" }
+ * { "error": "缺少 key" }
+ *
+ * // 配置不存在 (404)
+ * { "error": "配置不存在或不可用" }
+ */
 export async function createMountedFolder(request: Request, env: Env): Promise<Response> {
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)
