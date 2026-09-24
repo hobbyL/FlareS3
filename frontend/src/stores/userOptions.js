@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import api from '../services/api'
+import api from '../services/api.js'
 
 const DEFAULT_TTL_MS = 5 * 60 * 1000
 let activeUsersRequest = null
@@ -29,8 +29,15 @@ export const useUserOptionsStore = defineStore('userOptions', {
         return this.users
       }
 
-      if (activeUsersRequest) {
+      // 复用在途请求，但强制刷新时必须另起一次
+      if (!force && activeUsersRequest) {
         return activeUsersRequest
+      }
+
+      // 强制刷新：推进缓存代次并丢弃在途请求，被顶替的旧请求不会回写用户列表
+      if (force) {
+        cacheVersion += 1
+        activeUsersRequest = null
       }
 
       const requestVersion = cacheVersion

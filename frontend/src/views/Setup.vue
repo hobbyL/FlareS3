@@ -251,6 +251,7 @@ import Alert from '../components/ui/alert/Alert.vue'
 import Tag from '../components/ui/tag/Tag.vue'
 import Progress from '../components/ui/progress/Progress.vue'
 import { useMessage } from '../composables/useMessage'
+import { useStorageConfigsStore } from '../stores/storageConfigs'
 
 const StorageConfigModal = defineAsyncComponent(
   () => import('../components/setup/StorageConfigModal.vue')
@@ -258,6 +259,7 @@ const StorageConfigModal = defineAsyncComponent(
 const UsageTipsModal = defineAsyncComponent(() => import('../components/setup/UsageTipsModal.vue'))
 
 const message = useMessage()
+const storageConfigsStore = useStorageConfigsStore()
 const { t } = useI18n({ useScope: 'global' })
 
 const loading = ref(false)
@@ -355,7 +357,8 @@ const getUsageColor = (percent) => {
 const refresh = async () => {
   loading.value = true
   try {
-    const storageResult = await api.getStorageConfigs()
+    // 配置页始终展示最新数据：跳过 5 分钟缓存，同时把结果回填到 store
+    const storageResult = await storageConfigsStore.fetchConfigs({ force: true })
     const configs = storageResult.configs || []
 
     r2Options.value = {

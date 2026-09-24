@@ -1,11 +1,17 @@
 import { defineStore } from 'pinia'
-import api from '../services/api'
-import { useUserOptionsStore } from './userOptions'
+import api from '../services/api.js'
+import { useUserOptionsStore } from './userOptions.js'
+
+/** 认证状态缓存有效期：5 分钟 */
+const DEFAULT_TTL_MS = 5 * 60 * 1000
+let authStatusRequest = null
+let cacheVersion = 0
 
 export const useAuthStore = defineStore('auth', {
   state: () => ({
     isAuthenticated: false,
     user: null,
+    checkedAt: 0,
   }),
 
   getters: {
@@ -17,9 +23,11 @@ export const useAuthStore = defineStore('auth', {
       try {
         const response = await api.login(username, password)
         if (response.success) {
+          this.invalidate()
           useUserOptionsStore().invalidate()
           this.isAuthenticated = true
           this.user = response.user
+          this.checkedAt = Date.now()
           return { success: true }
         }
         return { success: false, message: response.message, code: response.code }
@@ -32,16 +40,66 @@ export const useAuthStore = defineStore('auth', {
       }
     },
 
-    async checkAuth() {
-      try {
-        const response = await api.getAuthStatus()
-        this.isAuthenticated = response.authenticated
-        this.user = response.user || null
-        return this.isAuthenticated
-      } catch (error) {
-        this.logoutLocal()
-        return false
+    /** 已登录状态是否仍在缓存有效期内 */
+    isFresh(ttlMs = DEFAULT_TTL_MS) {
+      return this.isAuthenticated && this.checkedAt > 0 && Date.now() - this.checkedAt < ttlMs
+    },
+
+    /**
+     * 校验登录态。
+     *
+     * 仅缓存"已登录"结果（默认 5 分钟）；未登录 / 请求失败一律不缓存，
+     * 保证登出或会话过期后下一次导航能立即重新校验。
+     *
+     * @param {{ force?: boolean, ttlMs?: number }} [options]
+     */
+    async checkAuth(options = {}) {
+      const force = Boolean(options.force)
+      const ttlMs = Number.isFinite(Number(options.ttlMs)) ? Number(options.ttlMs) : DEFAULT_TTL_MS
+
+      if (!force && this.isFresh(ttlMs)) {
+        return true
       }
+
+      // 复用在途请求，但强制校验时必须另起一次
+      if (!force && authStatusRequest) {
+        return authStatusRequest
+      }
+
+      // 强制校验：推进缓存代次并丢弃在途请求，被顶替的旧请求不会回写状态
+      if (force) {
+        cacheVersion += 1
+        authStatusRequest = null
+      }
+
+      const requestVersion = cacheVersion
+      const request = api
+        .getAuthStatus()
+        .then((response) => {
+          if (requestVersion !== cacheVersion) {
+            return this.isAuthenticated
+          }
+          const authenticated = Boolean(response.authenticated)
+          this.isAuthenticated = authenticated
+          this.user = response.user || null
+          this.checkedAt = authenticated ? Date.now() : 0
+          return authenticated
+        })
+        .catch(() => {
+          if (requestVersion !== cacheVersion) {
+            return false
+          }
+          this.logoutLocal()
+          return false
+        })
+        .finally(() => {
+          if (authStatusRequest === request) {
+            authStatusRequest = null
+          }
+        })
+
+      authStatusRequest = request
+      return authStatusRequest
     },
 
     async logout() {
@@ -54,9 +112,17 @@ export const useAuthStore = defineStore('auth', {
     },
 
     logoutLocal() {
+      this.invalidate()
       useUserOptionsStore().invalidate()
       this.isAuthenticated = false
       this.user = null
+    },
+
+    /** 丢弃认证状态缓存，并让在途请求的结果失效 */
+    invalidate() {
+      cacheVersion += 1
+      authStatusRequest = null
+      this.checkedAt = 0
     },
   },
 })

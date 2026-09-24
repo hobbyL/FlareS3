@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue'
+import { useStorageConfigsStore } from '../stores/storageConfigs.js'
 
-export function useMountConfigs({ api, t, message }) {
+export function useMountConfigs({ t, message, store }) {
   const configsLoading = ref(false)
   const configs = ref([])
   const selectedConfigId = ref('')
@@ -24,10 +25,19 @@ export function useMountConfigs({ api, t, message }) {
     })
   )
 
-  const loadConfigs = async () => {
+  /**
+   * 加载存储配置。
+   *
+   * 走 `storageConfigs` store 的 5 分钟缓存：重复进入挂载页时不会重复请求
+   * `/api/storage/configs`。传 `{ force: true }` 可跳过缓存。
+   *
+   * @param {{ force?: boolean }} [options]
+   */
+  const loadConfigs = async (options = {}) => {
+    const configsStore = store || useStorageConfigsStore()
     configsLoading.value = true
     try {
-      const result = await api.getStorageConfigs()
+      const result = await configsStore.fetchConfigs({ force: Boolean(options.force) })
       configs.value = (result.configs || []).map((row) => ({
         ...row,
         configType: row.type,

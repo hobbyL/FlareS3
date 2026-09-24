@@ -121,7 +121,6 @@ const { t, locale } = useI18n({ useScope: 'global' })
 const message = useMessage()
 
 const { configsLoading, configs, selectedConfigId, configOptions, loadConfigs } = useMountConfigs({
-  api,
   t,
   message,
 })
