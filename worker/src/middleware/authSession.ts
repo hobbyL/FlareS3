@@ -5,6 +5,7 @@ import {
   type VerifiedAuthToken,
 } from '../services/authToken'
 import { hashToken } from '../utils/token'
+import { queryWithRetry } from '../utils/db'
 
 const COOKIE_NAME = 'flares3_session'
 const SESSION_CACHE_TTL_MS = 15 * 1000
@@ -127,51 +128,53 @@ function cacheSession(tokenHash: string, session: SessionLookupResult): void {
 }
 
 async function querySession(env: Env, tokenHash: string): Promise<SessionLookupResult | null> {
-  const session = await env.DB.prepare(
-    `SELECT s.id AS session_id,
-            s.expires_at,
-            s.revoked_at,
-            u.id AS user_id,
-            u.username,
-            u.role,
-            u.status,
-            u.quota_bytes
-       FROM sessions s
-       INNER JOIN users u ON u.id = s.user_id
-      WHERE s.token_hash = ?
-      LIMIT 1`
+  const result = await queryWithRetry<{
+    session_id: string
+    expires_at: string
+    revoked_at: string | null
+    user_id: string
+    username: string
+    role: string
+    status: string
+    quota_bytes: number
+  }>(
+    env.DB.prepare(
+      `SELECT s.id AS session_id,
+              s.expires_at,
+              s.revoked_at,
+              u.id AS user_id,
+              u.username,
+              u.role,
+              u.status,
+              u.quota_bytes
+         FROM sessions s
+         INNER JOIN users u ON u.id = s.user_id
+        WHERE s.token_hash = ?
+        LIMIT 1`
+    ).bind(tokenHash),
+    { maxRetries: 2, timeoutMs: 5000, operation: 'first' }
   )
-    .bind(tokenHash)
-    .first<{
-      session_id: string
-      expires_at: string
-      revoked_at: string | null
-      user_id: string
-      username: string
-      role: string
-      status: string
-      quota_bytes: number
-    }>()
-  if (!session || session.revoked_at) {
+
+  if (!result || result.revoked_at) {
     return null
   }
-  const expiresAt = new Date(String(session.expires_at))
+  const expiresAt = new Date(String(result.expires_at))
   const expiresAtMs = expiresAt.getTime()
   if (Number.isNaN(expiresAtMs) || Date.now() > expiresAtMs) {
     return null
   }
-  if (session.status !== 'active') {
+  if (result.status !== 'active') {
     return null
   }
   return {
     user: {
-      id: String(session.user_id),
-      username: String(session.username),
-      role: session.role as 'admin' | 'user',
-      status: session.status as 'active' | 'disabled' | 'deleted',
-      quota_bytes: Number(session.quota_bytes),
+      id: String(result.user_id),
+      username: String(result.username),
+      role: result.role as 'admin' | 'user',
+      status: result.status as 'active' | 'disabled' | 'deleted',
+      quota_bytes: Number(result.quota_bytes),
     },
-    sessionId: String(session.session_id),
+    sessionId: String(result.session_id),
     expiresAtMs,
   }
 }
