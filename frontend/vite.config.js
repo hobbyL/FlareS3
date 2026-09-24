@@ -48,6 +48,8 @@ export default defineConfig({
   plugins: [vue()],
   server: {
     port: 18786,
+    // 端口被占用时直接报错退出，而不是自动顺延抢占相邻端口（会误占 worker 的 18787）
+    strictPort: true,
     proxy: {
       '/api': {
         target: 'http://127.0.0.1:18787',
