@@ -282,6 +282,15 @@ router.post(
     )
   )
 )
+router.get(
+  '/api/upload/multipart/parts',
+  withAuth(
+    lazyRoute(
+      () => import('./routes/upload'),
+      (module, request, env) => module.getMultipartParts(request, env)
+    )
+  )
+)
 router.post(
   '/api/upload/multipart/complete',
   withAuth(

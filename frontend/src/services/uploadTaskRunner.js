@@ -6,6 +6,13 @@ import {
   resolveDownloadUrl,
   resolveShortUrl,
 } from '../utils/uploadPanel.js'
+import {
+  generateFileId,
+  getUploadProgress,
+  saveUploadProgress,
+  updateUploadedParts,
+  deleteUploadProgress,
+} from '../utils/uploadResume.js'
 
 const MULTIPART_THRESHOLD = 100 * 1024 * 1024
 const PART_UPLOAD_RETRY_COUNT = 3
@@ -147,24 +154,94 @@ export function createUploadTaskRunner({ api, t, onUploaded }) {
   }
 
   const uploadLargeFile = async (taskFile, taskState, updateItem, isCancelled) => {
-    let fileId = ''
+    const fileId = generateFileId(taskFile.rawFile)
+    let serverFileId = ''
+    let resumeProgress = null
+
     try {
-      const initResponse = await api.initMultipartUpload({
-        filename: taskFile.name,
-        content_type: taskFile.type || 'application/octet-stream',
-        size: taskFile.size,
-        expires_in: taskFile.expiresIn,
-        require_login: taskFile.requireLogin,
-        config_id: taskFile.configId || undefined,
-        dir: taskFile.dir || undefined,
-      })
-      const { file_id, upload_id, part_size, total_parts } = initResponse
-      fileId = file_id
-      taskState.activeMultipart = { file_id, upload_id }
+      // 检查是否有断点续传进度
+      resumeProgress = getUploadProgress(fileId)
+      let initResponse
+      let uploadedPartsSet = new Set()
+
+      if (resumeProgress) {
+        // 恢复上传：验证服务端状态
+        try {
+          const serverParts = await api.getMultipartUploadedParts(
+            resumeProgress.serverFileId,
+            resumeProgress.uploadId
+          )
+          // 服务端已有的分片
+          serverParts.parts?.forEach((part) => uploadedPartsSet.add(part.PartNumber))
+
+          initResponse = {
+            file_id: resumeProgress.serverFileId,
+            upload_id: resumeProgress.uploadId,
+            part_size: resumeProgress.partSize,
+            total_parts: resumeProgress.totalParts,
+            parts:
+              serverParts.parts?.map((p) => ({
+                part_number: p.PartNumber,
+                etag: p.ETag,
+              })) || [],
+          }
+          serverFileId = resumeProgress.serverFileId
+          console.log(
+            `[Resume] 恢复上传: ${taskFile.name}, 已完成 ${uploadedPartsSet.size}/${resumeProgress.totalParts} 个分片`
+          )
+        } catch (error) {
+          console.warn('[Resume] 恢复上传失败，将重新开始:', error)
+          deleteUploadProgress(fileId)
+          resumeProgress = null
+        }
+      }
+
+      if (!resumeProgress) {
+        // 新上传：初始化分片上传
+        initResponse = await api.initMultipartUpload({
+          filename: taskFile.name,
+          content_type: taskFile.type || 'application/octet-stream',
+          size: taskFile.size,
+          expires_in: taskFile.expiresIn,
+          require_login: taskFile.requireLogin,
+          config_id: taskFile.configId || undefined,
+          dir: taskFile.dir || undefined,
+        })
+
+        const { file_id, upload_id, part_size, total_parts } = initResponse
+        serverFileId = file_id
+
+        // 保存进度到 localStorage
+        saveUploadProgress(fileId, {
+          serverFileId: file_id,
+          uploadId: upload_id,
+          filename: taskFile.name,
+          size: taskFile.size,
+          partSize: part_size,
+          totalParts: total_parts,
+          uploadedParts: [],
+        })
+      }
+
+      taskState.activeMultipart = {
+        file_id: serverFileId,
+        upload_id: initResponse.upload_id,
+      }
+
+      // 上传所有分片（跳过已上传的）
+      const { part_size, total_parts } = initResponse
 
       for (let partIndex = 0; partIndex < total_parts; partIndex += 1) {
         ensureTaskActive(taskState, isCancelled)
         const partNumber = partIndex + 1
+
+        // 跳过已上传的分片
+        if (uploadedPartsSet.has(partNumber)) {
+          const end = Math.min((partIndex + 1) * part_size, taskFile.size)
+          updateUploadStats(taskState, taskFile, updateItem, end, taskFile.size)
+          continue
+        }
+
         const start = partIndex * part_size
         const end = Math.min(start + part_size, taskFile.size)
         const chunk = taskFile.rawFile.slice(start, end)
@@ -174,8 +251,8 @@ export function createUploadTaskRunner({ api, t, onUploaded }) {
           try {
             ensureTaskActive(taskState, isCancelled)
             const presignResponse = await api.getMultipartUploadURL({
-              file_id,
-              upload_id,
+              file_id: serverFileId,
+              upload_id: initResponse.upload_id,
               part_number: partNumber,
             })
             ensureTaskActive(taskState, isCancelled)
@@ -192,11 +269,17 @@ export function createUploadTaskRunner({ api, t, onUploaded }) {
               let etag = uploadResponse.headers?.etag || ''
               if (!etag) throw new Error(t('upload.errors.partMissingEtag', { partNumber }))
               if (!etag.startsWith('"')) etag = `"${etag}"`
+
               updateUploadStats(taskState, taskFile, updateItem, end, taskFile.size)
               initResponse.parts = [
                 ...(initResponse.parts || []),
                 { part_number: partNumber, etag },
               ]
+
+              // 保存进度
+              updateUploadedParts(fileId, partNumber)
+              uploadedPartsSet.add(partNumber)
+
               lastError = null
               break
             } finally {
@@ -217,25 +300,35 @@ export function createUploadTaskRunner({ api, t, onUploaded }) {
 
       ensureTaskActive(taskState, isCancelled)
       const completeResult = await api.completeMultipartUpload({
-        file_id,
-        upload_id,
+        file_id: serverFileId,
+        upload_id: initResponse.upload_id,
         parts: initResponse.parts || [],
       })
+
+      // 上传成功，清理进度
+      deleteUploadProgress(fileId)
+
       ensureTaskActive(taskState, isCancelled)
       return resolveTaskResult(taskFile, initResponse, completeResult, taskState)
     } catch (error) {
-      if (fileId) {
+      if (serverFileId && !resumeProgress) {
+        // 新上传失败才 abort，恢复上传失败保留进度
         try {
-          await api.abortMultipartUpload({ file_id: fileId })
+          await api.abortMultipartUpload({ file_id: serverFileId })
+          deleteUploadProgress(fileId)
         } catch {
           // ignore
         } finally {
-          if (taskState.activeMultipart?.file_id === fileId) taskState.activeMultipart = null
+          if (taskState.activeMultipart?.file_id === serverFileId) {
+            taskState.activeMultipart = null
+          }
         }
       }
       throw error
     } finally {
-      if (fileId && taskState.activeMultipart?.file_id === fileId) taskState.activeMultipart = null
+      if (serverFileId && taskState.activeMultipart?.file_id === serverFileId) {
+        taskState.activeMultipart = null
+      }
     }
   }
 
