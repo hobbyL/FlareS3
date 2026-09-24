@@ -16,6 +16,17 @@ binding = "ASSETS"
 [vars]
 MAX_FILE_SIZE = "5368709120"
 TOTAL_STORAGE = "10737418240"
+# 限流阈值均为可选，缺省时使用 src/config/rateLimit.ts 中的默认值：
+# RATE_LIMIT_WINDOW_MS = "60000"                    # 登录窗口，默认 60000
+# RATE_LIMIT_MAX = "300"                            # 登录窗口内最大请求数，默认 300
+# RATE_LIMIT_MAX_FAILED_ATTEMPTS = "10"             # 登录失败封禁阈值，默认 10
+# RATE_LIMIT_BLOCK_DURATION_MS = "300000"           # 登录封禁时长，默认 300000
+# SHARE_RATE_LIMIT_MAX_FAILED_ATTEMPTS = "5"        # 分享码密码错误封禁阈值，默认 5
+# SHARE_RATE_LIMIT_BLOCK_DURATION_MS = "600000"     # 分享码封禁时长，默认 600000
+# PUBLIC_RATE_LIMIT_WINDOW_MS = "60000"             # 公开入口窗口，默认 60000
+# PUBLIC_RATE_LIMIT_MAX = "120"                     # 公开入口窗口内最大请求数，默认 120
+# 访问日志开关（可选）：设为 "1" 时额外输出 4xx/2xx 结构化请求日志，缺省仅记录 5xx。
+# LOG_ACCESS = "1"
 
 [[d1_databases]]
 binding = "DB"

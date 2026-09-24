@@ -52,8 +52,7 @@ export async function handleScheduled(env: Env): Promise<void> {
     results.push([jobName, result] as const)
   }
 
-  logStructured('info', {
-    event: 'scheduled.cleanup.completed',
+  logStructured('info', 'scheduled.cleanup.completed', {
     ...Object.fromEntries(results),
   })
 
@@ -61,8 +60,7 @@ export async function handleScheduled(env: Env): Promise<void> {
     const errorMessage = failures
       .map((item) => item.errorMessage || `${item.jobName} failed`)
       .join('; ')
-    logStructured('error', {
-      event: 'scheduled.cleanup.failed',
+    logStructured('error', 'scheduled.cleanup.failed', {
       error: errorMessage,
     })
     throw new Error(errorMessage)

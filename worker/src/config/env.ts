@@ -11,10 +11,27 @@ export type Env = {
   AUTH_TOKEN_SECRET?: string
   FLARES3_DEBUG_HEADERS?: string
   /**
+   * 访问日志开关。设为 "1" 时，除 5xx 外还会输出 4xx（warn）与 2xx/3xx（info）
+   * 的结构化请求日志（携带 requestId / userId / action）。缺省关闭以控制日志量。
+   */
+  LOG_ACCESS?: string
+  /**
    * 用于加密/解密存储在 D1 中的 R2 Access Key / Secret Key（AES-GCM）。
    * 32 字节 base64；必须长期保持不变，否则历史配置将无法解密。
    */
   R2_MASTER_KEY?: string
+  /**
+   * 限流阈值（均为可选，缺省时使用 `config/rateLimit.ts` 中的默认值）。
+   * 详见 {@link ../config/rateLimit#getRateLimitConfig}。
+   */
+  RATE_LIMIT_WINDOW_MS?: string
+  RATE_LIMIT_MAX?: string
+  RATE_LIMIT_MAX_FAILED_ATTEMPTS?: string
+  RATE_LIMIT_BLOCK_DURATION_MS?: string
+  SHARE_RATE_LIMIT_MAX_FAILED_ATTEMPTS?: string
+  SHARE_RATE_LIMIT_BLOCK_DURATION_MS?: string
+  PUBLIC_RATE_LIMIT_WINDOW_MS?: string
+  PUBLIC_RATE_LIMIT_MAX?: string
 }
 
 export const DEFAULT_MAX_FILE_SIZE = 5 * 1024 * 1024 * 1024

@@ -1,4 +1,5 @@
 import type { Env } from './config/env'
+import { validateEnvOrWarn } from './config/envValidation'
 import { requestIdMiddleware } from './middleware/requestId'
 import { originGuardMiddleware } from './middleware/originGuard'
 import { rateLimitMiddleware } from './middleware/rateLimit'
@@ -7,11 +8,12 @@ import { authSessionMiddleware } from './middleware/authSession'
 import { withCommonHeaders } from './middleware/securityHeaders'
 import { handleFrontendRequest } from './middleware/assets'
 import { router } from './router'
-import { serializeError, logRequestFailure } from './utils/log'
+import { serializeError, logRequestOutcome, logRequestStart } from './utils/log'
 
 const isolateCreatedAt = Date.now()
 let isolateRequestCount = 0
 let lastRequestStartedAt: number | null = null
+let envValidated = false
 
 type TimingEntry = {
   name: string
@@ -152,15 +154,29 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
   const runtimeDiagnostics = createRuntimeDiagnostics()
   const timings: TimingEntry[] = []
   requestIdMiddleware(request)
+  const accessLog = String(env.LOG_ACCESS || '').trim() === '1'
+  let isBackend = false
   let response: Response | undefined
   let requestError: unknown
 
+  // 环境变量验证（仅在首次请求时执行）
+  if (!envValidated) {
+    envValidated = true
+    if (!validateEnvOrWarn(env)) {
+      console.warn('[Worker] 环境变量验证失败，但继续启动（请检查日志）')
+    }
+  }
+
   try {
     const pathname = new URL(request.url).pathname
+    isBackend = isBackendPath(pathname)
+    if (isBackend && accessLog) {
+      logRequestStart(request)
+    }
 
     if (pathname === '/health' || pathname === '/api/health') {
       response = await measure(timings, 'health', () => healthResponse(env))
-    } else if (!isBackendPath(pathname)) {
+    } else if (!isBackend) {
       response = await measure(timings, 'assets', () => handleFrontendRequest(request, env))
     } else {
       response = await measure(timings, 'origin', () =>
@@ -200,7 +216,14 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
   }
 
   response = withTimingHeaders(env, response, timings, requestStartedAt, runtimeDiagnostics)
-  logRequestFailure(request, response, requestError)
+  const durationMs = Math.max(0, performance.now() - requestStartedAt)
+  if (isBackend) {
+    // 后端请求：5xx 始终记录；4xx/2xx 仅在开启访问日志（LOG_ACCESS=1）时记录
+    logRequestOutcome(request, response, { error: requestError, durationMs, accessLog })
+  } else if (response.status >= 500) {
+    // 非后端（静态资源等）：仅记录 5xx，避免噪声
+    logRequestOutcome(request, response, { error: requestError, durationMs })
+  }
   return withCommonHeaders(request, response)
 }
 

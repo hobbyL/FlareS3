@@ -1,16 +1,10 @@
 import type { Env } from '../config/env'
+import {
+  getRateLimitConfig,
+  PUBLIC_RATE_LIMIT_PREFIX,
+  SHARE_SCOPE_PREFIX,
+} from '../config/rateLimit'
 import { jsonResponse } from '../utils/response'
-
-const RATE_LIMIT_WINDOW_MS = 60 * 1000
-const RATE_LIMIT_MAX = 300
-const MAX_FAILED_ATTEMPTS = 10
-const BLOCK_DURATION_MS = 5 * 60 * 1000
-const SHARE_MAX_FAILED_ATTEMPTS = 5
-const SHARE_BLOCK_DURATION_MS = 10 * 60 * 1000
-const SHARE_SCOPE_PREFIX = 'share:'
-const PUBLIC_RATE_LIMIT_WINDOW_MS = 60 * 1000
-const PUBLIC_RATE_LIMIT_MAX = 120
-const PUBLIC_RATE_LIMIT_PREFIX = 'public:'
 
 function shouldUsePersistentRateLimit(request: Request): boolean {
   const url = new URL(request.url)
@@ -51,48 +45,6 @@ async function isBlocked(db: D1Database, ip: string): Promise<boolean> {
     .bind(ip)
     .run()
   return false
-}
-
-async function allowRequest(db: D1Database, ip: string): Promise<boolean> {
-  const nowMs = Date.now()
-  const nowIso = new Date(nowMs).toISOString()
-  const nowSeconds = Math.floor(nowMs / 1000)
-  const result = await db
-    .prepare(
-      `INSERT INTO rate_limits (ip, request_count, window_start)
-       VALUES (?, 1, ?)
-       ON CONFLICT(ip) DO UPDATE SET
-         request_count = CASE
-           WHEN strftime('%s', window_start) IS NULL THEN 1
-           WHEN (? - strftime('%s', window_start)) * 1000 > ? THEN 1
-           ELSE request_count + 1
-         END,
-         window_start = CASE
-           WHEN strftime('%s', window_start) IS NULL THEN ?
-           WHEN (? - strftime('%s', window_start)) * 1000 > ? THEN ?
-           ELSE window_start
-         END
-       WHERE
-         strftime('%s', window_start) IS NULL
-         OR (? - strftime('%s', window_start)) * 1000 > ?
-         OR request_count < ?`
-    )
-    .bind(
-      ip,
-      nowIso,
-      nowSeconds,
-      RATE_LIMIT_WINDOW_MS,
-      nowIso,
-      nowSeconds,
-      RATE_LIMIT_WINDOW_MS,
-      nowIso,
-      nowSeconds,
-      RATE_LIMIT_WINDOW_MS,
-      RATE_LIMIT_MAX
-    )
-    .run()
-  const changes = Number((result as any)?.meta?.changes ?? 0)
-  return !result.error && Number.isFinite(changes) && changes > 0
 }
 
 async function allowScopedRequest(
@@ -143,7 +95,8 @@ async function allowScopedRequest(
 }
 
 export async function recordFailedAttempt(env: Env, ip: string): Promise<void> {
-  const blockedUntil = new Date(Date.now() + BLOCK_DURATION_MS).toISOString()
+  const config = getRateLimitConfig(env)
+  const blockedUntil = new Date(Date.now() + config.loginBlockDurationMs).toISOString()
   await env.DB.prepare(
     `INSERT INTO rate_limits (ip, failed_attempts, blocked_until)
        VALUES (?, 1, NULL)
@@ -154,7 +107,7 @@ export async function recordFailedAttempt(env: Env, ip: string): Promise<void> {
            ELSE blocked_until
          END`
   )
-    .bind(ip, MAX_FAILED_ATTEMPTS, blockedUntil)
+    .bind(ip, config.loginMaxFailedAttempts, blockedUntil)
     .run()
 }
 
@@ -168,7 +121,8 @@ export async function recordSharePasswordFailedAttempt(
   ip: string
 ): Promise<void> {
   const key = buildShareRateLimitKey(shareCode, ip)
-  const blockedUntil = new Date(Date.now() + SHARE_BLOCK_DURATION_MS).toISOString()
+  const config = getRateLimitConfig(env)
+  const blockedUntil = new Date(Date.now() + config.shareBlockDurationMs).toISOString()
   await env.DB.prepare(
     `INSERT INTO rate_limits (ip, failed_attempts, blocked_until)
        VALUES (?, 1, NULL)
@@ -179,7 +133,7 @@ export async function recordSharePasswordFailedAttempt(
            ELSE blocked_until
          END`
   )
-    .bind(key, SHARE_MAX_FAILED_ATTEMPTS, blockedUntil)
+    .bind(key, config.shareMaxFailedAttempts, blockedUntil)
     .run()
 }
 
@@ -240,33 +194,25 @@ export async function rateLimitMiddleware(
   }
 
   try {
+    const config = getRateLimitConfig(env)
     const ip = getClientIp(request)
     if (loginRateLimit) {
       if (await isBlocked(env.DB, ip)) {
         return jsonResponse({ error: '请求过于频繁，请稍后再试' }, 429)
       }
-      if (!(await allowRequest(env.DB, ip))) {
+      if (!(await allowScopedRequest(env.DB, ip, config.loginMax, config.loginWindowMs))) {
         return jsonResponse({ error: '请求频率超限' }, 429)
       }
     }
     if (publicRateLimit) {
       const url = new URL(request.url)
       const globalKey = `${PUBLIC_RATE_LIMIT_PREFIX}${ip}`
-      if (
-        !(await allowScopedRequest(
-          env.DB,
-          globalKey,
-          PUBLIC_RATE_LIMIT_MAX,
-          PUBLIC_RATE_LIMIT_WINDOW_MS
-        ))
-      ) {
+      if (!(await allowScopedRequest(env.DB, globalKey, config.publicMax, config.publicWindowMs))) {
         return jsonResponse({ error: '请求频率超限' }, 429)
       }
 
       const key = `${globalKey}:${url.pathname}`
-      if (
-        !(await allowScopedRequest(env.DB, key, PUBLIC_RATE_LIMIT_MAX, PUBLIC_RATE_LIMIT_WINDOW_MS))
-      ) {
+      if (!(await allowScopedRequest(env.DB, key, config.publicMax, config.publicWindowMs))) {
         return jsonResponse({ error: '请求频率超限' }, 429)
       }
     }
