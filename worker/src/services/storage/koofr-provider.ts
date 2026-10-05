@@ -10,6 +10,7 @@ import type { StorageDownloadResult, StorageUploadResult } from './types'
 import { StorageError } from './types'
 import { WebDAVProvider, type WebDAVConfig } from './webdav-provider'
 import { readBoundedResponseJson } from '../upstreamResponsePolicy'
+import { fetchWithUpstreamTimeout } from '../upstreamFetch'
 
 // ── 配置类型 ──
 
@@ -56,7 +57,7 @@ export class KoofrProvider extends WebDAVProvider {
     // 未配置 mountId，自动检测 primary mount
     const authHeader = await this.restAuthHeader()
     const url = `${this.restEndpoint}/mounts`
-    const response = await fetch(url, {
+    const response = await fetchWithUpstreamTimeout(url, {
       method: 'GET',
       headers: {
         Authorization: authHeader,
@@ -98,7 +99,7 @@ export class KoofrProvider extends WebDAVProvider {
     const baseUrl = new URL(davBase).origin
     const url = `${baseUrl}/token`
 
-    const response = await fetch(url, {
+    const response = await fetchWithUpstreamTimeout(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -157,7 +158,7 @@ export class KoofrProvider extends WebDAVProvider {
     const url = `${this.restEndpoint}/mounts/${mountId}/shares`
     const authHeader = await this.restAuthHeader()
 
-    const response = await fetch(url, {
+    const response = await fetchWithUpstreamTimeout(url, {
       method: 'POST',
       headers: {
         Authorization: authHeader,
@@ -197,7 +198,7 @@ export class KoofrProvider extends WebDAVProvider {
     // 验证 REST API：获取 token + 检测 mountId
     const authHeader = await this.restAuthHeader()
     const url = `${this.restEndpoint}/mounts`
-    const response = await fetch(url, {
+    const response = await fetchWithUpstreamTimeout(url, {
       method: 'GET',
       headers: {
         Authorization: authHeader,
@@ -281,7 +282,7 @@ export class KoofrProvider extends WebDAVProvider {
     const formData = new FormData()
     formData.append('file', new Blob([body], { type: contentType }), filename)
 
-    const response = await fetch(url, {
+    const response = await fetchWithUpstreamTimeout(url, {
       method: 'POST',
       headers: {
         Authorization: authHeader,

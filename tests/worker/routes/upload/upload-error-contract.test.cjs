@@ -552,6 +552,11 @@ test("completeMultipart maps upstream storage errors into structured upload cont
     error.$metadata = { httpStatusCode: 404 };
     throw error;
   };
+  let headCalls = 0;
+  r2.getObjectSize = async () => {
+    headCalls += 1;
+    return null;
+  };
 
   const response = await upload.completeMultipart(
     createAuthedRequest("https://example.com/api/upload/multipart/complete", {
@@ -578,6 +583,10 @@ test("completeMultipart maps upstream storage errors into structured upload cont
               size: 100,
             },
           },
+          {
+            match: /SELECT upload_status FROM files WHERE id = \?/,
+            value: { upload_status: "uploading" },
+          },
         ],
       }),
     },
@@ -590,6 +599,8 @@ test("completeMultipart maps upstream storage errors into structured upload cont
       message: "分片上传会话不存在或已失效，请重新上传",
     },
   });
+  // NoSuchUpload 恢复路径已探测合并对象，未命中后维持原错误契约
+  assert.equal(headCalls, 1);
 });
 
 test("presignUpload releases reservation when upload URL generation fails", async () => {

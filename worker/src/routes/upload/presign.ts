@@ -8,12 +8,14 @@ import { getClientIp } from '../../middleware/rateLimit'
 import { resolveUploadConfigForUser } from '../../services/uploadConfigPolicy'
 import { normalizeDeclaredFileSize } from '../../services/uploadValidation'
 import {
+  confirmUploadNotPendingError,
   fileTooLargeError,
   invalidUploadRequestError,
   mapUnexpectedUploadError,
   uploadConfigNotFoundError,
   uploadConfigUnavailableError,
   uploadErrorResponse,
+  uploadFileExpiredError,
   uploadFileNotFoundError,
 } from '../../services/uploadErrors'
 import { prepareConsumeUploadReservation } from '../../services/uploadReservations'
@@ -194,6 +196,12 @@ export async function presignUpload(request: Request, env: Env): Promise<Respons
  *   "expires_at": "2026-09-15T00:00:00.000Z",
  *   "r2_config_id": "default"
  * }
+ *
+ * // 文件已过期 (410)
+ * { "error": { "code": "UPLOAD_FILE_EXPIRED", "message": "文件已过期" } }
+ *
+ * // 文件不在待确认状态（已删除/已确认/分片中）(409)
+ * { "error": { "code": "UPLOAD_CONFIRM_NOT_PENDING", "message": "文件不在待确认状态，无法完成确认" } }
  */
 export async function confirmUpload(request: Request, env: Env): Promise<Response> {
   const user = getUser(request)
@@ -204,13 +212,21 @@ export async function confirmUpload(request: Request, env: Env): Promise<Respons
 
     const file = await withD1Retry(env.DB)
       .prepare(
-        'SELECT id, owner_id, filename, r2_key, expires_at, short_code, require_login, size FROM files WHERE id = ? LIMIT 1'
+        'SELECT id, owner_id, filename, r2_key, expires_at, short_code, require_login, size, upload_status, deleted_at FROM files WHERE id = ? LIMIT 1'
       )
       .bind(body.file_id)
       .first()
 
     if (!file || file.owner_id !== user.id) {
       return uploadErrorResponse(uploadFileNotFoundError())
+    }
+
+    if (isExpired(file.expires_at)) {
+      return uploadErrorResponse(uploadFileExpiredError())
+    }
+
+    if (file.deleted_at || file.upload_status !== 'pending') {
+      return uploadErrorResponse(confirmUploadNotPendingError())
     }
 
     const r2Key = String(file.r2_key)
@@ -237,12 +253,20 @@ export async function confirmUpload(request: Request, env: Env): Promise<Respons
     }
 
     const now = new Date().toISOString()
-    await withD1Retry(env.DB).batch([
+    const [updateResult] = await withD1Retry(env.DB).batch([
       withD1Retry(env.DB)
-        .prepare('UPDATE files SET size = ?, upload_status = ? WHERE id = ?')
-        .bind(sizeValidation.actualSize, 'completed', body.file_id),
+        .prepare(
+          "UPDATE files SET size = ?, upload_status = 'completed' WHERE id = ? AND upload_status = 'pending' AND deleted_at IS NULL"
+        )
+        .bind(sizeValidation.actualSize, body.file_id),
       prepareConsumeUploadReservation(env.DB, body.file_id, now),
     ])
+
+    // 与 serverUpload 对齐：状态守卫命中 0 行说明确认期间记录被并发删除/变更，
+    // 不得再置 completed
+    if (!updateResult?.meta?.changes) {
+      return uploadErrorResponse(confirmUploadNotPendingError())
+    }
 
     let downloadUrl = `/api/files/${body.file_id}/download`
     const allowDirect = Number(file.require_login) === 0

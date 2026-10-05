@@ -132,6 +132,31 @@ test("限流阈值环境变量为空时跳过，非正数时逐项报错", () =>
   }
 });
 
+test("上游 fetch 超时环境变量为空时跳过，非正数时逐项报错", () => {
+  const fields = [
+    "UPSTREAM_FETCH_TIMEOUT_MS",
+    "UPSTREAM_FETCH_READONLY_RETRIES",
+  ];
+
+  for (const field of fields) {
+    for (const value of [undefined, null, ""]) {
+      assert.doesNotThrow(
+        () => validateEnv(validEnv({ [field]: value })),
+        `${field} 未配置时应跳过校验`,
+      );
+    }
+    assert.doesNotThrow(() => validateEnv(validEnv({ [field]: "30000" })));
+    assert.throws(
+      () => validateEnv(validEnv({ [field]: "0" })),
+      new RegExp(`${field} 必须是正数`),
+    );
+    assert.throws(
+      () => validateEnv(validEnv({ [field]: "nope" })),
+      new RegExp(`${field} 必须是正数`),
+    );
+  }
+});
+
 test("多个字段同时出错时一次性汇总全部原因", () => {
   let message = "";
   try {
@@ -167,13 +192,16 @@ test("validateEnvOrWarn 合法时返回 true 且不写日志", () => {
   assert.equal(entries.length, 0);
 });
 
-test("validateEnvOrWarn 非法时返回 false 并输出 [EnvValidation] 日志而不抛出", () => {
+test("validateEnvOrWarn 非法时返回 false 并输出结构化 env.validation.failed 日志而不抛出", () => {
   const { result, entries } = captureError(() =>
     validateEnvOrWarn({ DB: undefined }),
   );
 
   assert.equal(result, false, "校验失败不得中断 Worker 启动");
   assert.equal(entries.length, 1);
-  assert.equal(entries[0][0], "[EnvValidation]");
-  assert.match(String(entries[0][1]), /环境变量验证失败/);
+  // 收口为 logStructured 后输出单行 JSON，按结构化字段断言
+  const log = JSON.parse(entries[0][0]);
+  assert.equal(log.level, "error");
+  assert.equal(log.event, "env.validation.failed");
+  assert.match(String(log.message), /环境变量验证失败/);
 });

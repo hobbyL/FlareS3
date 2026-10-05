@@ -70,7 +70,9 @@ export async function buildSharedDownloadResponse(
         return buildSanitizedSharedDownloadResponse(upstream, file.filename)
       }
       return { ok: true, response: result.response }
-    } catch {
+    } catch (error) {
+      // 上游错误详情仅进服务端日志，响应体保持固定文案（见 storage-security spec）
+      console.error('[fileShareDownload] provider download failed', error)
       return { ok: false, error: { status: 502, message: '文件下载失败，请稍后重试' } }
     }
   }
@@ -92,7 +94,9 @@ export async function buildSharedDownloadResponse(
   let upstream: Response
   try {
     upstream = await fetch(url)
-  } catch {
+  } catch (error) {
+    // 预签名 URL 拉取失败同样只落服务端日志，响应体保持固定文案
+    console.error('[fileShareDownload] r2 presigned download failed', error)
     return { ok: false, error: { status: 502, message: '文件下载失败，请稍后重试' } }
   }
 

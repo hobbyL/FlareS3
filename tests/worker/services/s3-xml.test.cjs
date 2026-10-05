@@ -89,3 +89,44 @@ test("parseListPartsXml decodes XML entities in ETag values", () => {
     { PartNumber: 3, ETag: undefined },
   ]);
 });
+
+test("buildDeleteObjectsXml escapes object keys and requests quiet mode", () => {
+  const { buildDeleteObjectsXml } = require(compiledPath("services/s3Xml.js"));
+
+  const xml = buildDeleteObjectsXml(["plain.txt", 'a&b<c>"d".txt']);
+
+  assert.match(xml, /^<\?xml version="1\.0" encoding="UTF-8"\?>/);
+  assert.ok(xml.startsWith('<?xml version="1.0" encoding="UTF-8"?><Delete>'));
+  // Key 必须实体转义，与解析方向的 decodeXmlEntities 对称
+  assert.ok(xml.includes("<Object><Key>plain.txt</Key></Object>"));
+  assert.ok(
+    xml.includes(
+      "<Object><Key>a&amp;b&lt;c&gt;&quot;d&quot;.txt</Key></Object>",
+    ),
+  );
+  assert.ok(xml.includes("<Quiet>true</Quiet>"));
+});
+
+test("parseDeleteObjectsResultXml decodes quiet-mode failure entries and drops empty keys", () => {
+  const { parseDeleteObjectsResultXml } = require(
+    compiledPath("services/s3Xml.js"),
+  );
+
+  const xml =
+    "<DeleteResult>" +
+    "<Error><Key>a&amp;b.txt</Key><Code>AccessDenied</Code><Message>denied &amp; gone</Message></Error>" +
+    "<Error><Code>InternalError</Code></Error>" +
+    "</DeleteResult>";
+
+  assert.deepEqual(parseDeleteObjectsResultXml(xml), [
+    {
+      key: "a&b.txt",
+      code: "AccessDenied",
+      message: "denied & gone",
+    },
+  ]);
+  assert.deepEqual(
+    parseDeleteObjectsResultXml("<DeleteResult></DeleteResult>"),
+    [],
+  );
+});

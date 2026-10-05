@@ -45,6 +45,12 @@ for (const filename of ["wrangler.toml", "wrangler.full.toml"]) {
       /^\s*\[observability\]\s*\n\s*enabled\s*=\s*true\s*$/m,
     );
   });
+
+  test(`${filename} documents upstream fetch timeout vars with defaults as comments`, () => {
+    const content = fs.readFileSync(path.join(process.cwd(), filename), "utf8");
+    assert.match(content, /^#\s*UPSTREAM_FETCH_TIMEOUT_MS\s*=\s*"30000"/m);
+    assert.match(content, /^#\s*UPSTREAM_FETCH_READONLY_RETRIES\s*=\s*"1"/m);
+  });
 }
 
 test("root package deploy and preview scripts target the worker package configs", () => {

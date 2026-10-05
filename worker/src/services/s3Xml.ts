@@ -96,3 +96,48 @@ export function buildCompleteMultipartUploadXml(parts: NormalizedMultipartPart[]
     `</CompleteMultipartUpload>`
   )
 }
+
+/**
+ * 生成 S3 DeleteObjects（POST ?delete）请求体。
+ *
+ * Quiet 模式下响应只包含失败对象，避免大批量删除时响应体膨胀；
+ * Key 必须经 encodeXmlEntities 转义（与解析方向的 decodeXmlEntities 对称）。
+ */
+export function buildDeleteObjectsXml(keys: string[]): string {
+  return (
+    `<?xml version="1.0" encoding="UTF-8"?>` +
+    `<Delete>` +
+    keys.map((key) => `<Object><Key>${encodeXmlEntities(key)}</Key></Object>`).join('') +
+    `<Quiet>true</Quiet>` +
+    `</Delete>`
+  )
+}
+
+export type DeleteObjectsErrorItem = {
+  key: string
+  code?: string
+  message?: string
+}
+
+/**
+ * 解析 DeleteObjects Quiet 模式响应中的失败对象列表。
+ *
+ * Quiet 模式仅返回 <Error> 块（成功对象不返回 <Deleted> 块）；
+ * 字段值经 decodeXmlEntities 还原字面量。
+ */
+export function parseDeleteObjectsResultXml(xml: string): DeleteObjectsErrorItem[] {
+  return extractXmlBlocks(xml, 'Error')
+    .map((block) => {
+      const keyRaw = extractXmlValue(block, 'Key')
+      const codeRaw = extractXmlValue(block, 'Code')
+      const messageRaw = extractXmlValue(block, 'Message')
+
+      const item: DeleteObjectsErrorItem = {
+        key: keyRaw ? decodeXmlEntities(keyRaw) : '',
+      }
+      if (codeRaw) item.code = decodeXmlEntities(codeRaw)
+      if (messageRaw) item.message = decodeXmlEntities(messageRaw)
+      return item
+    })
+    .filter((item) => item.key)
+}

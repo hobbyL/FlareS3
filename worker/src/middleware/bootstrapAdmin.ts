@@ -5,6 +5,7 @@ import { hashPassword } from '../services/password'
 import { logAudit } from '../services/audit'
 import { getClientIp } from './rateLimit'
 import { jsonResponse } from '../utils/response'
+import { logError } from '../utils/log'
 
 type BootstrapState = 'unknown' | 'ready' | 'blocked'
 
@@ -81,7 +82,7 @@ export async function bootstrapAdmin(request: Request, env: Env): Promise<Respon
     try {
       return await doBootstrap(request, env)
     } catch (error) {
-      console.error('[bootstrapAdmin] failed', error)
+      logError('bootstrap.admin.failed', error)
       return jsonResponse({ error: '管理员初始化失败' }, 500)
     } finally {
       bootstrapPromise = null

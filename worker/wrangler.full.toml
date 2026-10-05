@@ -29,6 +29,10 @@ TOTAL_STORAGE = "10737418240"
 # SHARE_RATE_LIMIT_BLOCK_DURATION_MS = "600000"     # 分享码封禁时长，默认 600000
 # PUBLIC_RATE_LIMIT_WINDOW_MS = "60000"             # 公开入口窗口，默认 60000
 # PUBLIC_RATE_LIMIT_MAX = "120"                     # 公开入口窗口内最大请求数，默认 120
+# 上游存储 fetch 超时（可选）：R2 / WebDAV / Koofr 上游请求的超时毫秒数，
+# 以及只读操作（GET/HEAD/PROPFIND）超时后的重试次数；写操作一律不重试。
+# UPSTREAM_FETCH_TIMEOUT_MS = "30000"               # 上游 fetch 超时，默认 30000
+# UPSTREAM_FETCH_READONLY_RETRIES = "1"             # 只读超时重试次数，默认 1
 # 访问日志开关（可选）：设为 "1" 时额外输出 4xx/2xx 结构化请求日志，缺省仅记录 5xx。
 # LOG_ACCESS = "1"
 

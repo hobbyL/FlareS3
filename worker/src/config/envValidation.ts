@@ -1,4 +1,5 @@
 import type { Env } from './env'
+import { logStructured } from '../utils/log'
 
 export class EnvValidationError extends Error {
   constructor(
@@ -29,6 +30,12 @@ const RATE_LIMIT_NUMERIC_FIELDS = [
   'SHARE_RATE_LIMIT_BLOCK_DURATION_MS',
   'PUBLIC_RATE_LIMIT_WINDOW_MS',
   'PUBLIC_RATE_LIMIT_MAX',
+] as const satisfies readonly (keyof Env)[]
+
+/** 上游 fetch 超时环境变量：全部可选，配置了就必须是正数 */
+const UPSTREAM_TIMEOUT_NUMERIC_FIELDS = [
+  'UPSTREAM_FETCH_TIMEOUT_MS',
+  'UPSTREAM_FETCH_READONLY_RETRIES',
 ] as const satisfies readonly (keyof Env)[]
 
 const validationRules: ValidationRule[] = [
@@ -115,6 +122,20 @@ const validationRules: ValidationRule[] = [
       },
     })
   ),
+  ...UPSTREAM_TIMEOUT_NUMERIC_FIELDS.map(
+    (field): ValidationRule => ({
+      field,
+      required: false,
+      validate: (value) => {
+        if (value === undefined || value === null || value === '') return null
+        const num = Number(value)
+        if (!Number.isFinite(num) || num <= 0) {
+          return `${field} 必须是正数`
+        }
+        return null
+      },
+    })
+  ),
 ]
 
 export function validateEnv(env: Env): void {
@@ -149,7 +170,9 @@ export function validateEnvOrWarn(env: Env): boolean {
     validateEnv(env)
     return true
   } catch (error) {
-    console.error('[EnvValidation]', error instanceof Error ? error.message : String(error))
+    logStructured('error', 'env.validation.failed', {
+      message: error instanceof Error ? error.message : String(error),
+    })
     return false
   }
 }

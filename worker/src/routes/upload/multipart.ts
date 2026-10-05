@@ -8,6 +8,7 @@ import {
   deleteObject,
   generateDownloadUrl,
   generateMultipartUploadUrl,
+  getObjectSize,
   initiateMultipartUpload,
   listParts,
   resolveR2ConfigForKey,
@@ -86,6 +87,35 @@ function normalizeCompleteMultipartParts(
   }
 
   return normalized.length > 0 ? normalized : null
+}
+
+/**
+ * R2 complete 收到 NoSuchUpload 时的幂等收口判定。
+ *
+ * 两类场景可恢复，放行走正常收口路径（对象大小校验 + 带状态守卫的落库）：
+ * - DB 已 completed：并发 complete 的后到请求，前者已完成 R2 合并与落库；
+ * - DB 仍 uploading 且合并对象可 HEAD 到：R2 已合并、DB 未落的崩溃残留。
+ * 其余情况（状态不符、对象未合并、HEAD 失败）返回 false，维持原错误路径。
+ */
+async function isMultipartCompletionRecoverable(
+  env: Env,
+  loaded: NonNullable<Awaited<ReturnType<typeof resolveR2ConfigForKey>>>,
+  file: { id: string; r2_key: string }
+): Promise<boolean> {
+  const statusRow = await withD1Retry(env.DB)
+    .prepare('SELECT upload_status FROM files WHERE id = ? LIMIT 1')
+    .bind(file.id)
+    .first()
+
+  const currentStatus = String(statusRow?.upload_status || '')
+  if (currentStatus === 'completed') return true
+  if (currentStatus !== 'uploading') return false
+
+  try {
+    return (await getObjectSize(loaded.config, file.r2_key)) !== null
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -514,7 +544,23 @@ export async function completeMultipart(request: Request, env: Env): Promise<Res
       return uploadErrorResponse(multipartPartNumberInvalidError())
     }
 
-    await completeMultipartUpload(loaded.config, String(file.r2_key), storedUploadId, parts)
+    try {
+      await completeMultipartUpload(loaded.config, String(file.r2_key), storedUploadId, parts)
+    } catch (error) {
+      // NoSuchUpload 可能是并发 complete 的后到请求，或 R2 合并成功后 DB 落库
+      // 失败的崩溃残留；两类场景走幂等收口，其余错误（InvalidPart 等）原样上抛
+      const summary = summarizeS3Error(error)
+      const noSuchUpload = summary.code === 'NoSuchUpload' || summary.httpStatusCode === 404
+      const recoverable =
+        noSuchUpload &&
+        (await isMultipartCompletionRecoverable(env, loaded, {
+          id: String(file.id),
+          r2_key: String(file.r2_key),
+        }))
+      if (!recoverable) {
+        throw error
+      }
+    }
 
     const sizeValidation = await verifyUploadedObjectSizeOrReject(
       env,
@@ -539,9 +585,9 @@ export async function completeMultipart(request: Request, env: Env): Promise<Res
     await withD1Retry(env.DB).batch([
       withD1Retry(env.DB)
         .prepare(
-          'UPDATE files SET size = ?, upload_status = ?, multipart_upload_id = NULL WHERE id = ?'
+          "UPDATE files SET size = ?, upload_status = 'completed', multipart_upload_id = NULL WHERE id = ? AND upload_status = 'uploading'"
         )
-        .bind(sizeValidation.actualSize, 'completed', file.id),
+        .bind(sizeValidation.actualSize, file.id),
       prepareConsumeUploadReservation(env.DB, String(file.id), now),
     ])
 
@@ -559,6 +605,8 @@ export async function completeMultipart(request: Request, env: Env): Promise<Res
           )
         }
       } catch (error) {
+        // 直链生成失败仅影响本次响应的下载地址，回退代理路径并记日志便于排障
+        console.warn('[multipart] direct download url failed', error)
         downloadUrl = `/api/files/${file.id}/download`
       }
     }

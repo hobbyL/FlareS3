@@ -1,5 +1,6 @@
 import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
+import { logError } from '../utils/log'
 import {
   extractR2ConfigIdFromKey,
   resolveR2ConfigForKey,
@@ -140,7 +141,7 @@ export async function cleanupExpired(
       deletedFiles += 1
     } catch (error) {
       failed += 1
-      console.error('cleanupExpired failed', error)
+      logError('cleanupExpired.item_failed', error, { fileId: String(row.id) })
     }
   }
 

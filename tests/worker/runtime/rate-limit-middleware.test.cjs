@@ -391,7 +391,11 @@ test("数据库异常时返回 500 并记录日志，而不是把异常抛给上
   assert.equal(result.status, 500);
   assert.deepEqual(await result.json(), { error: "服务异常" });
   assert.equal(entries.length, 1);
-  assert.equal(entries[0][0], "[rateLimitMiddleware] failed");
+  // 收口为 logStructured 后输出单行 JSON，按结构化字段断言
+  const log = JSON.parse(entries[0][0]);
+  assert.equal(log.level, "error");
+  assert.equal(log.event, "rateLimit.middleware_failed");
+  assert.match(String(log.error), /D1_ERROR: connection lost/);
 });
 
 test("recordFailedAttempt 按环境变量写入封禁阈值与时长", async () => {

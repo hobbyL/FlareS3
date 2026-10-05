@@ -32,6 +32,12 @@ export type Env = {
   SHARE_RATE_LIMIT_BLOCK_DURATION_MS?: string
   PUBLIC_RATE_LIMIT_WINDOW_MS?: string
   PUBLIC_RATE_LIMIT_MAX?: string
+  /**
+   * 上游存储 fetch 超时（均为可选，缺省时使用 `config/upstreamTimeout.ts` 中的默认值）。
+   * 详见 {@link ../config/upstreamTimeout#refreshUpstreamTimeoutConfig}。
+   */
+  UPSTREAM_FETCH_TIMEOUT_MS?: string
+  UPSTREAM_FETCH_READONLY_RETRIES?: string
 }
 
 export const DEFAULT_MAX_FILE_SIZE = 5 * 1024 * 1024 * 1024

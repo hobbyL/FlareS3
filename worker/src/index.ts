@@ -1,6 +1,7 @@
 import { withD1Retry } from './utils/db'
 import type { Env } from './config/env'
 import { validateEnvOrWarn } from './config/envValidation'
+import { refreshUpstreamTimeoutConfig } from './config/upstreamTimeout'
 import { requestIdMiddleware } from './middleware/requestId'
 import { originGuardMiddleware } from './middleware/originGuard'
 import { rateLimitMiddleware } from './middleware/rateLimit'
@@ -9,7 +10,7 @@ import { authSessionMiddleware } from './middleware/authSession'
 import { withCommonHeaders } from './middleware/securityHeaders'
 import { handleFrontendRequest } from './middleware/assets'
 import { router } from './router'
-import { logRequestOutcome, logRequestStart } from './utils/log'
+import { logRequestOutcome, logRequestStart, logWarn } from './utils/log'
 
 const isolateCreatedAt = Date.now()
 let isolateRequestCount = 0
@@ -152,6 +153,8 @@ function withTimingHeaders(
 
 async function handleRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const requestStartedAt = performance.now()
+  // 刷新 isolate 级上游超时配置（env 恒定，幂等），供无 env 入参的服务层读取
+  refreshUpstreamTimeoutConfig(env)
   const runtimeDiagnostics = createRuntimeDiagnostics()
   const timings: TimingEntry[] = []
   requestIdMiddleware(request)
@@ -164,7 +167,9 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
   if (!envValidated) {
     envValidated = true
     if (!validateEnvOrWarn(env)) {
-      console.warn('[Worker] 环境变量验证失败，但继续启动（请检查日志）')
+      logWarn('worker.env_validation_failed', {
+        message: '环境变量验证失败，但继续启动（请检查日志）',
+      })
     }
   }
 
@@ -231,6 +236,7 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
 export default {
   fetch: handleRequest,
   scheduled: async (_event: ScheduledEvent, env: Env, _ctx: ExecutionContext) => {
+    refreshUpstreamTimeoutConfig(env)
     const { handleScheduled } = await import('./scheduled')
     await handleScheduled(env)
   },

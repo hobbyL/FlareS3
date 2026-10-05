@@ -13,6 +13,7 @@ import { logAudit } from '../services/audit'
 import { getSessionCookieName, invalidateAuthToken, type AuthUser } from '../middleware/authSession'
 import { createSignedAuthToken, getAuthTokenSecret } from '../services/authToken'
 import { hashToken } from '../utils/token'
+import { logError } from '../utils/log'
 
 const SESSION_TTL_SECONDS = 8 * 60 * 60
 
@@ -201,7 +202,7 @@ export async function login(request: Request, env: Env): Promise<Response> {
   } catch (error) {
     const bodyError = requestBodyPolicyErrorResponse(error)
     if (bodyError) return bodyError
-    console.error('[auth.login] failed', error)
+    logError('auth.login.failed', error)
     return jsonResponse({ error: '登录失败' }, 500)
   }
 }

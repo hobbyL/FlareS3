@@ -139,6 +139,14 @@ export function uploadFileExpiredError(message: string = '文件已过期'): Upl
   })
 }
 
+export function confirmUploadNotPendingError(): UploadRouteError {
+  return createUploadError({
+    status: 409,
+    code: 'UPLOAD_CONFIRM_NOT_PENDING',
+    message: '文件不在待确认状态，无法完成确认',
+  })
+}
+
 export function multipartNotInitializedError(): UploadRouteError {
   return createUploadError({
     status: 400,

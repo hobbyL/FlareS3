@@ -17,6 +17,7 @@ import type {
 import { StorageError } from './types'
 import { sanitizeContentDispositionFilename } from '../r2'
 import { MAX_UPSTREAM_XML_RESPONSE_BYTES, readBoundedResponseText } from '../upstreamResponsePolicy'
+import { fetchWithUpstreamTimeout } from '../upstreamFetch'
 import { normalizeRemotePath as normalizeConfiguredRemotePath } from './pathPolicy'
 
 // ── 配置类型 ──
@@ -217,7 +218,8 @@ export class WebDAVProvider implements StorageProvider {
 
     let response: Response
     try {
-      response = await fetch(url, {
+      // 上游 fetch 统一带超时；PROPFIND/GET/HEAD 为只读方法，超时后按配置轻量重试
+      response = await fetchWithUpstreamTimeout(url, {
         ...init,
         method,
         headers,

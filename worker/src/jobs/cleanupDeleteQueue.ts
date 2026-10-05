@@ -1,5 +1,6 @@
 import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
+import { logError } from '../utils/log'
 import {
   extractR2ConfigIdFromKey,
   resolveR2ConfigForKey,
@@ -138,7 +139,7 @@ export async function cleanupDeleteQueue(env: Env): Promise<JobExecutionResult> 
       }
     } catch (error) {
       failed += 1
-      console.error('cleanupDeleteQueue delete failed', error)
+      logError('cleanupDeleteQueue.item_failed', error, { fileId, queueId })
       continue
     }
 

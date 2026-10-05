@@ -7,6 +7,11 @@ import {
   readBoundedResponseText,
 } from './upstreamResponsePolicy'
 import { extractXmlValue } from './s3Xml'
+import {
+  getUpstreamTimeoutConfig,
+  UPSTREAM_READONLY_RETRY_BACKOFF_MS,
+} from '../config/upstreamTimeout'
+import { fetchWithUpstreamTimeout, isReadOnlyHttpMethod, isTimeoutError } from './upstreamFetch'
 
 export function createS3Client(config: R2Config): S3Client {
   return new S3Client({
@@ -68,8 +73,22 @@ export async function fetchSigned(
   init: RequestInit & { expiresInSeconds?: number }
 ): Promise<Response> {
   const expiresInSeconds = typeof init.expiresInSeconds === 'number' ? init.expiresInSeconds : 60
-  const url = await getSignedUrl(client, command as any, {
-    expiresIn: expiresInSeconds,
-  })
-  return fetch(url, init)
+  const { expiresInSeconds: _omitExpires, ...fetchInit } = init
+  // 只读操作（GET/HEAD）超时后按配置轻量重试；写操作（POST/DELETE/PUT）不重试
+  const { readonlyRetries } = getUpstreamTimeoutConfig()
+  const retries = isReadOnlyHttpMethod(fetchInit) ? readonlyRetries : 0
+
+  for (let attempt = 0; ; attempt++) {
+    try {
+      // 每次尝试重新签名：重试复用旧 URL 可能撞上签名过期窗口。
+      // 内层 retries 固定为 0：重试由本层统一控制，避免两层重试相乘放大尝试次数
+      const url = await getSignedUrl(client, command as any, {
+        expiresIn: expiresInSeconds,
+      })
+      return await fetchWithUpstreamTimeout(url, fetchInit, { retries: 0 })
+    } catch (error) {
+      if (attempt >= retries || !isTimeoutError(error)) throw error
+      await new Promise((resolve) => setTimeout(resolve, UPSTREAM_READONLY_RETRY_BACKOFF_MS))
+    }
+  }
 }

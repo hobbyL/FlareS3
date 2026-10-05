@@ -157,9 +157,14 @@ test("cleanupRetention deletes stale sessions, rate limits and audit logs using 
         match: /DELETE FROM rate_limits/,
         value: { meta: { changes: 3 } },
       },
+      // audit_logs 分批循环：第一轮删 4 条，第二轮清空后停止
       {
         match: /DELETE FROM audit_logs/,
         value: { meta: { changes: 4 } },
+      },
+      {
+        match: /DELETE FROM audit_logs/,
+        value: { meta: { changes: 0 } },
       },
     ],
   });
@@ -200,9 +205,75 @@ test("cleanupRetention deletes stale sessions, rate limits and audit logs using 
   const auditRun = state.runs.find((entry) =>
     /DELETE FROM audit_logs/.test(entry.sql),
   );
+  assert.ok(auditRun, "audit_logs DELETE 应至少执行一轮");
   assert.deepEqual(auditRun.args, [
     new Date(now.getTime() - retention.AUDIT_LOG_RETENTION_MS).toISOString(),
   ]);
+  // 过期 audit_logs 必须按 LIMIT 批量删除，避免首次清理 90 天积压时长事务
+  assert.match(auditRun.sql, /WHERE id IN \(/);
+  assert.match(
+    auditRun.sql,
+    new RegExp(`LIMIT ${retention.AUDIT_LOG_DELETE_BATCH_SIZE}`),
+  );
+});
+
+test("cleanupRetention loops batched audit_logs DELETE until a round deletes nothing", async () => {
+  const retention = loadModule("jobs/cleanupRetention.js");
+  const { db, state } = createDb({
+    runHandlers: [
+      { match: /DELETE FROM sessions/, value: { meta: { changes: 0 } } },
+      { match: /DELETE FROM rate_limits/, value: { meta: { changes: 0 } } },
+      { match: /DELETE FROM audit_logs/, value: { meta: { changes: 500 } } },
+      { match: /DELETE FROM audit_logs/, value: { meta: { changes: 500 } } },
+      { match: /DELETE FROM audit_logs/, value: { meta: { changes: 300 } } },
+      { match: /DELETE FROM audit_logs/, value: { meta: { changes: 0 } } },
+    ],
+  });
+
+  const result = await retention.cleanupRetention({ DB: db }, new Date());
+
+  assert.equal(result.status, "success");
+  assert.equal(result.details.auditLogs, 1300);
+  const auditRuns = state.runs.filter((entry) =>
+    /DELETE FROM audit_logs/.test(entry.sql),
+  );
+  assert.equal(auditRuns.length, 4, "500+500+300+0 共 4 轮");
+});
+
+test("cleanupRetention caps audit_logs batches per cron run and logs a warning", async () => {
+  const retention = loadModule("jobs/cleanupRetention.js");
+  const rounds = retention.AUDIT_LOG_DELETE_MAX_ROUNDS;
+  const { db } = createDb({
+    runHandlers: [
+      { match: /DELETE FROM sessions/, value: { meta: { changes: 0 } } },
+      { match: /DELETE FROM rate_limits/, value: { meta: { changes: 0 } } },
+      // 每轮都删满一批：验证达到轮数上限后主动停止，剩余行留给下次 cron
+      ...Array.from({ length: rounds }, () => ({
+        match: /DELETE FROM audit_logs/,
+        value: { meta: { changes: retention.AUDIT_LOG_DELETE_BATCH_SIZE } },
+      })),
+    ],
+  });
+
+  const originalWarn = console.warn;
+  const warnings = [];
+  console.warn = (...args) => warnings.push(args);
+  let result;
+  try {
+    result = await retention.cleanupRetention({ DB: db }, new Date());
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(result.status, "success");
+  assert.equal(
+    result.details.auditLogs,
+    rounds * retention.AUDIT_LOG_DELETE_BATCH_SIZE,
+  );
+  assert.equal(warnings.length, 1);
+  const log = JSON.parse(warnings[0][0]);
+  assert.equal(log.level, "warn");
+  assert.equal(log.event, "job.cleanupRetention.auditLogsCapped");
 });
 
 test("cleanupExpired releases active upload reservation after marking expired file deleted", async () => {

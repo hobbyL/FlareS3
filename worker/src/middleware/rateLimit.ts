@@ -6,6 +6,7 @@ import {
   SHARE_SCOPE_PREFIX,
 } from '../config/rateLimit'
 import { jsonResponse } from '../utils/response'
+import { logError } from '../utils/log'
 
 function shouldUsePersistentRateLimit(request: Request): boolean {
   const url = new URL(request.url)
@@ -292,7 +293,8 @@ export async function rateLimitMiddleware(
       }
     }
   } catch (error) {
-    console.error('[rateLimitMiddleware] failed', error)
+    // fail-closed：限流依赖 D1，异常时宁可拒绝请求也不放行；错误详情进结构化日志
+    logError('rateLimit.middleware_failed', error)
     return jsonResponse({ error: '服务异常' }, 500)
   }
 }

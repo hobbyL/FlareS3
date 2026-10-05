@@ -1,9 +1,15 @@
 import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
 import { jsonResponse, getUser, calcPresignedDownloadUrlTtlSeconds, redirect } from './utils'
-import { generateDownloadUrl, generatePreviewUrl, resolveR2ConfigForKey } from '../services/r2'
+import {
+  checkObjectExists,
+  generateDownloadUrl,
+  generatePreviewUrl,
+  resolveR2ConfigForKey,
+} from '../services/r2'
 import { logAudit, prepareAuditLogInsert } from '../services/audit'
 import { createProvider } from '../services/storage/factory'
+import { StorageError } from '../services/storage/types'
 import { prepareEnqueueFileDeletionIfNeeded } from '../services/deleteQueue'
 import { getClientIp } from '../middleware/rateLimit'
 import { prepareReleaseUploadReservation } from '../services/uploadReservations'
@@ -285,6 +291,18 @@ export async function previewFile(request: Request, env: Env, fileId: string): P
  *
  * // 无权限 (403)
  * { "error": "无权限" }
+ *
+ * // 文件已过期，无法恢复 (410)
+ * { "error": "文件已过期，无法恢复" }
+ *
+ * // 文件对象不存在，无法恢复 (409)
+ * { "error": "文件对象不存在，无法恢复" }
+ *
+ * // 恢复校验失败 (502)
+ * { "error": "文件恢复校验失败：..." }
+ *
+ * // 存储配置未找到 (503)
+ * { "error": "存储配置未找到" }
  */
 export async function restoreFile(request: Request, env: Env, fileId: string): Promise<Response> {
   const user = getUser(request)
@@ -350,6 +368,17 @@ export async function restoreFile(request: Request, env: Env, fileId: string): P
   const loaded = await resolveR2ConfigForKey(env, r2Key)
   if (!loaded) return jsonResponse({ error: '存储配置未找到' }, 503)
 
+  // 对齐 provider 分支：恢复前校验 R2 对象仍存在，避免恢复出无对象的「完成」空壳
+  // （delete_queue 清理重试期间对象可能已被删除）。HEAD 异常按现有错误体系返回 502。
+  try {
+    const exists = await checkObjectExists(loaded.config, r2Key)
+    if (!exists) {
+      return jsonResponse({ error: '文件对象不存在，无法恢复' }, 409)
+    }
+  } catch (error) {
+    return jsonResponse({ error: `文件恢复校验失败：${formatUpstreamFetchError(error)}` }, 502)
+  }
+
   const now = new Date().toISOString()
   await withD1Retry(env.DB).batch([
     withD1Retry(env.DB)
@@ -380,6 +409,19 @@ export async function restoreFile(request: Request, env: Env, fileId: string): P
 }
 
 /**
+ * 判断 provider 异常是否表示远端对象不存在（404/NotFound）。
+ * 永久删除路径会忽略「远端已缺失」继续清理本地记录，其余真实失败仅补 warn 日志不阻塞删除。
+ */
+function isRemoteObjectMissingError(error: unknown): boolean {
+  return (
+    error instanceof StorageError && (error.httpStatusCode === 404 || error.code === 'NotFound')
+  )
+}
+
+/** 回收站永久删除的每页文件数：分页批处理，避免回收站积压时单请求超时 / 触顶子请求上限 */
+const TRASH_PERMANENT_DELETE_PAGE_SIZE = 100
+
+/**
  * 永久删除回收站中的所有文件
  *
  * @route DELETE /api/files/trash/permanent
@@ -390,52 +432,91 @@ export async function restoreFile(request: Request, env: Env, fileId: string): P
  * @example
  * // 成功响应 (200)
  * {
+ *   "success": true,
  *   "deleted": 5,
- *   "queued": 2
+ *   "queued": 2,
+ *   "total": 7
  * }
  *
  * // 未授权 (401)
  * { "error": "未授权" }
+ *
+ * // 存储配置未找到 (503)
+ * { "error": "存储配置未找到" }
  */
 export async function permanentlyDeleteTrashFiles(request: Request, env: Env): Promise<Response> {
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)
 
-  const { results } = await withD1Retry(env.DB)
-    .prepare(
-      `SELECT id, owner_id, r2_key, upload_status, deleted_at, config_id
-     FROM files
-     WHERE owner_id = ? AND upload_status = 'deleted' AND deleted_at IS NOT NULL`
-    )
-    .bind(user.id)
-    .all()
-
-  const files = results || []
   const now = new Date().toISOString()
   const ip = getClientIp(request)
   const userAgent = request.headers.get('User-Agent') || undefined
   let deleted = 0
   let queued = 0
+  let total = 0
 
-  for (const file of files) {
-    const fileId = String(file.id)
-    const r2Key = String(file.r2_key)
-    const explicitProviderConfigId = getExplicitProviderConfigId(file)
+  // 游标分页（id 升序）：每页逐文件处理，任一文件失败即抛出中断，
+  // 已处理文件已落库，未处理文件下次调用从游标头部继续（部分成功可重试续跑）。
+  let cursor: string | null = null
+  for (;;) {
+    const { results } = await withD1Retry(env.DB)
+      .prepare(
+        `SELECT id, owner_id, r2_key, upload_status, deleted_at, config_id
+     FROM files
+     WHERE owner_id = ? AND upload_status = 'deleted' AND deleted_at IS NOT NULL
+       AND id > ?
+     ORDER BY id ASC
+     LIMIT ?`
+      )
+      .bind(user.id, cursor ?? '', TRASH_PERMANENT_DELETE_PAGE_SIZE)
+      .all<Record<string, unknown>>()
 
-    if (explicitProviderConfigId) {
-      const provider = await createProvider(env, explicitProviderConfigId)
-      if (!provider) return jsonResponse({ error: '存储配置未找到' }, 503)
+    const files: Record<string, unknown>[] = results || []
+    if (!files.length) break
+    total += files.length
 
-      try {
-        await provider.delete(r2Key)
-      } catch {
-        // 远端文件可能已不存在，永久删除继续清理本地记录。
+    for (const file of files) {
+      cursor = String(file.id)
+      const fileId = String(file.id)
+      const r2Key = String(file.r2_key)
+      const explicitProviderConfigId = getExplicitProviderConfigId(file)
+
+      if (explicitProviderConfigId) {
+        const provider = await createProvider(env, explicitProviderConfigId)
+        if (!provider) return jsonResponse({ error: '存储配置未找到' }, 503)
+
+        try {
+          await provider.delete(r2Key)
+        } catch (error) {
+          // 远端文件可能已不存在，永久删除继续清理本地记录；非 404 类真实失败补 warn 日志便于排障。
+          if (!isRemoteObjectMissingError(error)) {
+            console.warn('[files] provider delete failed', { fileId, key: r2Key, error })
+          }
+        }
+
+        const batchResults = await withD1Retry(env.DB).batch([
+          prepareReleaseUploadReservation(env.DB, fileId, now),
+          withD1Retry(env.DB).prepare('DELETE FROM file_shares WHERE file_id = ?').bind(fileId),
+          withD1Retry(env.DB).prepare('DELETE FROM files WHERE id = ?').bind(fileId),
+          prepareAuditLogInsert(
+            env.DB,
+            {
+              actorUserId: user.id,
+              action: 'FILE_DELETE_PERMANENT',
+              targetType: 'file',
+              targetId: fileId,
+              ip,
+              userAgent,
+            },
+            now
+          ),
+        ])
+        deleted += Number(batchResults?.[2]?.meta?.changes || 0)
+        continue
       }
 
-      const batchResults = await withD1Retry(env.DB).batch([
-        prepareReleaseUploadReservation(env.DB, fileId, now),
-        withD1Retry(env.DB).prepare('DELETE FROM file_shares WHERE file_id = ?').bind(fileId),
-        withD1Retry(env.DB).prepare('DELETE FROM files WHERE id = ?').bind(fileId),
+      const [queueInsertResult] = await withD1Retry(env.DB).batch([
+        prepareEnqueueFileDeletionIfNeeded(env.DB, { id: fileId, r2_key: r2Key }, now),
         prepareAuditLogInsert(
           env.DB,
           {
@@ -449,29 +530,14 @@ export async function permanentlyDeleteTrashFiles(request: Request, env: Env): P
           now
         ),
       ])
-      deleted += Number(batchResults?.[2]?.meta?.changes || 0)
-      continue
+      queued += Number(queueInsertResult?.meta?.changes || 0)
     }
 
-    const [queueInsertResult] = await withD1Retry(env.DB).batch([
-      prepareEnqueueFileDeletionIfNeeded(env.DB, { id: fileId, r2_key: r2Key }, now),
-      prepareAuditLogInsert(
-        env.DB,
-        {
-          actorUserId: user.id,
-          action: 'FILE_DELETE_PERMANENT',
-          targetType: 'file',
-          targetId: fileId,
-          ip,
-          userAgent,
-        },
-        now
-      ),
-    ])
-    queued += Number(queueInsertResult?.meta?.changes || 0)
+    // 不足一页说明已取完，避免再发一次空查询
+    if (files.length < TRASH_PERMANENT_DELETE_PAGE_SIZE) break
   }
 
-  return jsonResponse({ success: true, deleted, queued, total: files.length })
+  return jsonResponse({ success: true, deleted, queued, total })
 }
 
 /**
@@ -528,8 +594,11 @@ export async function permanentlyDeleteFile(
 
     try {
       await provider.delete(r2Key)
-    } catch {
-      // 远端文件可能已不存在，永久删除继续清理本地记录。
+    } catch (error) {
+      // 远端文件可能已不存在，永久删除继续清理本地记录；非 404 类真实失败补 warn 日志便于排障。
+      if (!isRemoteObjectMissingError(error)) {
+        console.warn('[files] provider delete failed', { fileId, key: r2Key, error })
+      }
     }
 
     await withD1Retry(env.DB).batch([

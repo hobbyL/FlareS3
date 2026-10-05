@@ -91,7 +91,9 @@ function createDb(fileRow) {
                 return { meta: { changes: 1 } };
               }
               if (
-                sql.includes("UPDATE files SET size = ?, upload_status = ?")
+                sql.includes(
+                  "UPDATE files SET size = ?, upload_status = 'completed'",
+                )
               ) {
                 state.completedUpdates += 1;
                 state.completedUpdateArgs.push(args);
@@ -208,6 +210,8 @@ test("confirmUpload rejects mismatched uploaded object size", async () => {
     short_code: "abc123",
     require_login: 1,
     size: 128,
+    upload_status: "pending",
+    deleted_at: null,
   };
   const { db, state } = createDb(fileRow);
   const { r2, upload } = loadUploadModules();
@@ -347,6 +351,8 @@ test("confirmUpload persists actual object size on success", async () => {
     short_code: "abc123",
     require_login: 1,
     size: 128,
+    upload_status: "pending",
+    deleted_at: null,
   };
   const { db, state } = createDb(fileRow);
   const { r2, upload } = loadUploadModules();
@@ -365,7 +371,7 @@ test("confirmUpload persists actual object size on success", async () => {
   assert.equal(state.deletedUpdates, 0);
   assert.equal(state.completedUpdates, 1);
   assert.equal(state.reservationUpdates, 1);
-  assert.deepEqual(state.completedUpdateArgs[0], [128, "completed", "file-1"]);
+  assert.deepEqual(state.completedUpdateArgs[0], [128, "file-1"]);
 });
 
 test("completeMultipart persists actual object size on success", async () => {
@@ -401,5 +407,5 @@ test("completeMultipart persists actual object size on success", async () => {
   assert.equal(state.deletedUpdates, 0);
   assert.equal(state.completedUpdates, 1);
   assert.equal(state.reservationUpdates, 1);
-  assert.deepEqual(state.completedUpdateArgs[0], [128, "completed", "file-1"]);
+  assert.deepEqual(state.completedUpdateArgs[0], [128, "file-1"]);
 });
