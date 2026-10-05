@@ -70,7 +70,12 @@ async function isBlocked(db: D1Database, ip: string): Promise<boolean> {
   return isBlockedByKey(db, ip)
 }
 
-async function allowScopedRequest(
+/**
+ * 滑动窗口计数：窗口内未超限则 +1 并放行，超限则拒绝。
+ *
+ * 导出供管理端低频敏感操作（如 secrets reveal）复用同一计数机制。
+ */
+export async function allowScopedRequest(
   db: D1Database,
   key: string,
   maxRequests: number,

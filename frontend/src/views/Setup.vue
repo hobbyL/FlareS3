@@ -203,6 +203,16 @@
                 </Button>
 
                 <Button
+                  type="default"
+                  size="small"
+                  :loading="revealingId === row.id"
+                  :aria-label="t('setup.aria.revealSecrets')"
+                  @click="handleRevealSecrets(row)"
+                >
+                  <Eye :size="14" />
+                </Button>
+
+                <Button
                   type="danger"
                   size="small"
                   :aria-label="t('setup.aria.delete')"
@@ -235,6 +245,7 @@ import { ref, computed, onMounted, defineAsyncComponent } from 'vue'
 import {
   AlertTriangle,
   Database,
+  Eye,
   Pencil,
   Plus,
   RefreshCw,
@@ -267,6 +278,7 @@ const savingDefault = ref(false)
 
 const testingId = ref('')
 const settingDefaultId = ref('')
+const revealingId = ref('')
 
 const r2Options = ref({
   default_config_id: null,
@@ -427,8 +439,10 @@ const buildEditInitialValue = (row, secrets = {}) => {
       endpoint: secrets.endpoint || row.endpoint || '',
       bucket_name: secrets.bucket_name || row.bucket_name || '',
       quota_gb: row.totalSpace ? formatQuotaGb(row.totalSpace) : '10',
-      access_key_id: secrets.access_key_id || '',
-      secret_access_key: secrets.secret_access_key || '',
+      // 密钥不再回显明文：secrets 端点只回脱敏形态，
+      // 编辑时留空表示沿用原值（更新接口对空值保留旧密钥）
+      access_key_id: '',
+      secret_access_key: '',
       remote_path: '/',
       username: '',
       password: '',
@@ -444,8 +458,9 @@ const buildEditInitialValue = (row, secrets = {}) => {
     access_key_id: '',
     secret_access_key: '',
     remote_path: secrets.remote_path || row.remote_path || '/',
+    // 用户名可回显（非机密）；密码不回显明文，留空表示沿用原值
     username: secrets.username || '',
-    password: secrets.password || '',
+    password: '',
   }
 }
 
@@ -596,6 +611,35 @@ const handleSubmit = async (submittedForm) => {
     message.error(error.response?.data?.error || t('setup.messages.saveFailed'))
   } finally {
     modalSubmitting.value = false
+  }
+}
+
+/**
+ * 查看明文密钥：走 reveal 端点（后端有审计 + 限流），前端二次确认。
+ * 结果以 JSON 文本展示，避免把明文回填进任何输入框。
+ */
+const formatRevealedSecrets = (secrets) => {
+  if (secrets.type === 'r2') {
+    return [
+      `Access Key ID: ${secrets.access_key_id || ''}`,
+      `Secret Access Key: ${secrets.secret_access_key || ''}`,
+    ].join('\n')
+  }
+  return [`Username: ${secrets.username || ''}`, `Password: ${secrets.password || ''}`].join('\n')
+}
+
+const handleRevealSecrets = async (row) => {
+  if (revealingId.value) return
+  if (!confirm(t('setup.messages.revealConfirm'))) return
+
+  revealingId.value = row.id
+  try {
+    const secrets = await api.revealStorageConfigSecrets(row.id, row.configType)
+    alert(formatRevealedSecrets(secrets))
+  } catch (error) {
+    message.error(error.response?.data?.error || t('setup.messages.revealFailed'))
+  } finally {
+    revealingId.value = ''
   }
 }
 

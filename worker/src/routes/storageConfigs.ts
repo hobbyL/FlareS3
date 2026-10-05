@@ -5,6 +5,8 @@ import { jsonResponse } from './utils'
 import { formatBytes } from '../utils/format'
 import { listR2ConfigSummaries, loadR2ConfigById } from '../services/r2'
 import { listWebDAVConfigs, loadWebDAVConfigById } from '../services/storage/webdav-config'
+import { logAudit } from '../services/audit'
+import { allowScopedRequest } from '../middleware/rateLimit'
 import {
   measureRouteStep,
   withRouteTimingHeaders,
@@ -217,13 +219,16 @@ export async function listAllConfigs(_request: Request, env: Env): Promise<Respo
 }
 
 /**
- * 获取存储配置的敏感信息（密钥/密码）
+ * 获取存储配置的敏感信息（脱敏形态）
+ *
+ * 仅返回回显编辑表单所需的非机密字段与「已配置」布尔标记；
+ * 明文密钥/密码只经 reveal 端点（审计 + 限流）下发。
  *
  * @route GET /api/storage/configs/:id/secrets
- * @param request - HTTP 请求对象（需要认证）
+ * @param request - HTTP 请求对象（需要 admin 认证）
  * @param env - Cloudflare Workers 环境变量
  * @param id - 配置 ID
- * @returns JSON 响应，包含配置的敏感信息
+ * @returns JSON 响应，脱敏元数据
  *
  * @example
  * // 查询参数
@@ -234,8 +239,8 @@ export async function listAllConfigs(_request: Request, env: Env): Promise<Respo
  *   "type": "r2",
  *   "endpoint": "https://xxx.r2.cloudflarestorage.com",
  *   "bucket_name": "my-bucket",
- *   "access_key_id": "xxxx",
- *   "secret_access_key": "xxxx"
+ *   "access_key_id_masked": "AKIA****XYZ",
+ *   "secret_configured": true
  * }
  *
  * // 成功响应（WebDAV/Koofr）(200)
@@ -244,7 +249,7 @@ export async function listAllConfigs(_request: Request, env: Env): Promise<Respo
  *   "endpoint": "https://webdav.example.com",
  *   "remote_path": "/files",
  *   "username": "user",
- *   "password": "pass"
+ *   "password_configured": true
  * }
  *
  * // 配置 ID 为空 (400)
@@ -256,6 +261,13 @@ export async function listAllConfigs(_request: Request, env: Env): Promise<Respo
  * // type 无效 (400)
  * { "error": "type 必须为 r2、webdav 或 koofr" }
  */
+function maskSecretPrefix(value: string): string {
+  const raw = String(value || '')
+  if (!raw) return ''
+  if (raw.length <= 4) return '****'
+  return `${raw.slice(0, 4)}****`
+}
+
 export async function getConfigSecrets(request: Request, env: Env, id: string): Promise<Response> {
   if (!id) return secretJsonResponse({ error: '配置 ID 不能为空' }, 400)
 
@@ -269,8 +281,8 @@ export async function getConfigSecrets(request: Request, env: Env, id: string): 
         type: 'r2',
         endpoint: loaded.config.endpoint,
         bucket_name: loaded.config.bucketName,
-        access_key_id: loaded.config.accessKeyId,
-        secret_access_key: loaded.config.secretAccessKey,
+        access_key_id_masked: maskSecretPrefix(loaded.config.accessKeyId),
+        secret_configured: Boolean(loaded.config.secretAccessKey),
       })
     } catch {
       return secretJsonResponse({ error: '读取配置密钥失败' }, 500)
@@ -288,9 +300,112 @@ export async function getConfigSecrets(request: Request, env: Env, id: string): 
       endpoint: loaded.config.endpoint,
       remote_path: loaded.config.remotePath,
       username: loaded.config.username,
-      password: loaded.config.password,
+      password_configured: Boolean(loaded.config.password),
     })
   }
 
   return secretJsonResponse({ error: 'type 必须为 r2、webdav 或 koofr' }, 400)
+}
+
+/** reveal 端点限流：10 次 / 10 分钟（按配置 ID 聚合，所有 admin 共享） */
+const SECRETS_REVEAL_RATE_LIMIT_MAX = 10
+const SECRETS_REVEAL_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000
+
+/**
+ * 查看存储配置的明文密钥（二次确认端点）
+ *
+ * 在 admin 鉴权之上叠加：per-configId 限流（10 次/10min）+ 审计日志
+ * （action=storage_config_secrets_reveal）。每次调用都留痕。
+ *
+ * @route GET /api/storage/configs/:id/secrets/reveal
+ * @param request - HTTP 请求对象（需要 admin 认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @param id - 配置 ID
+ * @returns JSON 响应，包含明文凭据
+ *
+ * @example
+ * // 查询参数
+ * // type: 配置类型（r2 | webdav | koofr）
+ *
+ * // 成功响应（R2）(200)
+ * {
+ *   "type": "r2",
+ *   "endpoint": "https://xxx.r2.cloudflarestorage.com",
+ *   "bucket_name": "my-bucket",
+ *   "access_key_id": "xxxx",
+ *   "secret_access_key": "xxxx"
+ * }
+ *
+ * // 超出限流阈值 (429)
+ * { "error": "操作过于频繁，请稍后再试" }
+ */
+export async function revealConfigSecrets(
+  request: Request,
+  env: Env,
+  id: string
+): Promise<Response> {
+  if (!id) return secretJsonResponse({ error: '配置 ID 不能为空' }, 400)
+
+  const req = request as Request & { user?: { id?: string } }
+  const actorUserId = req.user?.id
+
+  // per-configId 限流先于密钥解密执行
+  const rateLimitKey = `secrets-reveal:${id}`
+  const allowed = await allowScopedRequest(
+    env.DB,
+    rateLimitKey,
+    SECRETS_REVEAL_RATE_LIMIT_MAX,
+    SECRETS_REVEAL_RATE_LIMIT_WINDOW_MS
+  )
+  if (!allowed) {
+    return secretJsonResponse({ error: '操作过于频繁，请稍后再试' }, 429)
+  }
+
+  const type = new URL(request.url).searchParams.get('type')
+
+  let payload: Record<string, unknown> | null = null
+  if (type === 'r2') {
+    try {
+      const loaded = await loadR2ConfigById(env, id)
+      if (!loaded) return secretJsonResponse({ error: '配置不存在或密钥不可用' }, 404)
+      payload = {
+        type: 'r2',
+        endpoint: loaded.config.endpoint,
+        bucket_name: loaded.config.bucketName,
+        access_key_id: loaded.config.accessKeyId,
+        secret_access_key: loaded.config.secretAccessKey,
+      }
+    } catch {
+      return secretJsonResponse({ error: '读取配置密钥失败' }, 500)
+    }
+  } else if (type === 'webdav' || type === 'koofr') {
+    const loaded = await loadWebDAVConfigById(env, id)
+    if (!loaded || loaded.type !== type) {
+      return secretJsonResponse({ error: '配置不存在或密钥不可用' }, 404)
+    }
+    payload = {
+      type: loaded.type,
+      endpoint: loaded.config.endpoint,
+      remote_path: loaded.config.remotePath,
+      username: loaded.config.username,
+      password: loaded.config.password,
+    }
+  } else {
+    return secretJsonResponse({ error: 'type 必须为 r2、webdav 或 koofr' }, 400)
+  }
+
+  // 成功取到明文后才写审计；审计失败不阻断下发（密钥已解密完成）
+  try {
+    await logAudit(env.DB, {
+      actorUserId,
+      action: 'storage_config_secrets_reveal',
+      targetType: 'storage_config',
+      targetId: id,
+      metadata: { type },
+    })
+  } catch (error) {
+    console.error('[storageConfigs.reveal] audit log failed', error)
+  }
+
+  return secretJsonResponse(payload)
 }

@@ -157,13 +157,23 @@ export default {
   getStorageConfigs: dedupRequest(() => api.get('/storage/configs'), 'storage-configs'),
 
   /**
-   * 获取存储配置的敏感信息
+   * 获取存储配置的敏感信息（脱敏形态，用于编辑表单回显）
    * @param {string} configId - 配置 ID
    * @param {string} type - 配置类型
    * @returns {Promise<object>}
    */
   getStorageConfigSecrets(configId, type) {
     return api.get(`/storage/configs/${configId}/secrets`, { params: { type } })
+  },
+
+  /**
+   * 查看存储配置的明文密钥（审计 + 限流，需要 admin）
+   * @param {string} configId - 配置 ID
+   * @param {string} type - 配置类型
+   * @returns {Promise<object>}
+   */
+  revealStorageConfigSecrets(configId, type) {
+    return api.get(`/storage/configs/${configId}/secrets/reveal`, { params: { type } })
   },
 
   // ========== R2 配置（多配置）==========

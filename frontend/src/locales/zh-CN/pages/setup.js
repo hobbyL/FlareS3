@@ -99,6 +99,7 @@ export default {
       setDefault: '设为默认',
       edit: '编辑',
       notEditable: '该配置不可修改',
+      revealSecrets: '查看密钥',
       delete: '删除',
     },
     validation: {
@@ -115,6 +116,8 @@ export default {
       testSuccess: '连接测试成功',
       testFailed: '连接测试失败',
       loadSecretsFailed: '读取配置密钥失败',
+      revealConfirm: '确定查看该配置的明文密钥？（本次查看将记录审计日志）',
+      revealFailed: '查看密钥失败',
       createSuccess: '配置创建成功',
       updateSuccess: '配置已更新',
       saveFailed: '保存失败',

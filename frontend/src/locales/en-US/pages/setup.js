@@ -102,6 +102,7 @@ export default {
       setDefault: 'Set default',
       edit: 'Edit',
       notEditable: 'This config is read-only',
+      revealSecrets: 'Reveal credentials',
       delete: 'Delete',
     },
     validation: {
@@ -118,6 +119,9 @@ export default {
       testSuccess: 'Connection test succeeded',
       testFailed: 'Connection test failed',
       loadSecretsFailed: 'Failed to load config credentials',
+      revealConfirm:
+        'Reveal the plaintext credentials of this config? This action is recorded in the audit log.',
+      revealFailed: 'Failed to reveal credentials',
       createSuccess: 'Config created',
       updateSuccess: 'Config updated',
       saveFailed: 'Save failed',

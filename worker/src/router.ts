@@ -123,6 +123,15 @@ router.get(
     )
   )
 )
+router.get(
+  '/api/storage/configs/:id/secrets/reveal',
+  withAdmin(
+    lazyRoute(
+      () => import('./routes/storageConfigs'),
+      (module, request, env) => module.revealConfigSecrets(request, env, (request as any).params.id)
+    )
+  )
+)
 
 // ── R2 configs ──
 router.get(
