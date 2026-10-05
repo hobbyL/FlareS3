@@ -51,15 +51,21 @@ test("file preview helpers classify archive and supported preview modes", () => 
   assert.equal(resolvePreviewMode("", "exe"), null);
 });
 
-test("formatUpstreamFetchError compacts and truncates unsafe upstream errors", () => {
+test("formatUpstreamFetchError returns generic message and never leaks upstream details", () => {
   const { formatUpstreamFetchError } = require(
     compiledPath("services/filePreview.js"),
   );
 
+  // 对外只回固定文案，原始消息（含 endpoint/内部细节）不允许进响应体
   assert.equal(
-    formatUpstreamFetchError(new Error("fetch\nfailed\tbadly")),
-    "fetch failed badly",
+    formatUpstreamFetchError(
+      new Error("https://secret-endpoint.example/ webdav 401"),
+    ),
+    "上游存储服务暂时不可用",
   );
-  assert.equal(formatUpstreamFetchError(""), "upstream_fetch_failed");
-  assert.equal(formatUpstreamFetchError("x".repeat(250)).length, 200);
+  assert.equal(formatUpstreamFetchError(""), "上游存储服务暂时不可用");
+  assert.equal(
+    formatUpstreamFetchError(new Error("x".repeat(250))),
+    "上游存储服务暂时不可用",
+  );
 });

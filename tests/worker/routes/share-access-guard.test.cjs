@@ -558,6 +558,11 @@ test("viewTextShare rejects oversized password form before consuming share", asy
         match: /SELECT blocked_until FROM rate_limits WHERE ip = \?/,
         value: null,
       },
+      // 分享码维度（share-pass:code）封禁检查，同样未封禁
+      {
+        match: /SELECT blocked_until FROM rate_limits WHERE ip = \?/,
+        value: null,
+      },
     ],
   });
 
@@ -765,6 +770,11 @@ test("viewFileShare rejects oversized password form before consuming share", asy
           owner_status: "active",
         },
       },
+      {
+        match: /SELECT blocked_until FROM rate_limits WHERE ip = \?/,
+        value: null,
+      },
+      // 分享码维度（share-pass:code）封禁检查，同样未封禁
       {
         match: /SELECT blocked_until FROM rate_limits WHERE ip = \?/,
         value: null,

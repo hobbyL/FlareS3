@@ -1,14 +1,26 @@
 import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
 import { jsonResponse, parseJson, requestBodyPolicyErrorResponse } from './utils'
+import bcrypt from 'bcryptjs'
 import { verifyPassword } from '../services/password'
-import { recordFailedAttempt, getClientIp } from '../middleware/rateLimit'
+import {
+  recordFailedAttempt,
+  recordFailedAttemptForUsername,
+  isUsernameBlocked,
+  getClientIp,
+} from '../middleware/rateLimit'
 import { logAudit } from '../services/audit'
 import { getSessionCookieName, invalidateAuthToken, type AuthUser } from '../middleware/authSession'
 import { createSignedAuthToken, getAuthTokenSecret } from '../services/authToken'
 import { hashToken } from '../utils/token'
 
 const SESSION_TTL_SECONDS = 8 * 60 * 60
+
+/**
+ * 用户不存在路径的哈希均衡常量：拉平与密码错误路径的计时差，
+ * 防止通过响应时间枚举有效用户名。硬编码 bcrypt 哈希，不含真实凭证。
+ */
+const DUMMY_BCRYPT_HASH = bcrypt.hashSync('flares3-timing-equalizer', 10)
 
 function isSecureRequest(request: Request): boolean {
   const url = new URL(request.url)
@@ -66,6 +78,36 @@ export async function login(request: Request, env: Env): Promise<Response> {
     if (!getAuthTokenSecret(env)) {
       return jsonResponse({ error: '缺少 AUTH_TOKEN_SECRET' }, 500)
     }
+
+    const authFailedResponse = jsonResponse(
+      { error: '用户名或密码错误', code: 'AUTH_INVALID_CREDENTIALS' },
+      401
+    )
+
+    const trackLoginFailure = async (targetId?: string, reason?: string) => {
+      await Promise.allSettled([
+        recordFailedAttempt(env, ip),
+        recordFailedAttemptForUsername(env, body.username),
+        logAudit(env.DB, {
+          action: 'LOGIN_FAILED',
+          targetType: 'user',
+          targetId,
+          ip,
+          userAgent,
+          metadata: reason ? { reason } : undefined,
+        }),
+      ])
+    }
+
+    const usernameBlockedResponse = jsonResponse({ error: '请求过于频繁，请稍后再试' }, 429)
+
+    // 账号维度封禁前置检查：换 IP 的分布式爆破在同一用户名上也会被拒绝，
+    // 先于用户查询与 bcrypt 比较执行，避免封禁期内仍消耗哈希成本。
+    if (await isUsernameBlocked(env, body.username)) {
+      await trackLoginFailure(undefined, 'USERNAME_BLOCKED')
+      return usernameBlockedResponse
+    }
+
     const user = await withD1Retry(env.DB)
       .prepare(
         'SELECT id, username, password_hash, role, status, quota_bytes FROM users WHERE username = ? LIMIT 1'
@@ -80,26 +122,10 @@ export async function login(request: Request, env: Env): Promise<Response> {
         quota_bytes: number
       }>()
 
-    const authFailedResponse = jsonResponse(
-      { error: '用户名或密码错误', code: 'AUTH_INVALID_CREDENTIALS' },
-      401
-    )
-
-    const trackLoginFailure = async (targetId?: string, reason?: string) => {
-      await Promise.allSettled([
-        recordFailedAttempt(env, ip),
-        logAudit(env.DB, {
-          action: 'LOGIN_FAILED',
-          targetType: 'user',
-          targetId,
-          ip,
-          userAgent,
-          metadata: reason ? { reason } : undefined,
-        }),
-      ])
-    }
-
     if (!user) {
+      // 用户不存在时执行等价成本的哈希校验，拉平与密码错误路径的计时差，
+      // 防止通过响应时间枚举有效用户名；DUMMY_HASH 为硬编码常量，不含真实凭证。
+      bcrypt.compareSync(body.password, DUMMY_BCRYPT_HASH)
       await trackLoginFailure(undefined, 'USER_NOT_FOUND')
       return authFailedResponse
     }

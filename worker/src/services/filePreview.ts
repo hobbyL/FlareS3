@@ -37,11 +37,13 @@ export function isArchiveFile(contentType: string, extension: string): boolean {
   return false
 }
 
+/**
+ * 上游错误对外只回通用文案；原始消息（含 endpoint/内部细节）进服务端日志。
+ * 保留导出签名以免调用方感知日志副作用。
+ */
 export function formatUpstreamFetchError(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error || '')
-  const message = raw.replace(/\s+/g, ' ').trim()
-  if (!message) return 'upstream_fetch_failed'
-  return message.slice(0, 200)
+  console.error('[filePreview] upstream fetch failed', error)
+  return '上游存储服务暂时不可用'
 }
 
 export function resolvePreviewMode(contentType: string, extension: string): PreviewMode | null {

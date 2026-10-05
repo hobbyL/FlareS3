@@ -24,6 +24,39 @@ test("validateExternalEndpoint accepts normalized public HTTPS endpoints only", 
   });
 });
 
+test("validateExternalEndpoint rejects non-decimal IPv4 notation that maps to private addresses", () => {
+  const { validateExternalEndpoint } = require(
+    compiledPath("services/endpointPolicy.js"),
+  );
+  // 十进制整数 / 十六进制 / 八进制等 IPv4 变体必须先归一化再进黑名单
+  const blockedVariants = [
+    "https://2130706433", // 127.0.0.1
+    "https://0x7f000001", // 127.0.0.1（十六进制整数）
+    "https://0x7f.0.0.1", // 十六进制分段
+    "https://0177.0.0.1", // 八进制分段
+    "https://017700000001", // 八进制整数 → 127.0.0.1
+    "https://167772161", // 10.0.0.1（十进制整数）
+  ];
+
+  for (const endpoint of blockedVariants) {
+    const result = validateExternalEndpoint(endpoint);
+    assert.equal(result.ok, false, endpoint);
+    if (!result.ok) {
+      assert.match(result.message, /不能指向本机、内网或保留地址/);
+    }
+  }
+
+  // 合法公网 IPv4 不受归一化影响
+  assert.deepEqual(validateExternalEndpoint("https://8.8.8.8/"), {
+    ok: true,
+    url: "https://8.8.8.8",
+  });
+  assert.deepEqual(validateExternalEndpoint("https://1.1.1.1"), {
+    ok: true,
+    url: "https://1.1.1.1",
+  });
+});
+
 test("validateExternalEndpoint rejects local, private and reserved address endpoints", () => {
   const { validateExternalEndpoint } = require(
     compiledPath("services/endpointPolicy.js"),

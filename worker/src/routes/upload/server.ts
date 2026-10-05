@@ -32,17 +32,25 @@ import {
 const MAX_SERVER_UPLOAD_BYTES = 100 * 1024 * 1024
 const MAX_SERVER_UPLOAD_REQUEST_BYTES = MAX_SERVER_UPLOAD_BYTES + 1024 * 1024
 
+/**
+ * 上游/内部错误对外只回通用文案 + HTTP 状态；原始消息进服务端日志，
+ * 避免向客户端泄露 WebDAV/Koofr endpoint 与内部路径细节。
+ */
 function formatServerError(error: unknown): { status: number; message: string } {
   if (error instanceof Error) {
-    const msg = error.message
-    const m = msg.match(/HTTP\s+(\d+)/)
-    if (m) return { status: Number(m[1]), message: msg }
-    if (msg.includes('Network connection lost') || msg.includes('fetch failed')) {
+    console.error('[serverUpload] upstream failed', error)
+    const m = error.message.match(/HTTP\s+(\d+)/)
+    if (m) return { status: Number(m[1]), message: '存储服务返回错误' }
+    if (
+      error.message.includes('Network connection lost') ||
+      error.message.includes('fetch failed')
+    ) {
       return { status: 502, message: '存储服务连接中断，请稍后重试' }
     }
-    return { status: 500, message: msg }
+    return { status: 500, message: '上传失败，请稍后重试' }
   }
-  return { status: 500, message: String(error || '未知错误') }
+  console.error('[serverUpload] upstream failed', error)
+  return { status: 500, message: '上传失败，请稍后重试' }
 }
 export async function serverUpload(request: Request, env: Env): Promise<Response> {
   const user = getUser(request)

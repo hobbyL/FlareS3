@@ -115,6 +115,10 @@ function createFakeD1() {
         },
       };
     },
+    // withD1Retry 包装后的 batch 会解包语句并逐条执行同一套 fake 逻辑
+    async batch(bindGroups) {
+      return Promise.all(bindGroups.map((group) => group.run()));
+    },
   };
 }
 
@@ -140,7 +144,7 @@ function captureError(fn) {
     .then((result) => ({ result, entries }));
 }
 
-test("getClientIp 依次回退 CF-Connecting-IP / X-Forwarded-For / unknown", () => {
+test("getClientIp 仅信任 CF-Connecting-IP，伪造 X-Forwarded-For 不生效", () => {
   assert.equal(
     getClientIp(
       makeRequest("https://example.com/", {
@@ -152,13 +156,14 @@ test("getClientIp 依次回退 CF-Connecting-IP / X-Forwarded-For / unknown", ()
     ),
     "1.1.1.1",
   );
+  // XFF 首值可被客户端伪造，不再作为回退来源
   assert.equal(
     getClientIp(
       makeRequest("https://example.com/", {
         headers: { "X-Forwarded-For": " 3.3.3.3 , 4.4.4.4" },
       }),
     ),
-    "3.3.3.3",
+    "unknown",
   );
   assert.equal(getClientIp(makeRequest("https://example.com/")), "unknown");
 });
@@ -315,7 +320,7 @@ test("公开入口限流阈值来自 PUBLIC_RATE_LIMIT_MAX 环境变量", async 
   }
 });
 
-test("公开入口同时维护全局 key 和按路径 key，均带 public: 前缀", async () => {
+test("公开入口同时维护全局 key 和按类别 key，随机路径不再单独建行", async () => {
   const db = createFakeD1();
   const env = makeEnv(db, { PUBLIC_RATE_LIMIT_MAX: "5" });
 
@@ -327,19 +332,32 @@ test("公开入口同时维护全局 key 和按路径 key，均带 public: 前�
     2,
     "全局 key 累计两次",
   );
-  assert.equal(db.rows.get("public:unknown:/s/aaa").request_count, 1);
-  assert.equal(db.rows.get("public:unknown:/s/bbb").request_count, 1);
+  assert.equal(
+    db.rows.get("public:unknown:s").request_count,
+    2,
+    "同类别共享一个计数桶",
+  );
+  assert.equal(
+    db.rows.has("public:unknown:/s/aaa"),
+    false,
+    "完整 pathname 不再建行",
+  );
+  assert.equal(
+    db.rows.has("public:unknown:/s/bbb"),
+    false,
+    "完整 pathname 不再建行",
+  );
   assert.equal(db.rows.has("unknown"), false, "公开限流不得污染登录 IP 记录");
 });
 
-test("单条路径超限不影响该 IP 的其他路径", async () => {
+test("单条类别超限不影响该 IP 的其他类别", async () => {
   const db = createFakeD1();
   const env = makeEnv(db, {
     PUBLIC_RATE_LIMIT_MAX: "50",
   });
 
-  // 手动把单路径 key 顶到上限
-  db.seed("public:unknown:/s/hot", {
+  // 手动把 /s/ 类别 key 顶到上限
+  db.seed("public:unknown:s", {
     request_count: 50,
     window_start: new Date().toISOString(),
   });
@@ -351,7 +369,7 @@ test("单条路径超限不影响该 IP 的其他路径", async () => {
   assert.equal(blocked.status, 429);
 
   assert.equal(
-    await rateLimitMiddleware(makeRequest("https://example.com/s/cold"), env),
+    await rateLimitMiddleware(makeRequest("https://example.com/t/cold"), env),
     undefined,
   );
 });
@@ -415,6 +433,13 @@ test("分享码密码错误计数使用 share: 前缀且阈值可配置", async 
   assert.equal(await isSharePasswordBlocked(env, "code1", "6.6.6.6"), true);
 
   assert.equal(db.rows.has("share:code1:6.6.6.6"), true);
+  // 分享码维度（不含 IP）同步计数，换 IP 也封禁
+  assert.equal(db.rows.get("share-pass:code1").failed_attempts, 2);
+  assert.equal(
+    await isSharePasswordBlocked(env, "code1", "9.9.9.9"),
+    true,
+    "换 IP 仍被封禁",
+  );
   assert.equal(
     await isSharePasswordBlocked(env, "code2", "6.6.6.6"),
     false,
@@ -424,6 +449,11 @@ test("分享码密码错误计数使用 share: 前缀且阈值可配置", async 
   await clearSharePasswordFailedAttempts(env, "code1", "6.6.6.6");
   assert.equal(await isSharePasswordBlocked(env, "code1", "6.6.6.6"), false);
   assert.equal(db.rows.get("share:code1:6.6.6.6").failed_attempts, 0);
+  assert.equal(
+    db.rows.get("share-pass:code1").failed_attempts,
+    0,
+    "成功后清除分享码维度计数",
+  );
 });
 
 test("分享码封禁到期后自动解封", async () => {

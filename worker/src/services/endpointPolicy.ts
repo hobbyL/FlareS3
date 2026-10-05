@@ -16,7 +16,58 @@ function normalizeHostname(hostname: string): string {
     .replace(/\.$/, '')
 }
 
+/**
+ * 尝试把 hostname 归一化为点分十进制 IPv4。
+ *
+ * 覆盖 S3/R2 兼容客户端常用的非十进制 IPv4 写法：
+ * - 十进制整数：`https://2130706433/` → 127.0.0.1
+ * - 十六进制整数：`https://0x7f000001/` → 127.0.0.1
+ * - 十六进制分段：`0x7f.0.0.1`
+ * - 八进制分段：`0177.0.0.1`
+ *
+ * 无法归一化为合法 32bit IPv4 时返回 null（按原样继续判断）。
+ * 注：Workers runtime 无 DNS 解析能力，解析到私网 IP 的公网域名
+ * 属已知边界，只能靠「endpoint 仅 admin 可配置」约束。
+ */
+function normalizeIpv4Hostname(hostname: string): string | null {
+  // 纯整数形式（十进制或 0x 前缀十六进制）
+  if (/^\d+$/.test(hostname) || /^0x[0-9a-f]+$/i.test(hostname)) {
+    const value = hostname.toLowerCase().startsWith('0x')
+      ? Number.parseInt(hostname, 16)
+      : Number(hostname)
+    if (!Number.isSafeInteger(value) || value < 0 || value > 0xffffffff) return null
+    return [(value >>> 24) & 0xff, (value >>> 16) & 0xff, (value >>> 8) & 0xff, value & 0xff].join(
+      '.'
+    )
+  }
+
+  // 分段形式：任一段带 0x/0 前缀等非纯十进制写法时逐段解析
+  if (hostname.includes('.')) {
+    const parts = hostname.split('.')
+    if (parts.length === 4) {
+      const isNonDecimal = parts.some((part) => !/^\d+$/.test(part))
+      if (isNonDecimal) {
+        const nums = parts.map((part) => {
+          if (/^0x[0-9a-f]+$/i.test(part)) return Number.parseInt(part, 16)
+          if (/^0[0-7]+$/.test(part)) return Number.parseInt(part, 8)
+          return Number.NaN
+        })
+        if (nums.some((num) => !Number.isInteger(num) || num < 0 || num > 255)) return null
+        return nums.join('.')
+      }
+    }
+  }
+
+  return null
+}
+
 function isPrivateIpv4(hostname: string): boolean {
+  // 先归一化非十进制写法，防止整数/十六进制形式绕过黑名单
+  const normalized = normalizeIpv4Hostname(hostname)
+  return isPrivateIpv4Decimal(normalized ?? hostname)
+}
+
+function isPrivateIpv4Decimal(hostname: string): boolean {
   const parts = hostname.split('.')
   if (parts.length !== 4) return false
 

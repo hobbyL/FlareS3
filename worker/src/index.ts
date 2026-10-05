@@ -9,7 +9,7 @@ import { authSessionMiddleware } from './middleware/authSession'
 import { withCommonHeaders } from './middleware/securityHeaders'
 import { handleFrontendRequest } from './middleware/assets'
 import { router } from './router'
-import { serializeError, logRequestOutcome, logRequestStart } from './utils/log'
+import { logRequestOutcome, logRequestStart } from './utils/log'
 
 const isolateCreatedAt = Date.now()
 let isolateRequestCount = 0
@@ -44,14 +44,14 @@ function shouldRunBootstrapAdmin(request: Request, pathname: string): boolean {
 async function healthResponse(env: Env): Promise<Response> {
   const timestamp = new Date().toISOString()
   let dbStatus: 'ok' | 'error' | 'unavailable' = 'unavailable'
-  let dbError: string | undefined
   if (env.DB) {
     try {
       await withD1Retry(env.DB).prepare('SELECT 1').first()
       dbStatus = 'ok'
     } catch (error) {
       dbStatus = 'error'
-      dbError = serializeError(error)
+      // 错误详情仅进服务端日志：/health 为公开端点，D1 错误消息含内部 schema 细节
+      console.error('[health] database check failed', error)
     }
   }
   const overall = dbStatus === 'ok' || dbStatus === 'unavailable' ? 'ok' : 'degraded'
@@ -60,8 +60,8 @@ async function healthResponse(env: Env): Promise<Response> {
     timestamp,
     checks: { db: dbStatus },
   }
-  if (dbError) {
-    payload.error = dbError
+  if (dbStatus === 'error') {
+    payload.db_error = true
   }
   return new Response(JSON.stringify(payload), {
     status: dbStatus === 'error' ? 503 : 200,

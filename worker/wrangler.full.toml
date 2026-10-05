@@ -17,6 +17,10 @@ binding = "ASSETS"
 MAX_FILE_SIZE = "5368709120"
 TOTAL_STORAGE = "10737418240"
 # 限流阈值均为可选，缺省时使用 src/config/rateLimit.ts 中的默认值：
+# 客户端 IP 仅信任 Cloudflare 注入的 CF-Connecting-IP（getClientIp 不回退
+# X-Forwarded-For，其首值可被客户端伪造）；本项目仅部署于 Cloudflare 边缘。
+# 限流 key 维度：登录按 IP + 用户名（SHA-256 摘要）；分享码按 IP + 分享码；
+# 公开入口按 IP 全局桶 + 入口类别桶（s/t/f/dl）。
 # RATE_LIMIT_WINDOW_MS = "60000"                    # 登录窗口，默认 60000
 # RATE_LIMIT_MAX = "300"                            # 登录窗口内最大请求数，默认 300
 # RATE_LIMIT_MAX_FAILED_ATTEMPTS = "10"             # 登录失败封禁阈值，默认 10

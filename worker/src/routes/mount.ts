@@ -121,11 +121,12 @@ function formatStorageError(error: unknown): { status: number; message: string }
   return { status: 502, message: '存储操作失败' }
 }
 
+/**
+ * 上游错误对外只回通用文案；原始消息（含 endpoint/内部细节）进服务端日志。
+ */
 function formatUpstreamFetchError(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error || '')
-  const message = raw.replace(/\s+/g, ' ').trim()
-  if (!message) return 'upstream_fetch_failed'
-  return message.slice(0, 200)
+  console.error('[mount] upstream fetch failed', error)
+  return '上游存储服务暂时不可用'
 }
 
 async function ensureMountedObjectExists(

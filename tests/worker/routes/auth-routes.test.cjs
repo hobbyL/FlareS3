@@ -168,10 +168,8 @@ test("rateLimitMiddleware applies scoped D1 protection to public download routes
   assert.equal(response, undefined);
   assert.equal(state.runs.length, 2);
   assert.equal(state.runs[0].args[0], "public:203.0.113.10");
-  assert.equal(
-    state.runs[1].args[0],
-    "public:203.0.113.10:/api/files/file-1/download",
-  );
+  // per-path 计数按入口类别归一（dl），完整 pathname 不再建行
+  assert.equal(state.runs[1].args[0], "public:203.0.113.10:dl");
 });
 
 test("rateLimitMiddleware blocks public share routes when the scoped counter is exhausted", async () => {
@@ -288,6 +286,108 @@ test("login requires AUTH_TOKEN_SECRET before touching D1", async () => {
 
   assert.equal(response.status, 500);
   assert.deepEqual(payload, { error: "缺少 AUTH_TOKEN_SECRET" });
+});
+
+test("login 前置检查账号维度封禁：封禁期内换 IP 也拒绝且不执行 bcrypt", async () => {
+  const { login } = loadModule("routes/auth.js");
+
+  const request = new Request("https://example.com/api/auth/login", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "CF-Connecting-IP": "198.51.100.7",
+    },
+    body: JSON.stringify({ username: "alice", password: "secret" }),
+  });
+
+  const { db } = createDb({
+    firstHandlers: [
+      // isUsernameBlocked 命中：该用户名处于封禁期。
+      // 不注册 users 查询 handler——若未短路而执行到用户查询，
+      // consume 会抛 unexpected first SQL 并使 login 返回 500。
+      {
+        match: /SELECT blocked_until FROM rate_limits WHERE ip = \?/,
+        value: new Date(Date.now() + 60_000).toISOString(),
+      },
+    ],
+    runHandlers: [
+      // trackLoginFailure 会写入 IP 维度计数 + 账号维度计数 + 审计日志
+      {
+        match: /INSERT INTO rate_limits \(ip, failed_attempts, blocked_until\)/,
+        value: { meta: { changes: 1 } },
+      },
+      {
+        match: /INSERT INTO audit_logs/,
+        value: { meta: { changes: 1 } },
+      },
+    ],
+  });
+
+  const response = await login(request, {
+    AUTH_TOKEN_SECRET: "test-auth-secret",
+    DB: db,
+  });
+  const payload = await response.json();
+
+  assert.equal(response.status, 429);
+  assert.deepEqual(payload, { error: "请求过于频繁，请稍后再试" });
+});
+
+test("login 账号维度封禁检查通过后继续正常登录流程", async () => {
+  const { login } = loadModule("routes/auth.js");
+
+  const { db } = createDb({
+    firstHandlers: [
+      // isUsernameBlocked：无封禁记录
+      {
+        match: /SELECT blocked_until FROM rate_limits WHERE ip = \?/,
+        value: null,
+      },
+      // users 查询：命中已存在的用户（密码错误路径）
+      {
+        match: /SELECT id, username, password_hash/,
+        value: {
+          id: "user-1",
+          username: "alice",
+          password_hash: "not-a-real-bcrypt-hash",
+          role: "user",
+          status: "active",
+          quota_bytes: 1024,
+        },
+      },
+    ],
+    runHandlers: [
+      {
+        match: /INSERT INTO rate_limits \(ip, failed_attempts, blocked_until\)/,
+        value: { meta: { changes: 1 } },
+      },
+      {
+        match: /INSERT INTO audit_logs/,
+        value: { meta: { changes: 1 } },
+      },
+    ],
+  });
+
+  const response = await login(
+    new Request("https://example.com/api/auth/login", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "CF-Connecting-IP": "198.51.100.8",
+      },
+      body: JSON.stringify({ username: "alice", password: "secret" }),
+    }),
+    {
+      AUTH_TOKEN_SECRET: "test-auth-secret",
+      DB: db,
+    },
+  );
+
+  assert.equal(response.status, 401);
+  assert.deepEqual(await response.json(), {
+    error: "用户名或密码错误",
+    code: "AUTH_INVALID_CREDENTIALS",
+  });
 });
 
 test("auth token signing secret does not fall back to R2_MASTER_KEY", async () => {

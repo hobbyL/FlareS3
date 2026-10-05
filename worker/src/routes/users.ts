@@ -1,4 +1,5 @@
 import { withD1Retry } from '../utils/db'
+import { escapeLike } from '../utils/escapeLike'
 import type { Env } from '../config/env'
 import { jsonResponse, parseJson, getUser, requestBodyPolicyErrorResponse } from './utils'
 import { hashPassword } from '../services/password'
@@ -128,8 +129,8 @@ export async function listUsers(request: Request, env: Env): Promise<Response> {
     params.push(role)
   }
   if (q) {
-    conditions.push('username LIKE ?')
-    params.push(`%${q}%`)
+    conditions.push("username LIKE ? ESCAPE '\\'")
+    params.push(`%${escapeLike(q)}%`)
   }
   if (createdFrom) {
     conditions.push('created_at >= ?')
@@ -213,6 +214,9 @@ export async function createUser(request: Request, env: Env): Promise<Response> 
     if (!body.username || !body.password) {
       return jsonResponse({ error: '用户名或密码不能为空' }, 400)
     }
+    if (String(body.password).length < 8) {
+      return jsonResponse({ error: '密码长度至少为 8 位' }, 400)
+    }
     const existing = await withD1Retry(env.DB)
       .prepare('SELECT id FROM users WHERE username = ?')
       .bind(body.username)
@@ -289,6 +293,13 @@ export async function updateUser(request: Request, env: Env, userId: string): Pr
 
     if (body.status === 'deleted') {
       return jsonResponse({ error: '请使用专用删除接口删除用户' }, 400)
+    }
+    // 枚举白名单校验：脏值会导致用户无法登录（authSession 只认 status === 'active'）
+    if (body.status !== undefined && !['active', 'disabled'].includes(String(body.status))) {
+      return jsonResponse({ error: 'status 必须为 active 或 disabled' }, 400)
+    }
+    if (body.role !== undefined && !['admin', 'user'].includes(String(body.role))) {
+      return jsonResponse({ error: 'role 必须为 admin 或 user' }, 400)
     }
 
     const target = await withD1Retry(env.DB)
@@ -408,6 +419,9 @@ export async function resetPassword(request: Request, env: Env, userId: string):
     const body = await parseJson<{ password: string }>(request)
     if (!body.password) {
       return jsonResponse({ error: '密码不能为空' }, 400)
+    }
+    if (String(body.password).length < 8) {
+      return jsonResponse({ error: '密码长度至少为 8 位' }, 400)
     }
     await withD1Retry(env.DB)
       .prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?')

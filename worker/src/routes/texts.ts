@@ -1,4 +1,5 @@
 import { withD1Retry } from '../utils/db'
+import { escapeLike } from '../utils/escapeLike'
 import type { Env } from '../config/env'
 import { invalidJsonBodyResponse, jsonResponse, parseJson, getUser } from './utils'
 import { logAudit } from '../services/audit'
@@ -77,8 +78,8 @@ export async function listTexts(request: Request, env: Env): Promise<Response> {
   }
 
   if (q) {
-    conditions.push('(t.title LIKE ? OR t.content LIKE ?)')
-    const like = `%${q}%`
+    conditions.push("(t.title LIKE ? ESCAPE '\\' OR t.content LIKE ? ESCAPE '\\')")
+    const like = `%${escapeLike(q)}%`
     params.push(like, like)
   }
 
