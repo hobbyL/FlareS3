@@ -7,6 +7,8 @@ const api = (await import("../../../frontend/src/services/api.js")).default;
 const { useAuthStore } = await import("../../../frontend/src/stores/auth.js");
 const { useUserOptionsStore } =
   await import("../../../frontend/src/stores/userOptions.js");
+const { useStorageConfigsStore } =
+  await import("../../../frontend/src/stores/storageConfigs.js");
 
 const realGetAuthStatus = api.getAuthStatus;
 const realLogin = api.login;
@@ -181,6 +183,68 @@ test("接口异常时降级为登出且不缓存", async () => {
 
   assert.equal(await store.checkAuth(), true, "恢复后应能重新校验成功");
   assert.equal(calls.length, 2);
+});
+
+test("checkAuth 网络失败（无响应的 axios 错误）保留本地认证态", async () => {
+  const store = setup();
+  stubAuthStatus(AUTHENTICATED);
+  await store.checkAuth();
+  assert.equal(store.isAuthenticated, true);
+
+  // 模拟 axios 网络错误：isAxiosError 标记 + 无 response
+  const networkError = new Error("Network Error");
+  networkError.isAxiosError = true;
+  stubAuthStatus([networkError]);
+
+  assert.equal(
+    await store.checkAuth({ force: true }),
+    true,
+    "网络失败应沿用本地认证态返回 true（守卫照常放行）",
+  );
+  assert.equal(store.isAuthenticated, true, "网络失败不应登出");
+  assert.deepEqual(store.user, { id: "u1", role: "admin" });
+});
+
+test("checkAuth 收到带响应的 401 错误仍按确认未登录登出", async () => {
+  const store = setup();
+  stubAuthStatus(AUTHENTICATED);
+  await store.checkAuth();
+
+  const httpError = new Error("Request failed with status code 401");
+  httpError.isAxiosError = true;
+  httpError.response = { status: 401, data: {} };
+  stubAuthStatus([httpError]);
+
+  assert.equal(await store.checkAuth({ force: true }), false);
+  assert.equal(store.isAuthenticated, false, "有响应的失败仍应登出");
+  assert.equal(store.user, null);
+});
+
+test("logout 与 login 成功均连带失效存储配置缓存", async () => {
+  const store = setup();
+  stubAuthStatus(AUTHENTICATED);
+  api.logout = async () => ({ success: true });
+
+  await store.checkAuth();
+  const storageConfigs = useStorageConfigsStore();
+  storageConfigs.configs = [{ id: "c1", name: "配置" }];
+  storageConfigs.loadedAt = Date.now();
+
+  await store.logout();
+  assert.deepEqual(storageConfigs.configs, [], "登出应清空存储配置缓存");
+  assert.equal(storageConfigs.loadedAt, 0);
+
+  // login 成功路径同样失效（切换账号后不得残留上一账号的配置列表）
+  storageConfigs.configs = [{ id: "c2", name: "另一账号配置" }];
+  storageConfigs.loadedAt = Date.now();
+  api.login = async () => ({
+    success: true,
+    user: { id: "u2", role: "user" },
+  });
+
+  await store.login("bob", "pw");
+  assert.deepEqual(storageConfigs.configs, [], "登录成功应清空存储配置缓存");
+  assert.equal(storageConfigs.loadedAt, 0);
 });
 
 test("login 成功后直接写入缓存，无需额外请求 /auth/status", async () => {

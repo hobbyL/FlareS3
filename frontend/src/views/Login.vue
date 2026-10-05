@@ -70,6 +70,9 @@ const loginErrorKeyByCode = {
 }
 
 const handleSubmit = async () => {
+  // 登录进行中直接忽略重复提交（回车 + 按钮点击可能同时触发）
+  if (loading.value) return
+
   if (!formValue.value.username || !formValue.value.password) {
     message.error(t('auth.usernamePasswordRequired'))
     return

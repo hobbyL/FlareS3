@@ -1,5 +1,6 @@
-import zhCN from './zh-CN'
-import enUS from './en-US'
+// 显式带上 index.js 后缀：vite 与 node ESM（node:test 直接加载源码）均可解析
+import zhCN from './zh-CN/index.js'
+import enUS from './en-US/index.js'
 import { createI18n } from 'vue-i18n'
 
 export const messages = {

@@ -1,11 +1,16 @@
 import { defineStore } from 'pinia'
+import { isAxiosError } from 'axios'
 import api from '../services/api.js'
+import { useStorageConfigsStore } from './storageConfigs.js'
 import { useUserOptionsStore } from './userOptions.js'
 
 /** 认证状态缓存有效期：5 分钟 */
 const DEFAULT_TTL_MS = 5 * 60 * 1000
 let authStatusRequest = null
 let cacheVersion = 0
+
+/** 判断是否为「请求未到达服务器」的网络失败 / 超时类 axios 错误 */
+const isNetworkError = (error) => isAxiosError(error) && !error.response
 
 export const useAuthStore = defineStore('auth', {
   state: () => ({
@@ -25,6 +30,7 @@ export const useAuthStore = defineStore('auth', {
         if (response.success) {
           this.invalidate()
           useUserOptionsStore().invalidate()
+          useStorageConfigsStore().invalidate()
           this.isAuthenticated = true
           this.user = response.user
           this.checkedAt = Date.now()
@@ -50,6 +56,10 @@ export const useAuthStore = defineStore('auth', {
      *
      * 仅缓存"已登录"结果（默认 5 分钟）；未登录 / 请求失败一律不缓存，
      * 保证登出或会话过期后下一次导航能立即重新校验。
+     *
+     * 例外：网络失败 / 超时（无响应的 axios 错误）无法证明会话已失效，
+     * 保留本地认证态（路由守卫照常放行），由后续业务 API 的 401 拦截器兜底登出，
+     * 避免一次网络抖动就把在线用户踢到登录页。
      *
      * @param {{ force?: boolean, ttlMs?: number }} [options]
      */
@@ -85,10 +95,19 @@ export const useAuthStore = defineStore('auth', {
           this.checkedAt = authenticated ? Date.now() : 0
           return authenticated
         })
-        .catch(() => {
+        .catch((error) => {
           if (requestVersion !== cacheVersion) {
             return false
           }
+          // 网络失败 / 超时：不能证明会话失效，保留本地认证态
+          if (isNetworkError(error)) {
+            console.warn(
+              '[auth] 登录态校验请求失败（网络错误），保留本地认证状态:',
+              error?.message || error
+            )
+            return this.isAuthenticated
+          }
+          // 有响应（401/403 等）或其他未知异常：按确认未登录处理
           this.logoutLocal()
           return false
         })
@@ -114,6 +133,7 @@ export const useAuthStore = defineStore('auth', {
     logoutLocal() {
       this.invalidate()
       useUserOptionsStore().invalidate()
+      useStorageConfigsStore().invalidate()
       this.isAuthenticated = false
       this.user = null
     },

@@ -2,6 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { resolveApiErrorNotice } from "../../../frontend/src/utils/apiError.js";
+import { setLocale } from "../../../frontend/src/locales/index.js";
+
+// node 环境无 window/localStorage，初始 locale 取决于全局 navigator.language，
+// 兜底文案断言前先固定为 zh-CN；切语言的用例负责恢复
+setLocale("zh-CN", { persist: false });
 
 /**
  * 构造一个近似 axios 的错误对象。
@@ -165,4 +170,28 @@ test("无 response 的错误（含空对象）按网络错误处理，且入参�
     type: "error",
   });
   assert.doesNotThrow(() => resolveApiErrorNotice(undefined));
+});
+
+test("兜底文案随 locale 切换：en-US 下返回英文文案", () => {
+  try {
+    setLocale("en-US", { persist: false });
+
+    assert.deepEqual(resolveApiErrorNotice(makeError({ status: 403 })), {
+      action: "notify",
+      message: "Permission denied. You are not allowed to perform this action.",
+      type: "error",
+    });
+    assert.deepEqual(resolveApiErrorNotice(makeError({ status: 429 })), {
+      action: "notify",
+      message: "Too many requests. Please try again later.",
+      type: "warning",
+    });
+    assert.deepEqual(resolveApiErrorNotice(makeError({ hasResponse: false })), {
+      action: "notify",
+      message: "Network connection failed. Please check your network settings.",
+      type: "error",
+    });
+  } finally {
+    setLocale("zh-CN", { persist: false });
+  }
 });

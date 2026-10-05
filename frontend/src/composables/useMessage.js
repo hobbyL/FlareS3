@@ -57,4 +57,19 @@ export const useMessage = () => {
   }
 }
 
+/**
+ * 预热全局 toast 单例。
+ *
+ * 在应用挂载前显式创建 toast 容器（需在 app.use(pinia) / app.use(i18n) 之后调用，
+ * Toast 组件依赖这些插件），使全局 errorHandler / unhandledrejection
+ * 在任何组件挂载前也能弹出提示，避免冷启动早期的错误静默丢失。
+ *
+ * @param {import('vue').App} app - 已安装所需插件的 Vue 应用实例
+ * @returns {object|null} 已建立的 toast 实例
+ */
+export const ensureMessageInstance = (app) => {
+  if (typeof document === 'undefined') return null
+  return createToastInstance(app?._context)
+}
+
 export default useMessage

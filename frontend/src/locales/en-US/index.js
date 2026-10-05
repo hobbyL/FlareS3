@@ -1,20 +1,22 @@
-import common from './common'
-import sidebar from './sidebar'
-import components from './components'
-import upload from './upload'
-import auth from './pages/auth'
-import audit from './pages/audit'
-import users from './pages/users'
-import files from './pages/files'
-import setup from './pages/setup'
-import dashboard from './pages/dashboard'
-import texts from './pages/texts'
-import mount from './pages/mount'
-import shares from './pages/shares'
-import more from './pages/more'
+import common from './common.js'
+import errors from './errors.js'
+import sidebar from './sidebar.js'
+import components from './components.js'
+import upload from './upload.js'
+import auth from './pages/auth.js'
+import audit from './pages/audit.js'
+import users from './pages/users.js'
+import files from './pages/files.js'
+import setup from './pages/setup.js'
+import dashboard from './pages/dashboard.js'
+import texts from './pages/texts.js'
+import mount from './pages/mount.js'
+import shares from './pages/shares.js'
+import more from './pages/more.js'
 
 export default {
   ...common,
+  ...errors,
   ...sidebar,
   ...components,
   ...upload,

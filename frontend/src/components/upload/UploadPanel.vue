@@ -95,7 +95,7 @@ import { createUploadTaskRunner } from '../../services/uploadTaskRunner.js'
 const emit = defineEmits(['uploaded'])
 
 const message = useMessage()
-const { t, locale } = useI18n({ useScope: 'global' })
+const { t } = useI18n({ useScope: 'global' })
 
 const uploadRef = ref(null)
 const expiresIn = ref(7)
@@ -115,7 +115,7 @@ const {
   uploadConfigAlertMessage,
   uploadConfigLoadingMessage,
   loadUploadConfigOptions,
-} = useUploadConfigOptions({ api, t, locale, message })
+} = useUploadConfigOptions({ api, t, message })
 
 const expiresOptions = computed(() =>
   [1, 3, 7, 30, 0].map((value) => ({

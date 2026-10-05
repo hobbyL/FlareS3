@@ -166,3 +166,64 @@ test("invalidate 清空缓存并使在途响应失效", async () => {
   assert.equal(store.loading, false);
   assert.equal(store.isFresh(), false);
 });
+
+test("用户超过一页时循环翻页聚合全量用户", async () => {
+  const store = setup();
+  const page1 = Array.from({ length: 100 }, (_, i) => ({
+    id: `u${i + 1}`,
+    status: "active",
+  }));
+  const page2 = [{ id: "tail", status: "active" }];
+  const calls = stubUsers([
+    { users: page1, total: 101, page: 1, limit: 100 },
+    { users: page2, total: 101, page: 2, limit: 100 },
+  ]);
+
+  const users = await store.fetchActiveUsers();
+
+  assert.deepEqual(
+    calls,
+    [
+      { page: 1, limit: 100 },
+      { page: 2, limit: 100 },
+    ],
+    "第一页拉满且未达 total 时应继续翻页",
+  );
+  assert.equal(users.length, 101, "两页用户应聚合为一份完整列表");
+  assert.deepEqual(users[100], { id: "tail", status: "active" });
+});
+
+test("翻页达到安全上限（5 页 / 500 人）后停止并输出告警", async () => {
+  const store = setup();
+  const fullPage = Array.from({ length: 100 }, (_, i) => ({ id: `u${i + 1}` }));
+  const responses = Array.from({ length: 6 }, () => ({
+    users: fullPage.slice(),
+    total: 1000,
+  }));
+  const calls = stubUsers(responses);
+
+  const warnings = [];
+  const realWarn = console.warn;
+  console.warn = (message) => warnings.push(message);
+
+  try {
+    const users = await store.fetchActiveUsers();
+
+    assert.equal(calls.length, 5, "最多拉 5 页（500 人）即停止");
+    assert.equal(users.length, 500);
+    assert.equal(warnings.length, 1, "达上限应输出一次告警");
+    assert.match(warnings[0], /userOptions/);
+  } finally {
+    console.warn = realWarn;
+  }
+});
+
+test("total 缺失时以本页不足一页作为翻页终止条件", async () => {
+  const store = setup();
+  const calls = stubUsers([{ users: USERS }]);
+
+  const users = await store.fetchActiveUsers();
+
+  assert.equal(calls.length, 1, "响应无 total 时不应盲目继续翻页");
+  assert.equal(users.length, 2, "deleted 用户仍应被过滤");
+});

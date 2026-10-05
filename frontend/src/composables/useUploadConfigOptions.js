@@ -1,6 +1,6 @@
 import { computed, ref } from 'vue'
 
-export function useUploadConfigOptions({ api, t, locale, message }) {
+export function useUploadConfigOptions({ api, t, message }) {
   const selectedConfigId = ref('')
   const uploadConfigOptions = ref([])
   const configOptionsLoading = ref(false)
@@ -19,17 +19,12 @@ export function useUploadConfigOptions({ api, t, locale, message }) {
   const uploadHintText = computed(() =>
     selectedConfigType.value === 'r2' ? t('upload.hint5gb') : t('upload.hint100mb')
   )
+  // 兜底文案统一走 i18n errors 命名空间，避免英文界面弹中文提示
   const uploadConfigAlertMessage = computed(() => {
     if (configOptionsLoading.value || hasAvailableUploadConfig.value) return ''
-    return locale.value.startsWith('zh')
-      ? '当前没有可用上传配置，请联系管理员。'
-      : 'No upload configuration is available. Please contact an administrator.'
+    return t('errors.uploadConfigUnavailable')
   })
-  const uploadConfigLoadingMessage = computed(() =>
-    locale.value.startsWith('zh')
-      ? '上传配置加载中，请稍后重试。'
-      : 'Upload configuration is still loading. Please try again later.'
-  )
+  const uploadConfigLoadingMessage = computed(() => t('errors.uploadConfigLoading'))
 
   const loadUploadConfigOptions = async () => {
     try {

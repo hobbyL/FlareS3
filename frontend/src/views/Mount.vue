@@ -90,7 +90,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch, defineAsyncComponent } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch, defineAsyncComponent } from 'vue'
 import { useI18n } from 'vue-i18n'
 import api from '../services/api'
 import AppLayout from '../components/layout/AppLayout.vue'
@@ -167,6 +167,9 @@ const deletingKey = ref('')
 const showFolderModal = ref(false)
 const newFolderName = ref('')
 const creatingFolder = ref(false)
+
+// 上传进度弹窗延迟关闭的定时器：卸载组件时清理，避免卸载后仍写 ref
+let uploadModalCloseTimer = null
 
 const uploading = ref(false)
 const uploadProgress = ref(-1)
@@ -399,7 +402,9 @@ const handleUploadFileChange = async (event) => {
   } finally {
     uploading.value = false
     // 短暂延迟后关闭进度弹窗
-    setTimeout(() => {
+    if (uploadModalCloseTimer) clearTimeout(uploadModalCloseTimer)
+    uploadModalCloseTimer = setTimeout(() => {
+      uploadModalCloseTimer = null
       if (!uploading.value) {
         showUploadProgressModal.value = false
         uploadProgress.value = -1
@@ -466,6 +471,13 @@ watch(
 onMounted(async () => {
   prefixInput.value = prefix.value
   await loadConfigs()
+})
+
+onUnmounted(() => {
+  if (uploadModalCloseTimer) {
+    clearTimeout(uploadModalCloseTimer)
+    uploadModalCloseTimer = null
+  }
 })
 </script>
 

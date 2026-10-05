@@ -70,6 +70,23 @@ const handleNativeUploadError = (error) => {
 }
 
 /**
+ * 构造上传进度回调。
+ *
+ * 进度事件的 total 缺失或为 0（如无 Content-Length 的流式请求）时
+ * 百分比置 0，避免出现 NaN 传给上层 UI。
+ *
+ * @param {Function} [onProgress] - 进度回调 (percent, loaded, total)
+ * @returns {(progressEvent: object) => void} axios onUploadProgress 回调
+ */
+const createUploadProgressHandler = (onProgress) => (progressEvent) => {
+  if (!onProgress) return
+  const total = Number(progressEvent?.total) || 0
+  const loaded = Number(progressEvent?.loaded) || 0
+  const percent = total > 0 ? Math.round((loaded * 100) / total) : 0
+  onProgress(percent, loaded, total)
+}
+
+/**
  * API 方法集合
  *
  * 包含所有后端 API 端点的封装方法
@@ -412,12 +429,7 @@ export default {
       .post('/api/upload/server', formData, {
         withCredentials: true,
         timeout: 300000,
-        onUploadProgress: (progressEvent) => {
-          if (onProgress) {
-            const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total)
-            onProgress(percent, progressEvent.loaded, progressEvent.total)
-          }
-        },
+        onUploadProgress: createUploadProgressHandler(onProgress),
       })
       .then((res) => res.data)
       .catch(handleNativeUploadError)
@@ -585,12 +597,7 @@ export default {
         withCredentials: true,
         timeout: 300000,
         headers: { 'Content-Type': 'multipart/form-data' },
-        onUploadProgress: (progressEvent) => {
-          if (onProgress) {
-            const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total)
-            onProgress(percent, progressEvent.loaded, progressEvent.total)
-          }
-        },
+        onUploadProgress: createUploadProgressHandler(onProgress),
       })
       .then((res) => res.data)
       .catch(handleNativeUploadError)
@@ -800,12 +807,7 @@ export default {
       headers: {
         'Content-Type': file.type || 'application/octet-stream',
       },
-      onUploadProgress: (progressEvent) => {
-        if (onProgress) {
-          const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total)
-          onProgress(percent, progressEvent.loaded, progressEvent.total)
-        }
-      },
+      onUploadProgress: createUploadProgressHandler(onProgress),
       signal,
     })
   },
