@@ -1,3 +1,4 @@
+import { withD1Retry } from '../utils/db'
 export type JobRunStatus = 'running' | 'success' | 'partial' | 'failed'
 
 export type JobExecutionResult = {
@@ -85,7 +86,7 @@ export async function startJobRun(
   const id = crypto.randomUUID()
   const createdAt = new Date().toISOString()
 
-  await db
+  await withD1Retry(db)
     .prepare(
       `INSERT INTO job_runs (id, job_name, status, started_at, created_at)
        VALUES (?, ?, ?, ?, ?)`
@@ -101,7 +102,7 @@ export async function finishJobRun(
   id: string,
   result: JobExecutionResult
 ): Promise<void> {
-  await db
+  await withD1Retry(db)
     .prepare(
       `UPDATE job_runs
        SET status = ?, finished_at = ?, duration_ms = ?, summary_json = ?, error_message = ?
@@ -127,11 +128,14 @@ export async function listJobRuns(
   const offset = (page - 1) * limit
 
   const total = Number(
-    (await db.prepare('SELECT COUNT(*) AS total FROM job_runs').first<{ total: number }>())
-      ?.total || 0
+    (
+      await withD1Retry(db)
+        .prepare('SELECT COUNT(*) AS total FROM job_runs')
+        .first<{ total: number }>()
+    )?.total || 0
   )
 
-  const rows = await db
+  const rows = await withD1Retry(db)
     .prepare(
       `SELECT id, job_name, status, started_at, finished_at, duration_ms, summary_json, error_message, created_at
        FROM job_runs

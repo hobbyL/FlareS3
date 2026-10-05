@@ -1,3 +1,4 @@
+import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
 import { getTotalStorage } from '../config/env'
 import { jsonResponse } from './utils'
@@ -27,7 +28,7 @@ function toUsageMap(
 }
 
 async function listCompletedConfigUsage(db: D1Database): Promise<Map<string, number>> {
-  const rows = await db
+  const rows = await withD1Retry(db)
     .prepare(
       `SELECT config_id, COALESCE(SUM(size), 0) AS used_space
          FROM files
@@ -54,7 +55,7 @@ async function listCompletedConfigUsage(db: D1Database): Promise<Map<string, num
 }
 
 async function listReservedConfigUsage(db: D1Database): Promise<Map<string, number>> {
-  const rows = await db
+  const rows = await withD1Retry(db)
     .prepare(
       `SELECT r2_config_id AS config_id,
               COALESCE(SUM(reserved_bytes), 0) AS used_space
@@ -68,7 +69,7 @@ async function listReservedConfigUsage(db: D1Database): Promise<Map<string, numb
 }
 
 async function getLegacyUsedSpace(db: D1Database): Promise<number> {
-  const legacyUsedSpaceRow = await db
+  const legacyUsedSpaceRow = await withD1Retry(db)
     .prepare(
       `SELECT COALESCE(SUM(size), 0) AS usedSpace
          FROM files

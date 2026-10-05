@@ -1,3 +1,4 @@
+import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
 import {
   extractR2ConfigIdFromKey,
@@ -57,14 +58,15 @@ async function deleteProviderObject(env: Env, configId: string, key: string): Pr
 
 export async function cleanupDeleteQueue(env: Env): Promise<JobExecutionResult> {
   const startedAtMs = Date.now()
-  const { results } = await env.DB.prepare(
-    `SELECT dq.id, dq.file_id, dq.r2_key, f.config_id, f.multipart_upload_id
+  const { results } = await withD1Retry(env.DB)
+    .prepare(
+      `SELECT dq.id, dq.file_id, dq.r2_key, f.config_id, f.multipart_upload_id
        FROM delete_queue dq
        LEFT JOIN files f ON f.id = dq.file_id
       WHERE dq.processed_at IS NULL
       ORDER BY dq.created_at ASC
       LIMIT ?`
-  )
+    )
     .bind(BATCH_SIZE)
     .all()
   if (!results.length) {
@@ -89,14 +91,13 @@ export async function cleanupDeleteQueue(env: Env): Promise<JobExecutionResult> 
     try {
       if (explicitProviderConfigId) {
         await deleteProviderObject(env, explicitProviderConfigId, r2Key)
-        await env.DB.batch([
+        await withD1Retry(env.DB).batch([
           prepareReleaseUploadReservation(env.DB, fileId, now),
-          env.DB.prepare('DELETE FROM file_shares WHERE file_id = ?').bind(fileId),
-          env.DB.prepare('DELETE FROM files WHERE id = ?').bind(fileId),
-          env.DB.prepare('UPDATE delete_queue SET processed_at = ? WHERE id = ?').bind(
-            now,
-            queueId
-          ),
+          withD1Retry(env.DB).prepare('DELETE FROM file_shares WHERE file_id = ?').bind(fileId),
+          withD1Retry(env.DB).prepare('DELETE FROM files WHERE id = ?').bind(fileId),
+          withD1Retry(env.DB)
+            .prepare('UPDATE delete_queue SET processed_at = ? WHERE id = ?')
+            .bind(now, queueId),
         ])
         succeeded += 1
         continue
@@ -141,11 +142,13 @@ export async function cleanupDeleteQueue(env: Env): Promise<JobExecutionResult> 
       continue
     }
 
-    await env.DB.batch([
+    await withD1Retry(env.DB).batch([
       prepareReleaseUploadReservation(env.DB, fileId, now),
-      env.DB.prepare('DELETE FROM file_shares WHERE file_id = ?').bind(fileId),
-      env.DB.prepare('DELETE FROM files WHERE id = ?').bind(fileId),
-      env.DB.prepare('UPDATE delete_queue SET processed_at = ? WHERE id = ?').bind(now, queueId),
+      withD1Retry(env.DB).prepare('DELETE FROM file_shares WHERE file_id = ?').bind(fileId),
+      withD1Retry(env.DB).prepare('DELETE FROM files WHERE id = ?').bind(fileId),
+      withD1Retry(env.DB)
+        .prepare('UPDATE delete_queue SET processed_at = ? WHERE id = ?')
+        .bind(now, queueId),
     ])
     succeeded += 1
   }

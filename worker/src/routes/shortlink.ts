@@ -2,7 +2,7 @@ import type { Env } from '../config/env'
 import { getUser, jsonResponse, redirect } from './utils'
 import { viewTextShare } from './textShares'
 import { tryViewTextOneTimeShare } from './textOneTimeShares'
-import { queryWithRetry } from '../utils/db'
+import { withD1Retry } from '../utils/db'
 
 /**
  * 短链接路由处理
@@ -35,22 +35,22 @@ import { queryWithRetry } from '../utils/db'
  */
 export async function shortlink(request: Request, env: Env, code: string): Promise<Response> {
   if (!code) return jsonResponse({ error: '短码不能为空' }, 400)
-  const file = await queryWithRetry<{
-    id: string
-    require_login: number
-    upload_status: string
-    deleted_at: string | null
-    owner_status: string | null
-  }>(
-    env.DB.prepare(
+  const file = await withD1Retry(env.DB)
+    .prepare(
       `SELECT f.id, f.require_login, f.upload_status, f.deleted_at, u.status AS owner_status
      FROM files f
      LEFT JOIN users u ON u.id = f.owner_id
      WHERE f.short_code = ?
      LIMIT 1`
-    ).bind(code),
-    { operation: 'first' }
-  )
+    )
+    .bind(code)
+    .first<{
+      id: string
+      require_login: number
+      upload_status: string
+      deleted_at: string | null
+      owner_status: string | null
+    }>()
   if (!file) {
     const oneTime = await tryViewTextOneTimeShare(request, env, code)
     if (oneTime) return oneTime

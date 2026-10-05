@@ -1,3 +1,4 @@
+import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
 import { jsonResponse, parseJson, getUser, requestBodyPolicyErrorResponse } from './utils'
 import { hashPassword } from '../services/password'
@@ -17,7 +18,7 @@ function prepareRevokeUserSessions(
   userId: string,
   revokedAt: string = new Date().toISOString()
 ): D1PreparedStatement {
-  return db
+  return withD1Retry(db)
     .prepare('UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL')
     .bind(revokedAt, userId)
 }
@@ -33,14 +34,14 @@ function prepareDeactivateUserPublicResources(
   now: string
 ): D1PreparedStatement[] {
   return [
-    db
+    withD1Retry(db)
       .prepare(
         'UPDATE texts SET deleted_at = ?, updated_at = ? WHERE owner_id = ? AND deleted_at IS NULL'
       )
       .bind(now, now, userId),
-    db.prepare('DELETE FROM text_shares WHERE owner_id = ?').bind(userId),
-    db.prepare('DELETE FROM text_one_time_shares WHERE owner_id = ?').bind(userId),
-    db.prepare('DELETE FROM file_shares WHERE owner_id = ?').bind(userId),
+    withD1Retry(db).prepare('DELETE FROM text_shares WHERE owner_id = ?').bind(userId),
+    withD1Retry(db).prepare('DELETE FROM text_one_time_shares WHERE owner_id = ?').bind(userId),
+    withD1Retry(db).prepare('DELETE FROM file_shares WHERE owner_id = ?').bind(userId),
   ]
 }
 
@@ -49,18 +50,18 @@ async function deactivateUserPublicResources(
   userId: string,
   now: string
 ): Promise<void> {
-  await db.batch(prepareDeactivateUserPublicResources(db, userId, now))
+  await withD1Retry(db).batch(prepareDeactivateUserPublicResources(db, userId, now))
 }
 
 async function countActiveAdmins(db: D1Database): Promise<number> {
-  const total = await db
+  const total = await withD1Retry(db)
     .prepare("SELECT COUNT(*) AS total FROM users WHERE role = 'admin' AND status = 'active'")
     .first('total')
   return Number(total || 0)
 }
 
 async function isLastActiveAdmin(db: D1Database, userId: string): Promise<boolean> {
-  const target = await db
+  const target = await withD1Retry(db)
     .prepare('SELECT id, role, status FROM users WHERE id = ? LIMIT 1')
     .bind(userId)
     .first<{ id: string; role: string; status: string }>()
@@ -142,17 +143,19 @@ export async function listUsers(request: Request, env: Env): Promise<Response> {
 
   const [totalRow, rows] = await Promise.all([
     measureRouteStep(timings, 'dbCount', () =>
-      env.DB.prepare(`SELECT COUNT(*) AS total FROM users ${whereClause}`)
+      withD1Retry(env.DB)
+        .prepare(`SELECT COUNT(*) AS total FROM users ${whereClause}`)
         .bind(...params)
         .first('total')
     ),
     measureRouteStep(timings, 'dbRows', () =>
-      env.DB.prepare(
-        `SELECT id, username, role, status, quota_bytes, created_at, last_login_at
+      withD1Retry(env.DB)
+        .prepare(
+          `SELECT id, username, role, status, quota_bytes, created_at, last_login_at
          FROM users ${whereClause}
          ORDER BY created_at DESC
          LIMIT ? OFFSET ?`
-      )
+        )
         .bind(...params, limit, offset)
         .all()
     ),
@@ -210,7 +213,8 @@ export async function createUser(request: Request, env: Env): Promise<Response> 
     if (!body.username || !body.password) {
       return jsonResponse({ error: '用户名或密码不能为空' }, 400)
     }
-    const existing = await env.DB.prepare('SELECT id FROM users WHERE username = ?')
+    const existing = await withD1Retry(env.DB)
+      .prepare('SELECT id FROM users WHERE username = ?')
       .bind(body.username)
       .first()
     if (existing) {
@@ -223,10 +227,11 @@ export async function createUser(request: Request, env: Env): Promise<Response> 
     }
     const now = new Date().toISOString()
     const id = crypto.randomUUID()
-    await env.DB.prepare(
-      `INSERT INTO users (id, username, password_hash, role, status, quota_bytes, created_at, updated_at)
+    await withD1Retry(env.DB)
+      .prepare(
+        `INSERT INTO users (id, username, password_hash, role, status, quota_bytes, created_at, updated_at)
        VALUES (?, ?, ?, ?, 'active', ?, ?, ?)`
-    )
+      )
       .bind(id, body.username, hashPassword(body.password), role, quota, now, now)
       .run()
 
@@ -286,7 +291,8 @@ export async function updateUser(request: Request, env: Env, userId: string): Pr
       return jsonResponse({ error: '请使用专用删除接口删除用户' }, 400)
     }
 
-    const target = await env.DB.prepare('SELECT role, status FROM users WHERE id = ? LIMIT 1')
+    const target = await withD1Retry(env.DB)
+      .prepare('SELECT role, status FROM users WHERE id = ? LIMIT 1')
       .bind(userId)
       .first<{ role: string; status: string }>()
     if (!target) {
@@ -337,7 +343,8 @@ export async function updateUser(request: Request, env: Env, userId: string): Pr
     updates.push('updated_at = ?')
     params.push(new Date().toISOString())
     params.push(userId)
-    await env.DB.prepare(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`)
+    await withD1Retry(env.DB)
+      .prepare(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`)
       .bind(...params)
       .run()
 
@@ -402,7 +409,8 @@ export async function resetPassword(request: Request, env: Env, userId: string):
     if (!body.password) {
       return jsonResponse({ error: '密码不能为空' }, 400)
     }
-    await env.DB.prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?')
+    await withD1Retry(env.DB)
+      .prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?')
       .bind(hashPassword(body.password), new Date().toISOString(), userId)
       .run()
 
@@ -452,7 +460,8 @@ export async function resetPassword(request: Request, env: Env, userId: string):
  * { "error": "管理员用户不允许删除" }
  */
 export async function deleteUser(request: Request, env: Env, userId: string): Promise<Response> {
-  const target = await env.DB.prepare('SELECT role FROM users WHERE id = ? LIMIT 1')
+  const target = await withD1Retry(env.DB)
+    .prepare('SELECT role FROM users WHERE id = ? LIMIT 1')
     .bind(userId)
     .first()
   if (!target) {
@@ -464,9 +473,8 @@ export async function deleteUser(request: Request, env: Env, userId: string): Pr
   }
 
   const now = new Date().toISOString()
-  const files = await env.DB.prepare(
-    `SELECT id, r2_key FROM files WHERE owner_id = ? AND deleted_at IS NULL`
-  )
+  const files = await withD1Retry(env.DB)
+    .prepare(`SELECT id, r2_key FROM files WHERE owner_id = ? AND deleted_at IS NULL`)
     .bind(userId)
     .all()
   const activeFiles = (files.results || []).map((file) => ({
@@ -476,20 +484,20 @@ export async function deleteUser(request: Request, env: Env, userId: string): Pr
 
   const actor = getUser(request)
   const statements: D1PreparedStatement[] = [
-    env.DB.prepare('UPDATE users SET status = ?, updated_at = ? WHERE id = ?').bind(
-      'deleted',
-      now,
-      userId
-    ),
+    withD1Retry(env.DB)
+      .prepare('UPDATE users SET status = ?, updated_at = ? WHERE id = ?')
+      .bind('deleted', now, userId),
     prepareRevokeUserSessions(env.DB, userId, now),
     ...prepareDeactivateUserPublicResources(env.DB, userId, now),
   ]
 
   if (activeFiles.length) {
     statements.push(
-      env.DB.prepare(
-        `UPDATE files SET upload_status = 'deleted', deleted_at = ?, multipart_upload_id = NULL WHERE owner_id = ? AND deleted_at IS NULL`
-      ).bind(now, userId)
+      withD1Retry(env.DB)
+        .prepare(
+          `UPDATE files SET upload_status = 'deleted', deleted_at = ?, multipart_upload_id = NULL WHERE owner_id = ? AND deleted_at IS NULL`
+        )
+        .bind(now, userId)
     )
     statements.push(
       ...activeFiles.map((file) => prepareReleaseUploadReservation(env.DB, file.id, now)),
@@ -516,7 +524,7 @@ export async function deleteUser(request: Request, env: Env, userId: string): Pr
     )
   )
 
-  await env.DB.batch(statements)
+  await withD1Retry(env.DB).batch(statements)
   invalidateUserAuthTokens(userId, Date.parse(now) || Date.now())
 
   return jsonResponse({ success: true, queued: true })

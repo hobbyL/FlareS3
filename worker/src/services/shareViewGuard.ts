@@ -1,3 +1,4 @@
+import { withD1Retry } from '../utils/db'
 export const SHARE_VIEW_LIMIT_EXHAUSTED_MESSAGE = '访问次数已用尽'
 
 type ShareViewConsumeResult = {
@@ -10,7 +11,7 @@ async function consumeShareViewIfAllowed(
   shareId: string
 ): Promise<ShareViewConsumeResult> {
   const now = new Date().toISOString()
-  const result = await db.prepare(statement).bind(now, shareId).run()
+  const result = await withD1Retry(db).prepare(statement).bind(now, shareId).run()
 
   if (result.error) {
     throw new Error(String(result.error))

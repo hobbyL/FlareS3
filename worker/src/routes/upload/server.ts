@@ -1,3 +1,4 @@
+import { withD1Retry } from '../../utils/db'
 import type { Env } from '../../config/env'
 import { jsonResponse, getUser } from '../utils'
 import { prepareAuditLogInsert } from '../../services/audit'
@@ -135,7 +136,8 @@ export async function serverUpload(request: Request, env: Env): Promise<Response
       const shortCode = generateRandomCode(FILE_SHORT_CODE_LENGTH)
       uploadFile = { id, r2Key, shortCode, expiresAt, filename: resolvedFilename }
 
-      const occupied = await env.DB.prepare('SELECT id FROM files WHERE r2_key = ? LIMIT 1')
+      const occupied = await withD1Retry(env.DB)
+        .prepare('SELECT id FROM files WHERE r2_key = ? LIMIT 1')
         .bind(r2Key)
         .first('id')
       if (occupied) continue
@@ -192,10 +194,12 @@ export async function serverUpload(request: Request, env: Env): Promise<Response
 
     try {
       const now = new Date().toISOString()
-      const [updateResult] = await env.DB.batch([
-        env.DB.prepare(
-          "UPDATE files SET upload_status = 'completed', size = ? WHERE id = ? AND upload_status = 'pending'"
-        ).bind(fileSize, uploadFile.id),
+      const [updateResult] = await withD1Retry(env.DB).batch([
+        withD1Retry(env.DB)
+          .prepare(
+            "UPDATE files SET upload_status = 'completed', size = ? WHERE id = ? AND upload_status = 'pending'"
+          )
+          .bind(fileSize, uploadFile.id),
         prepareConsumeUploadReservation(env.DB, uploadFile.id, now),
         prepareAuditLogInsert(
           env.DB,

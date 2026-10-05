@@ -5,9 +5,12 @@ const path = require("node:path");
 const COMPILED_ROOT =
   process.env.WORKER_TEST_OUTDIR || path.join(process.cwd(), ".test-dist");
 
-const { queryWithRetry, batchQueryWithRetry, DatabaseTimeoutError } = require(
-  path.join(COMPILED_ROOT, "utils/db.js"),
-);
+const {
+  queryWithRetry,
+  batchQueryWithRetry,
+  withD1Retry,
+  DatabaseTimeoutError,
+} = require(path.join(COMPILED_ROOT, "utils/db.js"));
 
 /**
  * 构造一个可编排的 D1PreparedStatement 替身。
@@ -244,5 +247,121 @@ test("batchQueryWithRetry 超时同样抛出 DatabaseTimeoutError", async () => 
   await assert.rejects(
     batchQueryWithRetry(db, [], { timeoutMs: 20, maxRetries: 0 }),
     (error) => error instanceof DatabaseTimeoutError,
+  );
+});
+
+// ── withD1Retry：保持 D1 原生语义的包装器 ──
+
+test("withD1Retry 包装后的 first 对可重试错误退避重试后成功", async () => {
+  const statement = fakeStatement([
+    retryableError("SQLITE_BUSY"),
+    { id: "f1" },
+  ]);
+  const db = { prepare: () => statement };
+
+  const result = await withD1Retry(db)
+    .prepare("SELECT id FROM files LIMIT 1")
+    .first();
+
+  assert.deepEqual(result, { id: "f1" });
+  assert.equal(statement.calls.first, 2);
+});
+
+test("withD1Retry 的 all 返回完整 D1Result（不拆 results）", async () => {
+  const payload = { results: [{ id: 1 }], success: true, meta: {} };
+  const statement = fakeStatement([payload]);
+  const db = { prepare: () => statement };
+
+  const result = await withD1Retry(db).prepare("SELECT * FROM files").all();
+
+  assert.deepEqual(result, payload);
+  assert.equal(statement.calls.all, 1);
+});
+
+test("withD1Retry 的 run 对不可重试错误立即抛出", async () => {
+  const statement = fakeStatement([new Error("UNIQUE constraint failed")]);
+  const db = { prepare: () => statement };
+
+  await assert.rejects(
+    withD1Retry(db).prepare("INSERT INTO files VALUES (?)").run(),
+    /UNIQUE constraint failed/,
+  );
+  assert.equal(statement.calls.run, 1, "业务错误不应触发重试");
+});
+
+test("withD1Retry 的 first(colName) 透传列名参数", async () => {
+  const seenArgs = [];
+  const statement = {
+    first: async (...args) => {
+      seenArgs.push(args);
+      return "abc";
+    },
+  };
+  const db = { prepare: () => statement };
+
+  const result = await withD1Retry(db)
+    .prepare("SELECT id FROM users LIMIT 1")
+    .first("id");
+
+  assert.equal(result, "abc");
+  assert.deepEqual(seenArgs, [["id"]]);
+});
+
+test("withD1Retry 的 bind 链保持超时与重试保护", async () => {
+  const statement = fakeStatement([
+    retryableError("database is locked"),
+    { success: true },
+  ]);
+  const db = { prepare: () => ({ bind: () => statement }) };
+
+  const result = await withD1Retry(db)
+    .prepare("UPDATE files SET deleted_at = ? WHERE id = ?")
+    .bind("2026-01-01", "f1")
+    .run();
+
+  assert.equal(result.success, true);
+  assert.equal(statement.calls.run, 2);
+});
+
+test("withD1Retry 查询超时抛出 DatabaseTimeoutError", async () => {
+  const db = {
+    prepare: () => ({
+      first: () => new Promise(() => {}),
+    }),
+  };
+
+  await assert.rejects(
+    withD1Retry(db, { timeoutMs: 20, maxRetries: 0 })
+      .prepare("SELECT 1")
+      .first(),
+    (error) => error instanceof DatabaseTimeoutError,
+  );
+});
+
+test("withD1Retry 的 batch 解包包装语句且只加超时不重试", async () => {
+  const rawStatement = { id: "raw" };
+  let batchCalls = 0;
+  let received = null;
+  const db = {
+    prepare: () => rawStatement,
+    batch: async (input) => {
+      batchCalls += 1;
+      received = input;
+      throw retryableError("SQLITE_BUSY");
+    },
+  };
+
+  const wrapped = withD1Retry(db);
+  const wrappedStatement = wrapped.prepare("DELETE FROM files");
+
+  await assert.rejects(
+    wrapped.batch([wrappedStatement, rawStatement]),
+    /SQLITE_BUSY/,
+  );
+  assert.equal(batchCalls, 1, "batch 含写入语句，不应自动重试");
+  assert.deepEqual(
+    received,
+    [rawStatement, rawStatement],
+    "包装语句应还原为原生语句后执行",
   );
 });

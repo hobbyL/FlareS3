@@ -15,7 +15,6 @@ scripts/
 .claude/
 .snow
 .ace-tool/
-docs/
 .test-dist/
 # worker 测试编译配置必须提交到仓库
 !worker/tsconfig.test.json
@@ -32,8 +31,8 @@ AGENTS.md
 .agents/
 .codex/
 .claude/
-.trellis/
+# Trellis 个人工作区不入库（spec/tasks/workflow/scripts 随仓库提交）
+.trellis/workspace/
+!.trellis/scripts/
 .tmp/
-DESIGN.md
-PRODUCT.md
 .impeccable/

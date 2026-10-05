@@ -1,3 +1,4 @@
+import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
 import {
   getRateLimitConfig,
@@ -32,7 +33,7 @@ export function getClientIp(request: Request): string {
 }
 
 async function isBlocked(db: D1Database, ip: string): Promise<boolean> {
-  const row = await db
+  const row = await withD1Retry(db)
     .prepare('SELECT blocked_until FROM rate_limits WHERE ip = ?')
     .bind(ip)
     .first('blocked_until')
@@ -40,7 +41,7 @@ async function isBlocked(db: D1Database, ip: string): Promise<boolean> {
   const blockedUntil = new Date(String(row))
   if (Number.isNaN(blockedUntil.getTime())) return false
   if (Date.now() < blockedUntil.getTime()) return true
-  await db
+  await withD1Retry(db)
     .prepare('UPDATE rate_limits SET blocked_until = NULL, failed_attempts = 0 WHERE ip = ?')
     .bind(ip)
     .run()
@@ -56,7 +57,7 @@ async function allowScopedRequest(
   const nowMs = Date.now()
   const nowIso = new Date(nowMs).toISOString()
   const nowSeconds = Math.floor(nowMs / 1000)
-  const result = await db
+  const result = await withD1Retry(db)
     .prepare(
       `INSERT INTO rate_limits (ip, request_count, window_start)
        VALUES (?, 1, ?)
@@ -97,8 +98,9 @@ async function allowScopedRequest(
 export async function recordFailedAttempt(env: Env, ip: string): Promise<void> {
   const config = getRateLimitConfig(env)
   const blockedUntil = new Date(Date.now() + config.loginBlockDurationMs).toISOString()
-  await env.DB.prepare(
-    `INSERT INTO rate_limits (ip, failed_attempts, blocked_until)
+  await withD1Retry(env.DB)
+    .prepare(
+      `INSERT INTO rate_limits (ip, failed_attempts, blocked_until)
        VALUES (?, 1, NULL)
        ON CONFLICT(ip) DO UPDATE SET
          failed_attempts = COALESCE(failed_attempts, 0) + 1,
@@ -106,7 +108,7 @@ export async function recordFailedAttempt(env: Env, ip: string): Promise<void> {
            WHEN COALESCE(failed_attempts, 0) + 1 >= ? THEN ?
            ELSE blocked_until
          END`
-  )
+    )
     .bind(ip, config.loginMaxFailedAttempts, blockedUntil)
     .run()
 }
@@ -123,8 +125,9 @@ export async function recordSharePasswordFailedAttempt(
   const key = buildShareRateLimitKey(shareCode, ip)
   const config = getRateLimitConfig(env)
   const blockedUntil = new Date(Date.now() + config.shareBlockDurationMs).toISOString()
-  await env.DB.prepare(
-    `INSERT INTO rate_limits (ip, failed_attempts, blocked_until)
+  await withD1Retry(env.DB)
+    .prepare(
+      `INSERT INTO rate_limits (ip, failed_attempts, blocked_until)
        VALUES (?, 1, NULL)
        ON CONFLICT(ip) DO UPDATE SET
          failed_attempts = COALESCE(failed_attempts, 0) + 1,
@@ -132,7 +135,7 @@ export async function recordSharePasswordFailedAttempt(
            WHEN COALESCE(failed_attempts, 0) + 1 >= ? THEN ?
            ELSE blocked_until
          END`
-  )
+    )
     .bind(key, config.shareMaxFailedAttempts, blockedUntil)
     .run()
 }
@@ -143,9 +146,8 @@ export async function clearSharePasswordFailedAttempts(
   ip: string
 ): Promise<void> {
   const key = buildShareRateLimitKey(shareCode, ip)
-  await env.DB.prepare(
-    'UPDATE rate_limits SET failed_attempts = 0, blocked_until = NULL WHERE ip = ?'
-  )
+  await withD1Retry(env.DB)
+    .prepare('UPDATE rate_limits SET failed_attempts = 0, blocked_until = NULL WHERE ip = ?')
     .bind(key)
     .run()
 }
@@ -156,16 +158,16 @@ export async function isSharePasswordBlocked(
   ip: string
 ): Promise<boolean> {
   const key = buildShareRateLimitKey(shareCode, ip)
-  const row = await env.DB.prepare('SELECT blocked_until FROM rate_limits WHERE ip = ?')
+  const row = await withD1Retry(env.DB)
+    .prepare('SELECT blocked_until FROM rate_limits WHERE ip = ?')
     .bind(key)
     .first('blocked_until')
   if (!row) return false
 
   const blockedUntil = new Date(String(row))
   if (Number.isNaN(blockedUntil.getTime())) {
-    await env.DB.prepare(
-      'UPDATE rate_limits SET blocked_until = NULL, failed_attempts = 0 WHERE ip = ?'
-    )
+    await withD1Retry(env.DB)
+      .prepare('UPDATE rate_limits SET blocked_until = NULL, failed_attempts = 0 WHERE ip = ?')
       .bind(key)
       .run()
     return false
@@ -175,9 +177,8 @@ export async function isSharePasswordBlocked(
     return true
   }
 
-  await env.DB.prepare(
-    'UPDATE rate_limits SET blocked_until = NULL, failed_attempts = 0 WHERE ip = ?'
-  )
+  await withD1Retry(env.DB)
+    .prepare('UPDATE rate_limits SET blocked_until = NULL, failed_attempts = 0 WHERE ip = ?')
     .bind(key)
     .run()
   return false

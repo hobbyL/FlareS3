@@ -1,3 +1,4 @@
+import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
 import { getTotalStorage } from '../config/env'
 import { hashPassword } from '../services/password'
@@ -16,7 +17,7 @@ function getD1Changes(result: unknown): number {
 }
 
 async function hasAnyUsers(db: D1Database): Promise<boolean> {
-  const id = await db.prepare('SELECT id FROM users LIMIT 1').first('id')
+  const id = await withD1Retry(db).prepare('SELECT id FROM users LIMIT 1').first('id')
   return Boolean(id)
 }
 
@@ -38,11 +39,12 @@ async function doBootstrap(request: Request, env: Env): Promise<Response | undef
   const now = new Date().toISOString()
   const userId = crypto.randomUUID()
   const quota = getTotalStorage(env)
-  const result = await env.DB.prepare(
-    `INSERT INTO users (id, username, password_hash, role, status, quota_bytes, created_at, updated_at)
+  const result = await withD1Retry(env.DB)
+    .prepare(
+      `INSERT INTO users (id, username, password_hash, role, status, quota_bytes, created_at, updated_at)
      VALUES (?, ?, ?, 'admin', 'active', ?, ?, ?)
      ON CONFLICT(username) DO NOTHING`
-  )
+    )
     .bind(userId, env.BOOTSTRAP_ADMIN_USER, hashPassword(env.BOOTSTRAP_ADMIN_PASS), quota, now, now)
     .run()
 

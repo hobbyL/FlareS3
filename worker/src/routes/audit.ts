@@ -1,3 +1,4 @@
+import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
 import { invalidJsonBodyResponse, jsonResponse, parseJson } from './utils'
 import {
@@ -77,19 +78,21 @@ export async function listAudit(request: Request, env: Env): Promise<Response> {
 
   const [totalRow, rows] = await Promise.all([
     measureRouteStep(timings, 'dbCount', () =>
-      env.DB.prepare(`SELECT COUNT(*) AS total FROM audit_logs a ${whereClause}`)
+      withD1Retry(env.DB)
+        .prepare(`SELECT COUNT(*) AS total FROM audit_logs a ${whereClause}`)
         .bind(...params)
         .first('total')
     ),
     measureRouteStep(timings, 'dbRows', () =>
-      env.DB.prepare(
-        `SELECT a.id, a.actor_user_id, u.username AS actor_username, a.action, a.target_type, a.target_id, a.ip, a.user_agent, a.metadata, a.created_at
+      withD1Retry(env.DB)
+        .prepare(
+          `SELECT a.id, a.actor_user_id, u.username AS actor_username, a.action, a.target_type, a.target_id, a.ip, a.user_agent, a.metadata, a.created_at
          FROM audit_logs a
          LEFT JOIN users u ON u.id = a.actor_user_id
          ${whereClause}
          ORDER BY a.created_at DESC
          LIMIT ? OFFSET ?`
-      )
+        )
         .bind(...params, limit, offset)
         .all()
     ),
@@ -128,7 +131,8 @@ export async function deleteAudit(request: Request, env: Env, auditId: string): 
     return jsonResponse({ error: 'id 不能为空' }, 400)
   }
 
-  const existing = await env.DB.prepare('SELECT id FROM audit_logs WHERE id = ? LIMIT 1')
+  const existing = await withD1Retry(env.DB)
+    .prepare('SELECT id FROM audit_logs WHERE id = ? LIMIT 1')
     .bind(auditId)
     .first('id')
 
@@ -136,7 +140,7 @@ export async function deleteAudit(request: Request, env: Env, auditId: string): 
     return jsonResponse({ error: '记录不存在' }, 404)
   }
 
-  await env.DB.prepare('DELETE FROM audit_logs WHERE id = ?').bind(auditId).run()
+  await withD1Retry(env.DB).prepare('DELETE FROM audit_logs WHERE id = ?').bind(auditId).run()
 
   return jsonResponse({ success: true })
 }
@@ -187,7 +191,8 @@ export async function batchDeleteAudit(request: Request, env: Env): Promise<Resp
   }
 
   const placeholders = ids.map(() => '?').join(',')
-  await env.DB.prepare(`DELETE FROM audit_logs WHERE id IN (${placeholders})`)
+  await withD1Retry(env.DB)
+    .prepare(`DELETE FROM audit_logs WHERE id IN (${placeholders})`)
     .bind(...ids)
     .run()
 

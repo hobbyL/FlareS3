@@ -1,3 +1,4 @@
+import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
 import { DEFAULT_TOTAL_STORAGE } from '../config/env'
 import { decryptString } from './crypto'
@@ -39,7 +40,7 @@ export type R2ConfigSummary = {
 }
 
 async function getSystemConfigValue(db: D1Database, key: string): Promise<string | null> {
-  const value = await db
+  const value = await withD1Retry(db)
     .prepare('SELECT value FROM system_config WHERE key = ?')
     .bind(key)
     .first('value')
@@ -50,7 +51,7 @@ async function getSystemConfigValues(db: D1Database, keys: string[]): Promise<Ma
   if (!keys.length) return new Map()
 
   const placeholders = keys.map(() => '?').join(',')
-  const rows = await db
+  const rows = await withD1Retry(db)
     .prepare(`SELECT key, value FROM system_config WHERE key IN (${placeholders})`)
     .bind(...keys)
     .all<{ key: string; value: string }>()
@@ -64,7 +65,7 @@ async function getSystemConfigValues(db: D1Database, keys: string[]): Promise<Ma
 
 async function setSystemConfigValue(db: D1Database, key: string, value: string): Promise<void> {
   const now = new Date().toISOString()
-  await db
+  await withD1Retry(db)
     .prepare(
       `INSERT INTO system_config (key, value, updated_at)
      VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = ?`
@@ -87,7 +88,8 @@ export async function getLegacyFilesR2ConfigId(env: Env): Promise<string | null>
 
 export async function setLegacyFilesR2ConfigId(env: Env, id: string | null): Promise<void> {
   if (!id) {
-    await env.DB.prepare('DELETE FROM system_config WHERE key = ?')
+    await withD1Retry(env.DB)
+      .prepare('DELETE FROM system_config WHERE key = ?')
       .bind(SYSTEM_LEGACY_FILES_CONFIG_ID_KEY)
       .run()
     return
@@ -152,7 +154,7 @@ async function getDbConfigById(
   masterKey: string,
   id: string
 ): Promise<R2Config | null> {
-  const row = await db
+  const row = await withD1Retry(db)
     .prepare(
       'SELECT endpoint, bucket_name, access_key_id_enc, secret_access_key_enc FROM r2_configs WHERE id = ? LIMIT 1'
     )
@@ -177,7 +179,7 @@ async function getDbConfigById(
 }
 
 export async function listDbR2Configs(db: D1Database): Promise<R2ConfigSummary[]> {
-  const rows = await db
+  const rows = await withD1Retry(db)
     .prepare(
       'SELECT id, name, endpoint, bucket_name, quota_bytes, created_at, updated_at FROM r2_configs ORDER BY created_at DESC'
     )

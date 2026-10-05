@@ -1,3 +1,4 @@
+import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
 import type { AuthUser } from '../middleware/authSession'
 import { getUser, invalidJsonBodyResponse, jsonResponse, parseJson } from './utils'
@@ -45,9 +46,8 @@ async function loadTextAndAuthorize(
     return { response: jsonResponse({ error: 'id 不能为空' }, 400) }
   }
 
-  const text = await env.DB.prepare(
-    'SELECT id, owner_id, title FROM texts WHERE id = ? AND deleted_at IS NULL LIMIT 1'
-  )
+  const text = await withD1Retry(env.DB)
+    .prepare('SELECT id, owner_id, title FROM texts WHERE id = ? AND deleted_at IS NULL LIMIT 1')
     .bind(textId)
     .first()
 
@@ -108,12 +108,13 @@ export async function getTextShare(request: Request, env: Env, textId: string): 
     return auth.response
   }
 
-  const share = await env.DB.prepare(
-    `SELECT id, text_id, owner_id, share_code, password_hash, expires_in, expires_at, max_views, views, created_at, updated_at
+  const share = await withD1Retry(env.DB)
+    .prepare(
+      `SELECT id, text_id, owner_id, share_code, password_hash, expires_in, expires_at, max_views, views, created_at, updated_at
      FROM text_shares
      WHERE text_id = ?
      LIMIT 1`
-  )
+    )
     .bind(textId)
     .first()
 
@@ -226,9 +227,10 @@ export async function upsertTextShare(
 
   const now = new Date().toISOString()
 
-  const existing = await env.DB.prepare(
-    'SELECT id, owner_id, share_code, password_hash, views FROM text_shares WHERE text_id = ? LIMIT 1'
-  )
+  const existing = await withD1Retry(env.DB)
+    .prepare(
+      'SELECT id, owner_id, share_code, password_hash, views FROM text_shares WHERE text_id = ? LIMIT 1'
+    )
     .bind(textId)
     .first()
 
@@ -249,10 +251,11 @@ export async function upsertTextShare(
 
     for (let i = 0; i < 10; i += 1) {
       const shareCode = generateRandomCode(SHARE_SHORT_CODE_LENGTH)
-      const result = await env.DB.prepare(
-        `INSERT INTO text_shares (id, text_id, owner_id, share_code, password_hash, expires_in, expires_at, max_views, views, created_at, updated_at)
+      const result = await withD1Retry(env.DB)
+        .prepare(
+          `INSERT INTO text_shares (id, text_id, owner_id, share_code, password_hash, expires_in, expires_at, max_views, views, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
-      )
+        )
         .bind(
           id,
           textId,
@@ -268,12 +271,13 @@ export async function upsertTextShare(
         .run()
 
       if (!result.error) {
-        const saved = await env.DB.prepare(
-          `SELECT id, text_id, owner_id, share_code, password_hash, expires_in, expires_at, max_views, views, created_at, updated_at
+        const saved = await withD1Retry(env.DB)
+          .prepare(
+            `SELECT id, text_id, owner_id, share_code, password_hash, expires_in, expires_at, max_views, views, created_at, updated_at
            FROM text_shares
            WHERE text_id = ?
            LIMIT 1`
-        )
+          )
           .bind(textId)
           .first()
 
@@ -319,19 +323,19 @@ export async function upsertTextShare(
       const loopParams = params.slice()
       ;(loopParams as any)[0] = code
 
-      const result = await env.DB.prepare(
-        `UPDATE text_shares SET ${updates.join(', ')} WHERE id = ?`
-      )
+      const result = await withD1Retry(env.DB)
+        .prepare(`UPDATE text_shares SET ${updates.join(', ')} WHERE id = ?`)
         .bind(...loopParams)
         .run()
 
       if (!result.error) {
-        const saved = await env.DB.prepare(
-          `SELECT id, text_id, owner_id, share_code, password_hash, expires_in, expires_at, max_views, views, created_at, updated_at
+        const saved = await withD1Retry(env.DB)
+          .prepare(
+            `SELECT id, text_id, owner_id, share_code, password_hash, expires_in, expires_at, max_views, views, created_at, updated_at
            FROM text_shares
            WHERE id = ?
            LIMIT 1`
-        )
+          )
           .bind(shareId)
           .first()
 
@@ -352,9 +356,8 @@ export async function upsertTextShare(
     // keep as-is (no password)
   }
 
-  const updateResult = await env.DB.prepare(
-    `UPDATE text_shares SET ${updates.join(', ')} WHERE id = ?`
-  )
+  const updateResult = await withD1Retry(env.DB)
+    .prepare(`UPDATE text_shares SET ${updates.join(', ')} WHERE id = ?`)
     .bind(...params)
     .run()
 
@@ -362,12 +365,13 @@ export async function upsertTextShare(
     return jsonResponse({ error: '保存分享设置失败' }, 400)
   }
 
-  const saved = await env.DB.prepare(
-    `SELECT id, text_id, owner_id, share_code, password_hash, expires_in, expires_at, max_views, views, created_at, updated_at
+  const saved = await withD1Retry(env.DB)
+    .prepare(
+      `SELECT id, text_id, owner_id, share_code, password_hash, expires_in, expires_at, max_views, views, created_at, updated_at
      FROM text_shares
      WHERE id = ?
      LIMIT 1`
-  )
+    )
     .bind(shareId)
     .first()
 
@@ -416,7 +420,8 @@ export async function deleteTextShare(
     return auth.response
   }
 
-  const share = await env.DB.prepare('SELECT id FROM text_shares WHERE text_id = ? LIMIT 1')
+  const share = await withD1Retry(env.DB)
+    .prepare('SELECT id FROM text_shares WHERE text_id = ? LIMIT 1')
     .bind(textId)
     .first()
 
@@ -424,7 +429,8 @@ export async function deleteTextShare(
     return jsonResponse({ success: true, deleted: false })
   }
 
-  const result = await env.DB.prepare('DELETE FROM text_shares WHERE id = ?')
+  const result = await withD1Retry(env.DB)
+    .prepare('DELETE FROM text_shares WHERE id = ?')
     .bind(String((share as any).id))
     .run()
 
@@ -436,8 +442,9 @@ export async function deleteTextShare(
 }
 
 async function resolveShareRecord(env: Env, code: string): Promise<ResolveShareRecordResult> {
-  const share = await env.DB.prepare(
-    `SELECT s.id, s.text_id, s.share_code, s.password_hash, s.expires_at, s.max_views, s.views,
+  const share = await withD1Retry(env.DB)
+    .prepare(
+      `SELECT s.id, s.text_id, s.share_code, s.password_hash, s.expires_at, s.max_views, s.views,
             t.title AS text_title, t.content AS text_content, t.deleted_at AS text_deleted_at,
             u.status AS owner_status
      FROM text_shares s
@@ -445,7 +452,7 @@ async function resolveShareRecord(env: Env, code: string): Promise<ResolveShareR
      LEFT JOIN users u ON u.id = s.owner_id
      WHERE s.share_code = ?
      LIMIT 1`
-  )
+    )
     .bind(code)
     .first()
 

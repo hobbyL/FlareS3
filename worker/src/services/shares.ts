@@ -1,3 +1,4 @@
+import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
 import type { AuthUser } from '../middleware/authSession'
 import { measureRouteStep, type RouteTimingEntry } from '../utils/routeTiming'
@@ -275,7 +276,7 @@ async function queryFileShares(
   timings: RouteTimingEntry[] = []
 ): Promise<ShareListItem[]> {
   const rows = await measureRouteStep(timings, 'shareFileRows', () =>
-    db
+    withD1Retry(db)
       .prepare(
         `SELECT s.file_id, s.owner_id, s.share_code, s.password_hash, s.expires_at, s.max_views, s.views, s.created_at, s.updated_at,
                 f.filename, f.deleted_at AS file_deleted_at,
@@ -297,7 +298,7 @@ async function queryTextShares(
   timings: RouteTimingEntry[] = []
 ): Promise<ShareListItem[]> {
   const rows = await measureRouteStep(timings, 'shareTextRows', () =>
-    db
+    withD1Retry(db)
       .prepare(
         `SELECT s.text_id, s.owner_id, s.share_code, s.password_hash, s.expires_at, s.max_views, s.views, s.created_at, s.updated_at,
                 t.title AS text_title, t.deleted_at AS text_deleted_at,
@@ -319,7 +320,7 @@ async function queryTextOneTimeShares(
   timings: RouteTimingEntry[] = []
 ): Promise<ShareListItem[]> {
   const rows = await measureRouteStep(timings, 'shareOneTimeRows', () =>
-    db
+    withD1Retry(db)
       .prepare(
         `SELECT s.text_id, s.owner_id, s.share_code, s.expires_at, s.consumed_at, s.created_at, s.updated_at,
                 t.title AS text_title, t.deleted_at AS text_deleted_at,

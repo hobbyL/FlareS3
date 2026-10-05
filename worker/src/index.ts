@@ -1,3 +1,4 @@
+import { withD1Retry } from './utils/db'
 import type { Env } from './config/env'
 import { validateEnvOrWarn } from './config/envValidation'
 import { requestIdMiddleware } from './middleware/requestId'
@@ -46,7 +47,7 @@ async function healthResponse(env: Env): Promise<Response> {
   let dbError: string | undefined
   if (env.DB) {
     try {
-      await env.DB.prepare('SELECT 1').first()
+      await withD1Retry(env.DB).prepare('SELECT 1').first()
       dbStatus = 'ok'
     } catch (error) {
       dbStatus = 'error'

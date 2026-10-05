@@ -1,3 +1,4 @@
+import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
 import { getTotalStorage } from '../config/env'
 import { jsonResponse, parseJson, getUser, requestBodyPolicyErrorResponse } from './utils'
@@ -113,13 +114,15 @@ export async function listConfigs(_request: Request, env: Env): Promise<Response
     usagePercent: number
   }> = []
 
-  const legacyUsedSpaceRow = await env.DB.prepare(
-    `SELECT COALESCE(SUM(size), 0) AS usedSpace
+  const legacyUsedSpaceRow = await withD1Retry(env.DB)
+    .prepare(
+      `SELECT COALESCE(SUM(size), 0) AS usedSpace
        FROM files
       WHERE ${ACTIVE_COMPLETED_STORAGE_USAGE_WHERE}
         AND (config_id IS NULL OR TRIM(config_id) = '')
         AND r2_key NOT LIKE 'flares3/%/%'`
-  ).first('usedSpace')
+    )
+    .first('usedSpace')
   const legacyUsedSpace = Number(legacyUsedSpaceRow || 0)
 
   for (const summary of summaries) {
@@ -129,15 +132,16 @@ export async function listConfigs(_request: Request, env: Env): Promise<Response
     }
 
     const prefix = `flares3/${summary.id}/%`
-    const usedSpaceRow = await env.DB.prepare(
-      `SELECT COALESCE(SUM(size), 0) AS usedSpace
+    const usedSpaceRow = await withD1Retry(env.DB)
+      .prepare(
+        `SELECT COALESCE(SUM(size), 0) AS usedSpace
          FROM files
         WHERE ${ACTIVE_COMPLETED_STORAGE_USAGE_WHERE}
           AND (
             config_id = ?
             OR ((config_id IS NULL OR TRIM(config_id) = '') AND r2_key LIKE ?)
           )`
-    )
+      )
       .bind(summary.id, prefix)
       .first('usedSpace')
     let usedSpace = Number(usedSpaceRow || 0)
@@ -243,10 +247,11 @@ export async function createConfig(request: Request, env: Env): Promise<Response
     const accessEnc = await encryptString(body.access_key_id, masterKey)
     const secretEnc = await encryptString(body.secret_access_key, masterKey)
 
-    const result = await env.DB.prepare(
-      `INSERT INTO r2_configs (id, name, endpoint, bucket_name, access_key_id_enc, secret_access_key_enc, quota_bytes, created_at, updated_at)
+    const result = await withD1Retry(env.DB)
+      .prepare(
+        `INSERT INTO r2_configs (id, name, endpoint, bucket_name, access_key_id_enc, secret_access_key_enc, quota_bytes, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
+      )
       .bind(
         id,
         body.name,
@@ -264,7 +269,8 @@ export async function createConfig(request: Request, env: Env): Promise<Response
       return jsonResponse({ error: '创建配置失败' }, 400)
     }
 
-    const defaultId = await env.DB.prepare('SELECT value FROM system_config WHERE key = ?')
+    const defaultId = await withD1Retry(env.DB)
+      .prepare('SELECT value FROM system_config WHERE key = ?')
       .bind(SYSTEM_DEFAULT_R2_CONFIG_ID_KEY)
       .first('value')
 
@@ -332,9 +338,10 @@ export async function updateConfig(request: Request, env: Env, id: string): Prom
   }
 
   try {
-    const existing = await env.DB.prepare(
-      'SELECT id, name, endpoint, bucket_name, quota_bytes, access_key_id_enc, secret_access_key_enc FROM r2_configs WHERE id = ? LIMIT 1'
-    )
+    const existing = await withD1Retry(env.DB)
+      .prepare(
+        'SELECT id, name, endpoint, bucket_name, quota_bytes, access_key_id_enc, secret_access_key_enc FROM r2_configs WHERE id = ? LIMIT 1'
+      )
       .bind(id)
       .first<{
         id: string
@@ -386,11 +393,12 @@ export async function updateConfig(request: Request, env: Env, id: string): Prom
     }
 
     const now = new Date().toISOString()
-    await env.DB.prepare(
-      `UPDATE r2_configs
+    await withD1Retry(env.DB)
+      .prepare(
+        `UPDATE r2_configs
        SET name = ?, endpoint = ?, bucket_name = ?, quota_bytes = ?, access_key_id_enc = ?, secret_access_key_enc = ?, updated_at = ?
        WHERE id = ?`
-    )
+      )
       .bind(
         nextName,
         endpointCheck.url,
@@ -441,19 +449,18 @@ export async function deleteConfig(_request: Request, env: Env, id: string): Pro
 
   try {
     const prefix = `flares3/${id}/%`
-    const fileCount = await env.DB.prepare(
-      'SELECT COUNT(*) AS count FROM files WHERE r2_key LIKE ?'
-    )
+    const fileCount = await withD1Retry(env.DB)
+      .prepare('SELECT COUNT(*) AS count FROM files WHERE r2_key LIKE ?')
       .bind(prefix)
       .first('count')
-    const queueCount = await env.DB.prepare(
-      'SELECT COUNT(*) AS count FROM delete_queue WHERE r2_key LIKE ?'
-    )
+    const queueCount = await withD1Retry(env.DB)
+      .prepare('SELECT COUNT(*) AS count FROM delete_queue WHERE r2_key LIKE ?')
       .bind(prefix)
       .first('count')
-    const reservationCount = await env.DB.prepare(
-      "SELECT COUNT(*) AS count FROM upload_reservations WHERE r2_config_id = ? AND status = 'active'"
-    )
+    const reservationCount = await withD1Retry(env.DB)
+      .prepare(
+        "SELECT COUNT(*) AS count FROM upload_reservations WHERE r2_config_id = ? AND status = 'active'"
+      )
       .bind(id)
       .first('count')
 
@@ -465,14 +472,16 @@ export async function deleteConfig(_request: Request, env: Env, id: string): Pro
       return jsonResponse({ error: '该配置仍有关联文件或上传预约，无法删除' }, 409)
     }
 
-    await env.DB.prepare('DELETE FROM r2_configs WHERE id = ?').bind(id).run()
+    await withD1Retry(env.DB).prepare('DELETE FROM r2_configs WHERE id = ?').bind(id).run()
 
-    const defaultId = await env.DB.prepare('SELECT value FROM system_config WHERE key = ?')
+    const defaultId = await withD1Retry(env.DB)
+      .prepare('SELECT value FROM system_config WHERE key = ?')
       .bind(SYSTEM_DEFAULT_R2_CONFIG_ID_KEY)
       .first('value')
 
     if (String(defaultId || '') === id) {
-      await env.DB.prepare('DELETE FROM system_config WHERE key = ?')
+      await withD1Retry(env.DB)
+        .prepare('DELETE FROM system_config WHERE key = ?')
         .bind(SYSTEM_DEFAULT_R2_CONFIG_ID_KEY)
         .run()
     }

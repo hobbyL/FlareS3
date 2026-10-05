@@ -1,3 +1,4 @@
+import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
 import { getUser, jsonResponse } from './utils'
 import { renderConfirmPage, renderContentPage, renderMessagePage } from './textShares'
@@ -27,9 +28,8 @@ async function loadTextAndAuthorize(
   if (!user) return { response: jsonResponse({ error: '未授权' }, 401) }
   if (!textId) return { response: jsonResponse({ error: 'id 不能为空' }, 400) }
 
-  const text = await env.DB.prepare(
-    'SELECT id, owner_id, title FROM texts WHERE id = ? AND deleted_at IS NULL LIMIT 1'
-  )
+  const text = await withD1Retry(env.DB)
+    .prepare('SELECT id, owner_id, title FROM texts WHERE id = ? AND deleted_at IS NULL LIMIT 1')
     .bind(textId)
     .first<{ id: string; owner_id: string; title: string }>()
 
@@ -89,9 +89,8 @@ export async function createTextOneTimeShare(
   const nowIso = now.toISOString()
   const expiresAtIso = new Date(now.getTime() + 60 * 60 * 1000).toISOString()
 
-  const existing = await env.DB.prepare(
-    'SELECT id FROM text_one_time_shares WHERE text_id = ? LIMIT 1'
-  )
+  const existing = await withD1Retry(env.DB)
+    .prepare('SELECT id FROM text_one_time_shares WHERE text_id = ? LIMIT 1')
     .bind(textId)
     .first()
 
@@ -99,10 +98,11 @@ export async function createTextOneTimeShare(
     const id = crypto.randomUUID()
     for (let i = 0; i < 10; i += 1) {
       const shareCode = generateRandomCode(SHARE_SHORT_CODE_LENGTH)
-      const result = await env.DB.prepare(
-        `INSERT INTO text_one_time_shares (id, text_id, owner_id, share_code, expires_at, consumed_at, created_at, updated_at)
+      const result = await withD1Retry(env.DB)
+        .prepare(
+          `INSERT INTO text_one_time_shares (id, text_id, owner_id, share_code, expires_at, consumed_at, created_at, updated_at)
 	         VALUES (?, ?, ?, ?, ?, NULL, ?, ?)`
-      )
+        )
         .bind(id, textId, auth.ownerId, shareCode, expiresAtIso, nowIso, nowIso)
         .run()
 
@@ -117,11 +117,12 @@ export async function createTextOneTimeShare(
   const shareId = String((existing as any).id)
   for (let i = 0; i < 10; i += 1) {
     const shareCode = generateRandomCode(SHARE_SHORT_CODE_LENGTH)
-    const result = await env.DB.prepare(
-      `UPDATE text_one_time_shares
+    const result = await withD1Retry(env.DB)
+      .prepare(
+        `UPDATE text_one_time_shares
 	       SET share_code = ?, expires_at = ?, consumed_at = NULL, created_at = ?, updated_at = ?
 	       WHERE id = ?`
-    )
+      )
       .bind(shareCode, expiresAtIso, nowIso, nowIso, shareId)
       .run()
 
@@ -165,9 +166,8 @@ export async function deleteTextOneTimeShare(
     return auth.response
   }
 
-  const existing = await env.DB.prepare(
-    'SELECT id FROM text_one_time_shares WHERE text_id = ? LIMIT 1'
-  )
+  const existing = await withD1Retry(env.DB)
+    .prepare('SELECT id FROM text_one_time_shares WHERE text_id = ? LIMIT 1')
     .bind(textId)
     .first<{ id: string }>()
 
@@ -175,7 +175,8 @@ export async function deleteTextOneTimeShare(
     return jsonResponse({ success: true, deleted: false })
   }
 
-  const result = await env.DB.prepare('DELETE FROM text_one_time_shares WHERE id = ?')
+  const result = await withD1Retry(env.DB)
+    .prepare('DELETE FROM text_one_time_shares WHERE id = ?')
     .bind(existing.id)
     .run()
 
@@ -223,8 +224,9 @@ export async function tryViewTextOneTimeShare(
 ): Promise<Response | null> {
   if (!code) return null
 
-  const share = await env.DB.prepare(
-    `SELECT s.id, s.text_id, s.share_code, s.expires_at, s.consumed_at,
+  const share = await withD1Retry(env.DB)
+    .prepare(
+      `SELECT s.id, s.text_id, s.share_code, s.expires_at, s.consumed_at,
             t.title AS text_title, t.content AS text_content, t.deleted_at AS text_deleted_at,
             u.status AS owner_status
      FROM text_one_time_shares s
@@ -232,7 +234,7 @@ export async function tryViewTextOneTimeShare(
      LEFT JOIN users u ON u.id = s.owner_id
      WHERE s.share_code = ?
      LIMIT 1`
-  )
+    )
     .bind(code)
     .first()
 
@@ -278,11 +280,12 @@ export async function tryViewTextOneTimeShare(
 
   const shareId = String((share as any).id)
   const nowIso = new Date().toISOString()
-  const update = await env.DB.prepare(
-    `UPDATE text_one_time_shares
+  const update = await withD1Retry(env.DB)
+    .prepare(
+      `UPDATE text_one_time_shares
      SET consumed_at = ?, updated_at = ?
      WHERE id = ? AND consumed_at IS NULL AND expires_at > ?`
-  )
+    )
     .bind(nowIso, nowIso, shareId, nowIso)
     .run()
 

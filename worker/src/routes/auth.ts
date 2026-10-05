@@ -1,3 +1,4 @@
+import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
 import { jsonResponse, parseJson, requestBodyPolicyErrorResponse } from './utils'
 import { verifyPassword } from '../services/password'
@@ -65,9 +66,10 @@ export async function login(request: Request, env: Env): Promise<Response> {
     if (!getAuthTokenSecret(env)) {
       return jsonResponse({ error: '缺少 AUTH_TOKEN_SECRET' }, 500)
     }
-    const user = await env.DB.prepare(
-      'SELECT id, username, password_hash, role, status, quota_bytes FROM users WHERE username = ? LIMIT 1'
-    )
+    const user = await withD1Retry(env.DB)
+      .prepare(
+        'SELECT id, username, password_hash, role, status, quota_bytes FROM users WHERE username = ? LIMIT 1'
+      )
       .bind(body.username)
       .first<{
         id: string
@@ -133,10 +135,11 @@ export async function login(request: Request, env: Env): Promise<Response> {
       return jsonResponse({ error: '缺少 AUTH_TOKEN_SECRET' }, 500)
     }
     const tokenHash = await hashToken(sessionToken)
-    await env.DB.prepare(
-      `INSERT INTO sessions (id, user_id, token_hash, expires_at, ip, user_agent, created_at)
+    await withD1Retry(env.DB)
+      .prepare(
+        `INSERT INTO sessions (id, user_id, token_hash, expires_at, ip, user_agent, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`
-    )
+      )
       .bind(
         sessionId,
         user.id,
@@ -147,7 +150,8 @@ export async function login(request: Request, env: Env): Promise<Response> {
         now.toISOString()
       )
       .run()
-    await env.DB.prepare('UPDATE users SET last_login_at = ? WHERE id = ?')
+    await withD1Retry(env.DB)
+      .prepare('UPDATE users SET last_login_at = ? WHERE id = ?')
       .bind(now.toISOString(), user.id)
       .run()
     await Promise.allSettled([
@@ -200,7 +204,8 @@ export async function logout(request: Request, env: Env): Promise<Response> {
   const sessionToken = token || (cookieToken ? cookieToken.split('=')[1] : '')
   if (sessionToken) {
     const tokenHash = await invalidateAuthToken(env, sessionToken)
-    await env.DB.prepare('UPDATE sessions SET revoked_at = ? WHERE token_hash = ?')
+    await withD1Retry(env.DB)
+      .prepare('UPDATE sessions SET revoked_at = ? WHERE token_hash = ?')
       .bind(new Date().toISOString(), tokenHash)
       .run()
   }

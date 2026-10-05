@@ -1,3 +1,4 @@
+import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
 import { SYSTEM_DEFAULT_R2_CONFIG_ID_KEY } from './r2'
 import { formatBytes } from '../utils/format'
@@ -43,14 +44,15 @@ async function getTextOverviewMetrics(
     'totalTexts' | 'textsUpdated7d' | 'textsUpdated8To30d' | 'textsStaleOver30d'
   >
 > {
-  const row = await env.DB.prepare(
-    `SELECT COUNT(*) AS totalTexts,
+  const row = await withD1Retry(env.DB)
+    .prepare(
+      `SELECT COUNT(*) AS totalTexts,
             COALESCE(SUM(CASE WHEN updated_at >= ? THEN 1 ELSE 0 END), 0) AS textsUpdated7d,
             COALESCE(SUM(CASE WHEN updated_at < ? AND updated_at >= ? THEN 1 ELSE 0 END), 0) AS textsUpdated8To30d,
             COALESCE(SUM(CASE WHEN updated_at < ? THEN 1 ELSE 0 END), 0) AS textsStaleOver30d
        FROM texts
       WHERE deleted_at IS NULL`
-  )
+    )
     .bind(sevenDaysAgo, sevenDaysAgo, thirtyDaysAgo, thirtyDaysAgo)
     .first<{
       totalTexts: number
@@ -75,8 +77,9 @@ async function getStandardShareOverviewMetrics(
   expiredShares: number
   exhaustedShares: number
 }> {
-  const row = await env.DB.prepare(
-    `SELECT COALESCE(SUM(CASE WHEN expires_at IS NULL OR expires_at > ? THEN CASE WHEN max_views > 0 AND views >= max_views THEN 0 ELSE 1 END ELSE 0 END), 0) AS activeShares,
+  const row = await withD1Retry(env.DB)
+    .prepare(
+      `SELECT COALESCE(SUM(CASE WHEN expires_at IS NULL OR expires_at > ? THEN CASE WHEN max_views > 0 AND views >= max_views THEN 0 ELSE 1 END ELSE 0 END), 0) AS activeShares,
             COALESCE(SUM(CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN 1 ELSE 0 END), 0) AS expiredShares,
             COALESCE(SUM(CASE WHEN (expires_at IS NULL OR expires_at > ?) AND max_views > 0 AND views >= max_views THEN 1 ELSE 0 END), 0) AS exhaustedShares
        FROM (
@@ -90,7 +93,7 @@ async function getStandardShareOverviewMetrics(
                 INNER JOIN texts t ON t.id = s.text_id
                WHERE t.deleted_at IS NULL
             ) shares`
-  )
+    )
     .bind(nowIso, nowIso, nowIso)
     .first<{
       activeShares: number
@@ -113,14 +116,15 @@ async function getOneTimeShareOverviewMetrics(
   expiredShares: number
   consumedShares: number
 }> {
-  const row = await env.DB.prepare(
-    `SELECT COALESCE(SUM(CASE WHEN consumed_at IS NULL AND expires_at > ? THEN 1 ELSE 0 END), 0) AS activeShares,
+  const row = await withD1Retry(env.DB)
+    .prepare(
+      `SELECT COALESCE(SUM(CASE WHEN consumed_at IS NULL AND expires_at > ? THEN 1 ELSE 0 END), 0) AS activeShares,
             COALESCE(SUM(CASE WHEN consumed_at IS NULL AND expires_at <= ? THEN 1 ELSE 0 END), 0) AS expiredShares,
             COALESCE(SUM(CASE WHEN consumed_at IS NOT NULL THEN 1 ELSE 0 END), 0) AS consumedShares
        FROM text_one_time_shares s
        INNER JOIN texts t ON t.id = s.text_id
       WHERE t.deleted_at IS NULL`
-  )
+    )
     .bind(nowIso, nowIso)
     .first<{
       activeShares: number
@@ -164,39 +168,53 @@ export async function getAdminOverviewData(env: Env): Promise<{
     defaultConfigIdValue,
     latestFailedJob,
   ] = await Promise.all([
-    env.DB.prepare('SELECT COUNT(*) AS total FROM users').first<{ total: number }>(),
-    env.DB.prepare("SELECT COUNT(*) AS total FROM users WHERE status = 'active'").first<{
-      total: number
-    }>(),
-    env.DB.prepare("SELECT COUNT(*) AS total FROM users WHERE status = 'disabled'").first<{
-      total: number
-    }>(),
-    env.DB.prepare(
-      `SELECT COUNT(*) AS totalFiles, COALESCE(SUM(size), 0) AS usedSpace FROM files WHERE upload_status = 'completed' AND deleted_at IS NULL`
-    ).first<{ totalFiles: number; usedSpace: number }>(),
-    env.DB.prepare(
-      `SELECT COUNT(*) AS count FROM files WHERE upload_status IN ('pending','uploading','completed') AND deleted_at IS NULL AND expires_at < ?`
-    )
+    withD1Retry(env.DB).prepare('SELECT COUNT(*) AS total FROM users').first<{ total: number }>(),
+    withD1Retry(env.DB)
+      .prepare("SELECT COUNT(*) AS total FROM users WHERE status = 'active'")
+      .first<{
+        total: number
+      }>(),
+    withD1Retry(env.DB)
+      .prepare("SELECT COUNT(*) AS total FROM users WHERE status = 'disabled'")
+      .first<{
+        total: number
+      }>(),
+    withD1Retry(env.DB)
+      .prepare(
+        `SELECT COUNT(*) AS totalFiles, COALESCE(SUM(size), 0) AS usedSpace FROM files WHERE upload_status = 'completed' AND deleted_at IS NULL`
+      )
+      .first<{ totalFiles: number; usedSpace: number }>(),
+    withD1Retry(env.DB)
+      .prepare(
+        `SELECT COUNT(*) AS count FROM files WHERE upload_status IN ('pending','uploading','completed') AND deleted_at IS NULL AND expires_at < ?`
+      )
       .bind(nextWeek)
       .first<{ count: number }>(),
     getTextOverviewMetrics(env, { sevenDaysAgo, thirtyDaysAgo }),
     getStandardShareOverviewMetrics(env, nowIso),
     getOneTimeShareOverviewMetrics(env, nowIso),
-    env.DB.prepare('SELECT COUNT(*) AS count FROM delete_queue WHERE processed_at IS NULL').first<{
-      count: number
-    }>(),
-    env.DB.prepare('SELECT COUNT(*) AS count FROM r2_configs').first<{ count: number }>(),
-    env.DB.prepare('SELECT value FROM system_config WHERE key = ?')
+    withD1Retry(env.DB)
+      .prepare('SELECT COUNT(*) AS count FROM delete_queue WHERE processed_at IS NULL')
+      .first<{
+        count: number
+      }>(),
+    withD1Retry(env.DB)
+      .prepare('SELECT COUNT(*) AS count FROM r2_configs')
+      .first<{ count: number }>(),
+    withD1Retry(env.DB)
+      .prepare('SELECT value FROM system_config WHERE key = ?')
       .bind(SYSTEM_DEFAULT_R2_CONFIG_ID_KEY)
       .first('value'),
-    env.DB.prepare(
-      `SELECT job_name, status, finished_at, error_message FROM job_runs WHERE status IN ('failed','partial') ORDER BY created_at DESC LIMIT 1`
-    ).first<{
-      job_name: string
-      status: 'failed' | 'partial'
-      finished_at: string | null
-      error_message: string | null
-    }>(),
+    withD1Retry(env.DB)
+      .prepare(
+        `SELECT job_name, status, finished_at, error_message FROM job_runs WHERE status IN ('failed','partial') ORDER BY created_at DESC LIMIT 1`
+      )
+      .first<{
+        job_name: string
+        status: 'failed' | 'partial'
+        finished_at: string | null
+        error_message: string | null
+      }>(),
   ])
 
   const totalUsers = Number(totalUsersRow?.total || 0)

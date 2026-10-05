@@ -1,3 +1,4 @@
+import { withD1Retry } from '../utils/db'
 /**
  * WebDAV/Koofr 配置 CRUD 路由。
  *
@@ -324,22 +325,23 @@ export async function deleteConfig(_request: Request, env: Env, id: string): Pro
       return jsonResponse({ error: '配置不存在' }, 404)
     }
 
-    const fileCount = await env.DB.prepare(
-      'SELECT COUNT(*) AS count FROM files WHERE config_id = ?'
-    )
+    const fileCount = await withD1Retry(env.DB)
+      .prepare('SELECT COUNT(*) AS count FROM files WHERE config_id = ?')
       .bind(id)
       .first('count')
-    const reservationCount = await env.DB.prepare(
-      "SELECT COUNT(*) AS count FROM upload_reservations WHERE r2_config_id = ? AND status = 'active'"
-    )
+    const reservationCount = await withD1Retry(env.DB)
+      .prepare(
+        "SELECT COUNT(*) AS count FROM upload_reservations WHERE r2_config_id = ? AND status = 'active'"
+      )
       .bind(id)
       .first('count')
-    const queueCount = await env.DB.prepare(
-      `SELECT COUNT(*) AS count
+    const queueCount = await withD1Retry(env.DB)
+      .prepare(
+        `SELECT COUNT(*) AS count
          FROM delete_queue dq
          INNER JOIN files f ON f.id = dq.file_id
         WHERE f.config_id = ? AND dq.processed_at IS NULL`
-    )
+      )
       .bind(id)
       .first('count')
 

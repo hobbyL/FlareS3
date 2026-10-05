@@ -1,3 +1,4 @@
+import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
 import { jsonResponse, getUser, calcPresignedDownloadUrlTtlSeconds, redirect } from './utils'
 import { generateDownloadUrl, generatePreviewUrl, resolveR2ConfigForKey } from '../services/r2'
@@ -42,14 +43,15 @@ export { listFiles, listTrashFiles } from './fileListing'
  * { "error": "文件已过期" }
  */
 export async function downloadFile(request: Request, env: Env, fileId: string): Promise<Response> {
-  const file = await env.DB.prepare(
-    `SELECT f.id, f.owner_id, f.filename, f.r2_key, f.expires_at, f.upload_status, f.require_login, f.config_id,
+  const file = await withD1Retry(env.DB)
+    .prepare(
+      `SELECT f.id, f.owner_id, f.filename, f.r2_key, f.expires_at, f.upload_status, f.require_login, f.config_id,
             u.status AS owner_status
      FROM files f
      LEFT JOIN users u ON u.id = f.owner_id
      WHERE f.id = ?
      LIMIT 1`
-  )
+    )
     .bind(fileId)
     .first()
   if (!file) {
@@ -160,9 +162,10 @@ export async function previewFile(request: Request, env: Env, fileId: string): P
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)
 
-  const file = await env.DB.prepare(
-    `SELECT id, owner_id, filename, r2_key, content_type, expires_at, upload_status, config_id FROM files WHERE id = ? LIMIT 1`
-  )
+  const file = await withD1Retry(env.DB)
+    .prepare(
+      `SELECT id, owner_id, filename, r2_key, content_type, expires_at, upload_status, config_id FROM files WHERE id = ? LIMIT 1`
+    )
     .bind(fileId)
     .first()
 
@@ -287,9 +290,10 @@ export async function restoreFile(request: Request, env: Env, fileId: string): P
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)
 
-  const file = await env.DB.prepare(
-    'SELECT id, owner_id, r2_key, expires_at, upload_status, deleted_at, config_id FROM files WHERE id = ? LIMIT 1'
-  )
+  const file = await withD1Retry(env.DB)
+    .prepare(
+      'SELECT id, owner_id, r2_key, expires_at, upload_status, deleted_at, config_id FROM files WHERE id = ? LIMIT 1'
+    )
     .bind(fileId)
     .first()
 
@@ -320,10 +324,12 @@ export async function restoreFile(request: Request, env: Env, fileId: string): P
     }
 
     const now = new Date().toISOString()
-    await env.DB.batch([
-      env.DB.prepare(
-        "UPDATE files SET upload_status = 'completed', deleted_at = NULL, multipart_upload_id = NULL WHERE id = ?"
-      ).bind(fileId),
+    await withD1Retry(env.DB).batch([
+      withD1Retry(env.DB)
+        .prepare(
+          "UPDATE files SET upload_status = 'completed', deleted_at = NULL, multipart_upload_id = NULL WHERE id = ?"
+        )
+        .bind(fileId),
       prepareReleaseUploadReservation(env.DB, fileId, now),
       prepareAuditLogInsert(
         env.DB,
@@ -345,13 +351,17 @@ export async function restoreFile(request: Request, env: Env, fileId: string): P
   if (!loaded) return jsonResponse({ error: '存储配置未找到' }, 503)
 
   const now = new Date().toISOString()
-  await env.DB.batch([
-    env.DB.prepare(
-      "UPDATE files SET upload_status = 'completed', deleted_at = NULL, multipart_upload_id = NULL WHERE id = ?"
-    ).bind(fileId),
-    env.DB.prepare(
-      'UPDATE delete_queue SET processed_at = ? WHERE file_id = ? AND processed_at IS NULL'
-    ).bind(now, fileId),
+  await withD1Retry(env.DB).batch([
+    withD1Retry(env.DB)
+      .prepare(
+        "UPDATE files SET upload_status = 'completed', deleted_at = NULL, multipart_upload_id = NULL WHERE id = ?"
+      )
+      .bind(fileId),
+    withD1Retry(env.DB)
+      .prepare(
+        'UPDATE delete_queue SET processed_at = ? WHERE file_id = ? AND processed_at IS NULL'
+      )
+      .bind(now, fileId),
     prepareAuditLogInsert(
       env.DB,
       {
@@ -391,11 +401,12 @@ export async function permanentlyDeleteTrashFiles(request: Request, env: Env): P
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)
 
-  const { results } = await env.DB.prepare(
-    `SELECT id, owner_id, r2_key, upload_status, deleted_at, config_id
+  const { results } = await withD1Retry(env.DB)
+    .prepare(
+      `SELECT id, owner_id, r2_key, upload_status, deleted_at, config_id
      FROM files
      WHERE owner_id = ? AND upload_status = 'deleted' AND deleted_at IS NOT NULL`
-  )
+    )
     .bind(user.id)
     .all()
 
@@ -421,10 +432,10 @@ export async function permanentlyDeleteTrashFiles(request: Request, env: Env): P
         // 远端文件可能已不存在，永久删除继续清理本地记录。
       }
 
-      const batchResults = await env.DB.batch([
+      const batchResults = await withD1Retry(env.DB).batch([
         prepareReleaseUploadReservation(env.DB, fileId, now),
-        env.DB.prepare('DELETE FROM file_shares WHERE file_id = ?').bind(fileId),
-        env.DB.prepare('DELETE FROM files WHERE id = ?').bind(fileId),
+        withD1Retry(env.DB).prepare('DELETE FROM file_shares WHERE file_id = ?').bind(fileId),
+        withD1Retry(env.DB).prepare('DELETE FROM files WHERE id = ?').bind(fileId),
         prepareAuditLogInsert(
           env.DB,
           {
@@ -442,7 +453,7 @@ export async function permanentlyDeleteTrashFiles(request: Request, env: Env): P
       continue
     }
 
-    const [queueInsertResult] = await env.DB.batch([
+    const [queueInsertResult] = await withD1Retry(env.DB).batch([
       prepareEnqueueFileDeletionIfNeeded(env.DB, { id: fileId, r2_key: r2Key }, now),
       prepareAuditLogInsert(
         env.DB,
@@ -490,9 +501,10 @@ export async function permanentlyDeleteFile(
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)
 
-  const file = await env.DB.prepare(
-    'SELECT id, owner_id, r2_key, upload_status, deleted_at, config_id FROM files WHERE id = ? LIMIT 1'
-  )
+  const file = await withD1Retry(env.DB)
+    .prepare(
+      'SELECT id, owner_id, r2_key, upload_status, deleted_at, config_id FROM files WHERE id = ? LIMIT 1'
+    )
     .bind(fileId)
     .first()
 
@@ -520,10 +532,10 @@ export async function permanentlyDeleteFile(
       // 远端文件可能已不存在，永久删除继续清理本地记录。
     }
 
-    await env.DB.batch([
+    await withD1Retry(env.DB).batch([
       prepareReleaseUploadReservation(env.DB, fileId, now),
-      env.DB.prepare('DELETE FROM file_shares WHERE file_id = ?').bind(fileId),
-      env.DB.prepare('DELETE FROM files WHERE id = ?').bind(fileId),
+      withD1Retry(env.DB).prepare('DELETE FROM file_shares WHERE file_id = ?').bind(fileId),
+      withD1Retry(env.DB).prepare('DELETE FROM files WHERE id = ?').bind(fileId),
       prepareAuditLogInsert(
         env.DB,
         {
@@ -541,7 +553,7 @@ export async function permanentlyDeleteFile(
     return jsonResponse({ success: true, queued: false })
   }
 
-  const [queueInsertResult] = await env.DB.batch([
+  const [queueInsertResult] = await withD1Retry(env.DB).batch([
     prepareEnqueueFileDeletionIfNeeded(env.DB, { id: fileId, r2_key: r2Key }, now),
     prepareAuditLogInsert(
       env.DB,
@@ -584,9 +596,8 @@ export async function deleteFile(request: Request, env: Env, fileId: string): Pr
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)
 
-  const file = await env.DB.prepare(
-    'SELECT id, owner_id, upload_status, deleted_at FROM files WHERE id = ? LIMIT 1'
-  )
+  const file = await withD1Retry(env.DB)
+    .prepare('SELECT id, owner_id, upload_status, deleted_at FROM files WHERE id = ? LIMIT 1')
     .bind(fileId)
     .first()
 
@@ -601,10 +612,12 @@ export async function deleteFile(request: Request, env: Env, fileId: string): Pr
   }
 
   const now = new Date().toISOString()
-  await env.DB.batch([
-    env.DB.prepare(
-      "UPDATE files SET upload_status = 'deleted', deleted_at = ?, multipart_upload_id = NULL WHERE id = ?"
-    ).bind(now, fileId),
+  await withD1Retry(env.DB).batch([
+    withD1Retry(env.DB)
+      .prepare(
+        "UPDATE files SET upload_status = 'deleted', deleted_at = ?, multipart_upload_id = NULL WHERE id = ?"
+      )
+      .bind(now, fileId),
     prepareReleaseUploadReservation(env.DB, fileId, now),
     prepareAuditLogInsert(
       env.DB,

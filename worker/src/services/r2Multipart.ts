@@ -9,9 +9,9 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import type { R2Config } from './r2ConfigRegistry'
 import {
   buildCompleteMultipartUploadXml,
-  extractXmlBlocks,
   extractXmlValue,
   normalizeCompleteMultipartParts,
+  parseListPartsXml,
 } from './s3Xml'
 import {
   buildS3HttpError,
@@ -112,14 +112,7 @@ export async function listParts(
   }
 
   const text = await readS3XmlText(response, 'S3 分片列表响应')
-  const parts = extractXmlBlocks(text, 'Part')
-    .map((block) => {
-      const partNumber = Number(extractXmlValue(block, 'PartNumber'))
-      const etag = extractXmlValue(block, 'ETag') || undefined
-      return { PartNumber: partNumber, ETag: etag }
-    })
-    .filter((part) => Number.isFinite(part.PartNumber) && Number(part.PartNumber) > 0)
-  return parts
+  return parseListPartsXml(text)
 }
 
 export async function completeMultipartUpload(

@@ -1,3 +1,4 @@
+import { withD1Retry } from '../utils/db'
 export type AuditEntry = {
   actorUserId?: string
   action: string
@@ -14,7 +15,7 @@ export function prepareAuditLogInsert(
   createdAt: string = new Date().toISOString()
 ): D1PreparedStatement {
   const id = crypto.randomUUID()
-  return db
+  return withD1Retry(db)
     .prepare(
       `INSERT INTO audit_logs (id, actor_user_id, action, target_type, target_id, ip, user_agent, metadata, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`

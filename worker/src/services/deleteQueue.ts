@@ -1,3 +1,4 @@
+import { withD1Retry } from '../utils/db'
 export type DeleteQueueFile = {
   id: string
   r2_key: string
@@ -8,7 +9,7 @@ export function prepareEnqueueFileDeletionIfNeeded(
   file: DeleteQueueFile,
   createdAt: string = new Date().toISOString()
 ): D1PreparedStatement {
-  return db
+  return withD1Retry(db)
     .prepare(
       `INSERT INTO delete_queue (id, file_id, r2_key, created_at)
        SELECT ?, ?, ?, ?

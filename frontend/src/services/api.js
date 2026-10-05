@@ -58,6 +58,17 @@ api.interceptors.response.use(
   }
 )
 
+// 原生 axios 调用（直传上传）绕过拦截器，这里补齐 401 重定向；
+// 错误提示仍由视图层 catch 统一处理，避免与拦截器双弹提示
+const handleNativeUploadError = (error) => {
+  const notice = resolveApiErrorNotice(error, { isAuthApi: false })
+  if (notice.action === 'redirect') {
+    const currentTarget = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    window.location.assign(buildLoginUrl(currentTarget))
+  }
+  return Promise.reject(error)
+}
+
 /**
  * API 方法集合
  *
@@ -306,7 +317,17 @@ export default {
    */
   initMultipartUpload: dedupRequest(
     (data) => api.post('/upload/multipart/init', data),
-    (data) => `multipart-init:${data.filename}:${data.size}`
+    (data) =>
+      [
+        'multipart-init',
+        data.filename,
+        data.size,
+        data.content_type,
+        data.expires_in,
+        data.require_login,
+        data.config_id,
+        data.dir,
+      ].join(':')
   ),
 
   /**
@@ -389,6 +410,7 @@ export default {
         },
       })
       .then((res) => res.data)
+      .catch(handleNativeUploadError)
   },
 
   // ========== 文件管理 ==========
@@ -548,16 +570,20 @@ export default {
     formData.append('config_id', configId)
     formData.append('path', path)
     formData.append('file', file)
-    return axios.post('/api/mount/upload', formData, {
-      withCredentials: true,
-      headers: { 'Content-Type': 'multipart/form-data' },
-      onUploadProgress: (progressEvent) => {
-        if (onProgress) {
-          const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total)
-          onProgress(percent, progressEvent.loaded, progressEvent.total)
-        }
-      },
-    })
+    return axios
+      .post('/api/mount/upload', formData, {
+        withCredentials: true,
+        timeout: 300000,
+        headers: { 'Content-Type': 'multipart/form-data' },
+        onUploadProgress: (progressEvent) => {
+          if (onProgress) {
+            const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total)
+            onProgress(percent, progressEvent.loaded, progressEvent.total)
+          }
+        },
+      })
+      .then((res) => res.data)
+      .catch(handleNativeUploadError)
   },
 
   /**

@@ -1,3 +1,4 @@
+import { withD1Retry } from '../../utils/db'
 import type { Env } from '../../config/env'
 import { getMaxFileSize } from '../../config/env'
 import { jsonResponse, parseJson, getUser, calcPresignedDownloadUrlTtlSeconds } from '../utils'
@@ -149,10 +150,12 @@ export function formatD1ErrorMessage(error: unknown): string {
 
 export async function markFileUploadDeleted(env: Env, fileId: string): Promise<void> {
   const now = new Date().toISOString()
-  await env.DB.batch([
-    env.DB.prepare(
-      "UPDATE files SET upload_status = 'deleted', deleted_at = ?, multipart_upload_id = NULL WHERE id = ?"
-    ).bind(now, fileId),
+  await withD1Retry(env.DB).batch([
+    withD1Retry(env.DB)
+      .prepare(
+        "UPDATE files SET upload_status = 'deleted', deleted_at = ?, multipart_upload_id = NULL WHERE id = ?"
+      )
+      .bind(now, fileId),
     prepareReleaseUploadReservation(env.DB, fileId, now),
   ])
 }
@@ -283,7 +286,8 @@ export async function allocateUploadFileIdentity(
       ? buildR2Key(r2ConfigId, `${cleanDir}/${resolvedFilename}`)
       : buildR2Key(r2ConfigId, resolvedFilename)
 
-    const occupied = await env.DB.prepare('SELECT id FROM files WHERE r2_key = ? LIMIT 1')
+    const occupied = await withD1Retry(env.DB)
+      .prepare('SELECT id FROM files WHERE r2_key = ? LIMIT 1')
       .bind(r2Key)
       .first('id')
     if (occupied) {
@@ -320,10 +324,11 @@ export async function createPendingUploadFileRecord(
   })
 
   const now = new Date().toISOString()
-  const result = await env.DB.prepare(
-    `INSERT INTO files (id, owner_id, filename, r2_key, size, content_type, expires_in, created_at, expires_at, upload_status, short_code, require_login, config_id)
+  const result = await withD1Retry(env.DB)
+    .prepare(
+      `INSERT INTO files (id, owner_id, filename, r2_key, size, content_type, expires_in, created_at, expires_at, upload_status, short_code, require_login, config_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`
-  )
+    )
     .bind(
       file.id,
       userId,

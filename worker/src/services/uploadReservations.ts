@@ -1,3 +1,4 @@
+import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
 import { getTotalStorage } from '../config/env'
 import { uploadConfigCapacityExceededError, userQuotaExceededError } from './uploadErrors'
@@ -19,7 +20,7 @@ function toNonNegativeNumber(value: unknown): number {
 
 export async function getCompletedUserUsedSpace(db: D1Database, userId: string): Promise<number> {
   const now = new Date().toISOString()
-  const result = await db
+  const result = await withD1Retry(db)
     .prepare(
       "SELECT COALESCE(SUM(size), 0) AS completedUsed FROM files WHERE owner_id = ? AND upload_status = 'completed' AND deleted_at IS NULL AND expires_at > ?"
     )
@@ -29,7 +30,7 @@ export async function getCompletedUserUsedSpace(db: D1Database, userId: string):
 }
 
 export async function getReservedUserSpace(db: D1Database, userId: string): Promise<number> {
-  const result = await db
+  const result = await withD1Retry(db)
     .prepare(
       "SELECT COALESCE(SUM(reserved_bytes), 0) AS reservedUsed FROM upload_reservations WHERE user_id = ? AND status = 'active'"
     )
@@ -51,7 +52,7 @@ export async function getCompletedConfigUsedSpace(
   configId: string
 ): Promise<number> {
   const prefix = `flares3/${configId}/%`
-  const result = await db
+  const result = await withD1Retry(db)
     .prepare(
       `SELECT COALESCE(SUM(size), 0) AS completedUsed
          FROM files
@@ -68,7 +69,7 @@ export async function getCompletedConfigUsedSpace(
 }
 
 export async function getReservedConfigSpace(db: D1Database, configId: string): Promise<number> {
-  const result = await db
+  const result = await withD1Retry(db)
     .prepare(
       "SELECT COALESCE(SUM(reserved_bytes), 0) AS reservedUsed FROM upload_reservations WHERE r2_config_id = ? AND status = 'active'"
     )
@@ -91,7 +92,7 @@ export async function cleanupOrphanUploadReservations(
 ): Promise<number> {
   const now = nowDate.toISOString()
   const cutoff = new Date(nowDate.getTime() - ORPHAN_UPLOAD_RESERVATION_GRACE_MS).toISOString()
-  const result = await db
+  const result = await withD1Retry(db)
     .prepare(
       `UPDATE upload_reservations
           SET status = 'released', updated_at = ?
@@ -107,7 +108,8 @@ export async function cleanupOrphanUploadReservations(
 }
 
 export async function getUploadConfigQuotaBytes(env: Env, configId: string): Promise<number> {
-  const r2Quota = await env.DB.prepare('SELECT quota_bytes FROM r2_configs WHERE id = ? LIMIT 1')
+  const r2Quota = await withD1Retry(env.DB)
+    .prepare('SELECT quota_bytes FROM r2_configs WHERE id = ? LIMIT 1')
     .bind(configId)
     .first('quota_bytes')
   const r2QuotaBytes = Number(r2Quota)
@@ -115,9 +117,8 @@ export async function getUploadConfigQuotaBytes(env: Env, configId: string): Pro
     return r2QuotaBytes
   }
 
-  const webdavQuota = await env.DB.prepare(
-    'SELECT quota_bytes FROM webdav_configs WHERE id = ? LIMIT 1'
-  )
+  const webdavQuota = await withD1Retry(env.DB)
+    .prepare('SELECT quota_bytes FROM webdav_configs WHERE id = ? LIMIT 1')
     .bind(configId)
     .first('quota_bytes')
   const webdavQuotaBytes = Number(webdavQuota)
@@ -135,8 +136,9 @@ export async function reserveUploadCapacity(
   const { fileId, userId, userQuotaBytes, r2ConfigId, declaredSize } = input
   const now = new Date().toISOString()
   const quotaBytes = await getUploadConfigQuotaBytes(env, r2ConfigId)
-  const result = await env.DB.prepare(
-    `INSERT INTO upload_reservations
+  const result = await withD1Retry(env.DB)
+    .prepare(
+      `INSERT INTO upload_reservations
        (file_id, user_id, r2_config_id, reserved_bytes, status, created_at, updated_at)
        SELECT ?, ?, ?, ?, 'active', ?, ?
        WHERE (
@@ -176,7 +178,7 @@ export async function reserveUploadCapacity(
            0
          ) + ? <= ?
        )`
-  )
+    )
     .bind(
       fileId,
       userId,
@@ -229,7 +231,7 @@ export function prepareUploadReservationTransition(
   nextStatus: 'consumed' | 'released',
   updatedAt: string = new Date().toISOString()
 ): D1PreparedStatement {
-  return db
+  return withD1Retry(db)
     .prepare(
       "UPDATE upload_reservations SET status = ?, updated_at = ? WHERE file_id = ? AND status = 'active'"
     )

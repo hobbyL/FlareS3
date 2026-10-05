@@ -1,3 +1,4 @@
+import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
 import { jsonResponse, parseJson, getUser, requestBodyPolicyErrorResponse } from './utils'
 import { encryptString, validateBase64KeyLength } from '../services/crypto'
@@ -31,10 +32,12 @@ import { validateExternalEndpoint } from '../services/endpointPolicy'
  * }
  */
 export async function status(_request: Request, env: Env): Promise<Response> {
-  const endpoint = await env.DB.prepare('SELECT value FROM system_config WHERE key = ?')
+  const endpoint = await withD1Retry(env.DB)
+    .prepare('SELECT value FROM system_config WHERE key = ?')
     .bind('r2_endpoint')
     .first('value')
-  const bucketName = await env.DB.prepare('SELECT value FROM system_config WHERE key = ?')
+  const bucketName = await withD1Retry(env.DB)
+    .prepare('SELECT value FROM system_config WHERE key = ?')
     .bind('r2_bucket_name')
     .first('value')
   if (!endpoint || !bucketName) {
@@ -120,10 +123,11 @@ export async function saveConfig(request: Request, env: Env): Promise<Response> 
       ['r2_secret_access_key_enc', secretEnc],
     ]
     for (const [key, value] of statements) {
-      await env.DB.prepare(
-        `INSERT INTO system_config (key, value, updated_at)
+      await withD1Retry(env.DB)
+        .prepare(
+          `INSERT INTO system_config (key, value, updated_at)
          VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = ?`
-      )
+        )
         .bind(key, value, now, value, now)
         .run()
     }

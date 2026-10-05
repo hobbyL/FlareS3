@@ -1,3 +1,4 @@
+import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
 import {
   extractR2ConfigIdFromKey,
@@ -65,11 +66,12 @@ export async function cleanupExpired(
   const startedAtMs = Date.now()
   const now = nowDate.toISOString()
   const orphanReservationsReleased = await cleanupOrphanUploadReservations(env.DB, nowDate)
-  const { results } = await env.DB.prepare(
-    `SELECT id, r2_key, upload_status, multipart_upload_id, config_id FROM files
+  const { results } = await withD1Retry(env.DB)
+    .prepare(
+      `SELECT id, r2_key, upload_status, multipart_upload_id, config_id FROM files
      WHERE expires_at < ? AND upload_status IN ('pending','uploading','completed') AND deleted_at IS NULL
      LIMIT ?`
-  )
+    )
     .bind(now, BATCH_SIZE)
     .all()
   if (!results.length) {
@@ -93,10 +95,12 @@ export async function cleanupExpired(
       const explicitProviderConfigId = getExplicitProviderConfigId(row)
       if (explicitProviderConfigId) {
         await deleteProviderObject(env, explicitProviderConfigId, r2Key)
-        await env.DB.batch([
-          env.DB.prepare(
-            `UPDATE files SET upload_status = 'deleted', deleted_at = ?, multipart_upload_id = NULL WHERE id = ?`
-          ).bind(now, row.id),
+        await withD1Retry(env.DB).batch([
+          withD1Retry(env.DB)
+            .prepare(
+              `UPDATE files SET upload_status = 'deleted', deleted_at = ?, multipart_upload_id = NULL WHERE id = ?`
+            )
+            .bind(now, row.id),
           prepareReleaseUploadReservation(env.DB, String(row.id), now),
         ])
         succeeded += 1
@@ -124,10 +128,12 @@ export async function cleanupExpired(
       } else {
         await deleteObject(loaded.config, r2Key)
       }
-      await env.DB.batch([
-        env.DB.prepare(
-          `UPDATE files SET upload_status = 'deleted', deleted_at = ?, multipart_upload_id = NULL WHERE id = ?`
-        ).bind(now, row.id),
+      await withD1Retry(env.DB).batch([
+        withD1Retry(env.DB)
+          .prepare(
+            `UPDATE files SET upload_status = 'deleted', deleted_at = ?, multipart_upload_id = NULL WHERE id = ?`
+          )
+          .bind(now, row.id),
         prepareReleaseUploadReservation(env.DB, String(row.id), now),
       ])
       succeeded += 1

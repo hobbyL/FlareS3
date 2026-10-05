@@ -1,3 +1,4 @@
+import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
 import type { AuthUser } from '../middleware/authSession'
 import { getUser, invalidJsonBodyResponse, jsonResponse, parseJson } from './utils'
@@ -54,9 +55,10 @@ async function loadFileAndAuthorize(
     return { response: jsonResponse({ error: 'id 不能为空' }, 400) }
   }
 
-  const file = await env.DB.prepare(
-    'SELECT id, owner_id, filename, upload_status, expires_at FROM files WHERE id = ? AND upload_status != ? LIMIT 1'
-  )
+  const file = await withD1Retry(env.DB)
+    .prepare(
+      'SELECT id, owner_id, filename, upload_status, expires_at FROM files WHERE id = ? AND upload_status != ? LIMIT 1'
+    )
     .bind(fileId, 'deleted')
     .first()
 
@@ -148,12 +150,13 @@ export async function getFileShare(request: Request, env: Env, fileId: string): 
     return auth.response
   }
 
-  const share = await env.DB.prepare(
-    `SELECT id, file_id, owner_id, share_code, password_hash, expires_in, expires_at, max_views, views, created_at, updated_at
+  const share = await withD1Retry(env.DB)
+    .prepare(
+      `SELECT id, file_id, owner_id, share_code, password_hash, expires_in, expires_at, max_views, views, created_at, updated_at
      FROM file_shares
      WHERE file_id = ?
      LIMIT 1`
-  )
+    )
     .bind(fileId)
     .first()
 
@@ -277,9 +280,10 @@ export async function upsertFileShare(
 
   const now = new Date().toISOString()
 
-  const existing = await env.DB.prepare(
-    'SELECT id, owner_id, share_code, password_hash, views FROM file_shares WHERE file_id = ? LIMIT 1'
-  )
+  const existing = await withD1Retry(env.DB)
+    .prepare(
+      'SELECT id, owner_id, share_code, password_hash, views FROM file_shares WHERE file_id = ? LIMIT 1'
+    )
     .bind(fileId)
     .first()
 
@@ -300,10 +304,11 @@ export async function upsertFileShare(
 
     for (let i = 0; i < 10; i += 1) {
       const shareCode = generateRandomCode(SHARE_SHORT_CODE_LENGTH)
-      const result = await env.DB.prepare(
-        `INSERT INTO file_shares (id, file_id, owner_id, share_code, password_hash, expires_in, expires_at, max_views, views, created_at, updated_at)
+      const result = await withD1Retry(env.DB)
+        .prepare(
+          `INSERT INTO file_shares (id, file_id, owner_id, share_code, password_hash, expires_in, expires_at, max_views, views, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
-      )
+        )
         .bind(
           id,
           fileId,
@@ -319,12 +324,13 @@ export async function upsertFileShare(
         .run()
 
       if (!result.error) {
-        const saved = await env.DB.prepare(
-          `SELECT id, file_id, owner_id, share_code, password_hash, expires_in, expires_at, max_views, views, created_at, updated_at
+        const saved = await withD1Retry(env.DB)
+          .prepare(
+            `SELECT id, file_id, owner_id, share_code, password_hash, expires_in, expires_at, max_views, views, created_at, updated_at
            FROM file_shares
            WHERE file_id = ?
            LIMIT 1`
-        )
+          )
           .bind(fileId)
           .first()
 
@@ -369,19 +375,19 @@ export async function upsertFileShare(
       const loopParams = params.slice()
       ;(loopParams as any)[0] = code
 
-      const result = await env.DB.prepare(
-        `UPDATE file_shares SET ${updates.join(', ')} WHERE id = ?`
-      )
+      const result = await withD1Retry(env.DB)
+        .prepare(`UPDATE file_shares SET ${updates.join(', ')} WHERE id = ?`)
         .bind(...loopParams)
         .run()
 
       if (!result.error) {
-        const saved = await env.DB.prepare(
-          `SELECT id, file_id, owner_id, share_code, password_hash, expires_in, expires_at, max_views, views, created_at, updated_at
+        const saved = await withD1Retry(env.DB)
+          .prepare(
+            `SELECT id, file_id, owner_id, share_code, password_hash, expires_in, expires_at, max_views, views, created_at, updated_at
            FROM file_shares
            WHERE id = ?
            LIMIT 1`
-        )
+          )
           .bind(shareId)
           .first()
 
@@ -398,9 +404,8 @@ export async function upsertFileShare(
     return jsonResponse({ error: '重置分享链接失败' }, 500)
   }
 
-  const updateResult = await env.DB.prepare(
-    `UPDATE file_shares SET ${updates.join(', ')} WHERE id = ?`
-  )
+  const updateResult = await withD1Retry(env.DB)
+    .prepare(`UPDATE file_shares SET ${updates.join(', ')} WHERE id = ?`)
     .bind(...params)
     .run()
 
@@ -408,12 +413,13 @@ export async function upsertFileShare(
     return jsonResponse({ error: '保存分享设置失败' }, 400)
   }
 
-  const saved = await env.DB.prepare(
-    `SELECT id, file_id, owner_id, share_code, password_hash, expires_in, expires_at, max_views, views, created_at, updated_at
+  const saved = await withD1Retry(env.DB)
+    .prepare(
+      `SELECT id, file_id, owner_id, share_code, password_hash, expires_in, expires_at, max_views, views, created_at, updated_at
      FROM file_shares
      WHERE id = ?
      LIMIT 1`
-  )
+    )
     .bind(shareId)
     .first()
 
@@ -462,7 +468,8 @@ export async function deleteFileShare(
     return auth.response
   }
 
-  const share = await env.DB.prepare('SELECT id FROM file_shares WHERE file_id = ? LIMIT 1')
+  const share = await withD1Retry(env.DB)
+    .prepare('SELECT id FROM file_shares WHERE file_id = ? LIMIT 1')
     .bind(fileId)
     .first()
 
@@ -470,7 +477,8 @@ export async function deleteFileShare(
     return jsonResponse({ success: true, deleted: false })
   }
 
-  const result = await env.DB.prepare('DELETE FROM file_shares WHERE id = ?')
+  const result = await withD1Retry(env.DB)
+    .prepare('DELETE FROM file_shares WHERE id = ?')
     .bind(String((share as any).id))
     .run()
 
@@ -505,8 +513,9 @@ async function resolveFileShareRecord(
   env: Env,
   code: string
 ): Promise<ResolveFileShareRecordResult> {
-  const row = await env.DB.prepare(
-    `SELECT s.id AS share_id, s.file_id, s.share_code, s.password_hash, s.expires_at AS share_expires_at, s.max_views, s.views,
+  const row = await withD1Retry(env.DB)
+    .prepare(
+      `SELECT s.id AS share_id, s.file_id, s.share_code, s.password_hash, s.expires_at AS share_expires_at, s.max_views, s.views,
             f.filename, f.r2_key, f.expires_at AS file_expires_at, f.upload_status, f.deleted_at, f.config_id,
             u.status AS owner_status
      FROM file_shares s
@@ -514,7 +523,7 @@ async function resolveFileShareRecord(
      LEFT JOIN users u ON u.id = s.owner_id
      WHERE s.share_code = ?
      LIMIT 1`
-  )
+    )
     .bind(code)
     .first()
 

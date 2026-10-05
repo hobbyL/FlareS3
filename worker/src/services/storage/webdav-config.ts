@@ -1,3 +1,4 @@
+import { withD1Retry } from '../../utils/db'
 /**
  * WebDAV 配置 CRUD — 管理 webdav_configs 表。
  *
@@ -52,7 +53,7 @@ export type LoadedWebDAVConfig = {
 // ── 读取 ──
 
 export async function listWebDAVConfigs(db: D1Database): Promise<WebDAVConfigSummary[]> {
-  const rows = await db
+  const rows = await withD1Retry(db)
     .prepare(
       'SELECT id, name, type, endpoint, mount_id, remote_path, quota_bytes, created_at, updated_at FROM webdav_configs ORDER BY created_at DESC'
     )
@@ -92,9 +93,10 @@ export async function loadWebDAVConfigById(
   const masterKey = String(env.R2_MASTER_KEY || '').trim()
   if (!masterKey) return null
 
-  const row = await env.DB.prepare(
-    'SELECT id, type, endpoint, mount_id, remote_path, username_enc, password_enc FROM webdav_configs WHERE id = ? LIMIT 1'
-  )
+  const row = await withD1Retry(env.DB)
+    .prepare(
+      'SELECT id, type, endpoint, mount_id, remote_path, username_enc, password_enc FROM webdav_configs WHERE id = ? LIMIT 1'
+    )
     .bind(id)
     .first<{
       id: string
@@ -146,10 +148,11 @@ export async function createWebDAVConfig(
   const endpoint = normalizeEndpointOrThrow(body.endpoint)
   const remotePath = normalizeRemotePathOrThrow(body.remote_path)
 
-  const result = await env.DB.prepare(
-    `INSERT INTO webdav_configs (id, name, type, endpoint, mount_id, remote_path, username_enc, password_enc, quota_bytes, created_at, updated_at)
+  const result = await withD1Retry(env.DB)
+    .prepare(
+      `INSERT INTO webdav_configs (id, name, type, endpoint, mount_id, remote_path, username_enc, password_enc, quota_bytes, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  )
+    )
     .bind(
       id,
       body.name,
@@ -182,9 +185,10 @@ export async function updateWebDAVConfig(
   const masterKey = String(env.R2_MASTER_KEY || '').trim()
   if (!masterKey) throw new StorageConfigError('缺少 R2_MASTER_KEY')
 
-  const existing = await env.DB.prepare(
-    'SELECT id, name, type, endpoint, mount_id, remote_path, quota_bytes, username_enc, password_enc FROM webdav_configs WHERE id = ? LIMIT 1'
-  )
+  const existing = await withD1Retry(env.DB)
+    .prepare(
+      'SELECT id, name, type, endpoint, mount_id, remote_path, quota_bytes, username_enc, password_enc FROM webdav_configs WHERE id = ? LIMIT 1'
+    )
     .bind(id)
     .first<{
       id: string
@@ -238,11 +242,12 @@ export async function updateWebDAVConfig(
   }
 
   const now = new Date().toISOString()
-  await env.DB.prepare(
-    `UPDATE webdav_configs
+  await withD1Retry(env.DB)
+    .prepare(
+      `UPDATE webdav_configs
      SET name = ?, type = ?, endpoint = ?, mount_id = ?, remote_path = ?, quota_bytes = ?, username_enc = ?, password_enc = ?, updated_at = ?
      WHERE id = ?`
-  )
+    )
     .bind(
       nextName,
       nextType,
@@ -261,7 +266,7 @@ export async function updateWebDAVConfig(
 // ── 删除 ──
 
 export async function deleteWebDAVConfig(db: D1Database, id: string): Promise<void> {
-  await db.prepare('DELETE FROM webdav_configs WHERE id = ?').bind(id).run()
+  await withD1Retry(db).prepare('DELETE FROM webdav_configs WHERE id = ?').bind(id).run()
 }
 
 // ── 错误类型 ──

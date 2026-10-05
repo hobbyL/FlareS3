@@ -46,6 +46,29 @@ export function decodeXmlEntities(value: string): string {
   return output
 }
 
+export function encodeXmlEntities(value: string): string {
+  const input = String(value ?? '')
+  if (!/[&<>"']/.test(input)) return input
+
+  return input
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&apos;')
+}
+
+export function parseListPartsXml(xml: string): Array<{ PartNumber: number; ETag?: string }> {
+  return extractXmlBlocks(xml, 'Part')
+    .map((block) => {
+      const partNumber = Number(extractXmlValue(block, 'PartNumber'))
+      const etagRaw = extractXmlValue(block, 'ETag')
+      const etag = etagRaw ? decodeXmlEntities(etagRaw) : undefined
+      return { PartNumber: partNumber, ETag: etag }
+    })
+    .filter((part) => Number.isFinite(part.PartNumber) && Number(part.PartNumber) > 0)
+}
+
 export function normalizeCompleteMultipartParts(
   parts: { PartNumber?: number; ETag?: string }[]
 ): NormalizedMultipartPart[] {
@@ -65,7 +88,9 @@ export function buildCompleteMultipartUploadXml(parts: NormalizedMultipartPart[]
     parts
       .map(
         (part) =>
-          `<Part><PartNumber>${part.partNumber}</PartNumber><ETag>${part.etag}</ETag></Part>`
+          `<Part><PartNumber>${part.partNumber}</PartNumber><ETag>${encodeXmlEntities(
+            part.etag
+          )}</ETag></Part>`
       )
       .join('') +
     `</CompleteMultipartUpload>`

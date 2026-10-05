@@ -1,3 +1,4 @@
+import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
 import { invalidJsonBodyResponse, jsonResponse, parseJson, getUser } from './utils'
 import { logAudit } from '../services/audit'
@@ -85,13 +86,15 @@ export async function listTexts(request: Request, env: Env): Promise<Response> {
 
   const [totalRow, rows] = await Promise.all([
     measureRouteStep(timings, 'dbCount', () =>
-      env.DB.prepare(`SELECT COUNT(*) AS total FROM texts t ${whereClause}`)
+      withD1Retry(env.DB)
+        .prepare(`SELECT COUNT(*) AS total FROM texts t ${whereClause}`)
         .bind(...params)
         .first('total')
     ),
     measureRouteStep(timings, 'dbRows', () =>
-      env.DB.prepare(
-        `SELECT t.id, t.owner_id, u.username AS owner_username, t.title,
+      withD1Retry(env.DB)
+        .prepare(
+          `SELECT t.id, t.owner_id, u.username AS owner_username, t.title,
                 SUBSTR(t.content, 1, 200) AS content_preview,
                 LENGTH(t.content) AS content_length,
                 t.created_at, t.updated_at
@@ -100,7 +103,7 @@ export async function listTexts(request: Request, env: Env): Promise<Response> {
          ${whereClause}
          ORDER BY t.updated_at DESC
          LIMIT ? OFFSET ?`
-      )
+        )
         .bind(...params, limit, offset)
         .all()
     ),
@@ -152,13 +155,14 @@ export async function getText(request: Request, env: Env, textId: string): Promi
   if (!user) return jsonResponse({ error: '未授权' }, 401)
   if (!textId) return jsonResponse({ error: 'id 不能为空' }, 400)
 
-  const row = await env.DB.prepare(
-    `SELECT t.id, t.owner_id, u.username AS owner_username, t.title, t.content, t.created_at, t.updated_at
+  const row = await withD1Retry(env.DB)
+    .prepare(
+      `SELECT t.id, t.owner_id, u.username AS owner_username, t.title, t.content, t.created_at, t.updated_at
      FROM texts t
      LEFT JOIN users u ON u.id = t.owner_id
      WHERE t.id = ? AND t.deleted_at IS NULL
      LIMIT 1`
-  )
+    )
     .bind(textId)
     .first()
 
@@ -225,10 +229,11 @@ export async function createText(request: Request, env: Env): Promise<Response> 
   const id = crypto.randomUUID()
   const now = new Date().toISOString()
 
-  const result = await env.DB.prepare(
-    `INSERT INTO texts (id, owner_id, title, content, created_at, updated_at)
+  const result = await withD1Retry(env.DB)
+    .prepare(
+      `INSERT INTO texts (id, owner_id, title, content, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?)`
-  )
+    )
     .bind(id, user.id, title, content, now, now)
     .run()
 
@@ -279,9 +284,8 @@ export async function updateText(request: Request, env: Env, textId: string): Pr
   if (!user) return jsonResponse({ error: '未授权' }, 401)
   if (!textId) return jsonResponse({ error: 'id 不能为空' }, 400)
 
-  const existing = await env.DB.prepare(
-    'SELECT id, owner_id FROM texts WHERE id = ? AND deleted_at IS NULL LIMIT 1'
-  )
+  const existing = await withD1Retry(env.DB)
+    .prepare('SELECT id, owner_id FROM texts WHERE id = ? AND deleted_at IS NULL LIMIT 1')
     .bind(textId)
     .first()
 
@@ -330,7 +334,8 @@ export async function updateText(request: Request, env: Env, textId: string): Pr
   params.push(now)
   params.push(textId)
 
-  const result = await env.DB.prepare(`UPDATE texts SET ${updates.join(', ')} WHERE id = ?`)
+  const result = await withD1Retry(env.DB)
+    .prepare(`UPDATE texts SET ${updates.join(', ')} WHERE id = ?`)
     .bind(...params)
     .run()
 
@@ -378,9 +383,8 @@ export async function deleteText(request: Request, env: Env, textId: string): Pr
   if (!user) return jsonResponse({ error: '未授权' }, 401)
   if (!textId) return jsonResponse({ error: 'id 不能为空' }, 400)
 
-  const existing = await env.DB.prepare(
-    'SELECT id, owner_id FROM texts WHERE id = ? AND deleted_at IS NULL LIMIT 1'
-  )
+  const existing = await withD1Retry(env.DB)
+    .prepare('SELECT id, owner_id FROM texts WHERE id = ? AND deleted_at IS NULL LIMIT 1')
     .bind(textId)
     .first()
 
@@ -393,9 +397,8 @@ export async function deleteText(request: Request, env: Env, textId: string): Pr
   }
 
   const now = new Date().toISOString()
-  const result = await env.DB.prepare(
-    'UPDATE texts SET deleted_at = ?, updated_at = ? WHERE id = ?'
-  )
+  const result = await withD1Retry(env.DB)
+    .prepare('UPDATE texts SET deleted_at = ?, updated_at = ? WHERE id = ?')
     .bind(now, now, textId)
     .run()
 

@@ -1,3 +1,4 @@
+import { withD1Retry } from '../../utils/db'
 import type { Env } from '../../config/env'
 import { getMaxFileSize } from '../../config/env'
 import { jsonResponse, parseJson, getUser } from '../utils'
@@ -208,7 +209,8 @@ export async function initMultipart(request: Request, env: Env): Promise<Respons
       throw error
     }
 
-    await env.DB.prepare('UPDATE files SET upload_status = ?, multipart_upload_id = ? WHERE id = ?')
+    await withD1Retry(env.DB)
+      .prepare('UPDATE files SET upload_status = ?, multipart_upload_id = ? WHERE id = ?')
       .bind('uploading', uploadId, file.id)
       .run()
 
@@ -263,9 +265,10 @@ export async function presignMultipart(request: Request, env: Env): Promise<Resp
       part_number: number
     }>(request)
 
-    const file = await env.DB.prepare(
-      'SELECT id, owner_id, r2_key, expires_at, upload_status, multipart_upload_id, size FROM files WHERE id = ?'
-    )
+    const file = await withD1Retry(env.DB)
+      .prepare(
+        'SELECT id, owner_id, r2_key, expires_at, upload_status, multipart_upload_id, size FROM files WHERE id = ?'
+      )
       .bind(body.file_id)
       .first()
 
@@ -365,9 +368,10 @@ export async function getMultipartParts(request: Request, env: Env): Promise<Res
       )
     }
 
-    const file = await env.DB.prepare(
-      'SELECT id, owner_id, r2_key, expires_at, upload_status, multipart_upload_id, size FROM files WHERE id = ?'
-    )
+    const file = await withD1Retry(env.DB)
+      .prepare(
+        'SELECT id, owner_id, r2_key, expires_at, upload_status, multipart_upload_id, size FROM files WHERE id = ?'
+      )
       .bind(fileId)
       .first()
 
@@ -451,9 +455,10 @@ export async function completeMultipart(request: Request, env: Env): Promise<Res
       parts?: Array<{ part_number: number; etag: string }>
     }>(request)
 
-    const file = await env.DB.prepare(
-      'SELECT id, owner_id, filename, r2_key, expires_at, short_code, require_login, upload_status, multipart_upload_id, size FROM files WHERE id = ?'
-    )
+    const file = await withD1Retry(env.DB)
+      .prepare(
+        'SELECT id, owner_id, filename, r2_key, expires_at, short_code, require_login, upload_status, multipart_upload_id, size FROM files WHERE id = ?'
+      )
       .bind(body.file_id)
       .first()
 
@@ -531,10 +536,12 @@ export async function completeMultipart(request: Request, env: Env): Promise<Res
     }
 
     const now = new Date().toISOString()
-    await env.DB.batch([
-      env.DB.prepare(
-        'UPDATE files SET size = ?, upload_status = ?, multipart_upload_id = NULL WHERE id = ?'
-      ).bind(sizeValidation.actualSize, 'completed', file.id),
+    await withD1Retry(env.DB).batch([
+      withD1Retry(env.DB)
+        .prepare(
+          'UPDATE files SET size = ?, upload_status = ?, multipart_upload_id = NULL WHERE id = ?'
+        )
+        .bind(sizeValidation.actualSize, 'completed', file.id),
       prepareConsumeUploadReservation(env.DB, String(file.id), now),
     ])
 
@@ -605,9 +612,10 @@ export async function abortMultipart(request: Request, env: Env): Promise<Respon
       return uploadErrorResponse(multipartFileIdRequiredError())
     }
 
-    const file = await env.DB.prepare(
-      'SELECT id, owner_id, r2_key, upload_status, multipart_upload_id FROM files WHERE id = ? LIMIT 1'
-    )
+    const file = await withD1Retry(env.DB)
+      .prepare(
+        'SELECT id, owner_id, r2_key, upload_status, multipart_upload_id FROM files WHERE id = ? LIMIT 1'
+      )
       .bind(fileId)
       .first()
 
@@ -656,16 +664,18 @@ export async function abortMultipart(request: Request, env: Env): Promise<Respon
     const now = new Date().toISOString()
     const statements: D1PreparedStatement[] = queued
       ? [
-          env.DB.prepare(
-            "UPDATE files SET upload_status = 'deleted', deleted_at = ? WHERE id = ?"
-          ).bind(now, fileId),
+          withD1Retry(env.DB)
+            .prepare("UPDATE files SET upload_status = 'deleted', deleted_at = ? WHERE id = ?")
+            .bind(now, fileId),
           prepareEnqueueFileDeletionIfNeeded(env.DB, { id: fileId, r2_key: r2Key }, now),
           prepareReleaseUploadReservation(env.DB, fileId, now),
         ]
       : [
-          env.DB.prepare(
-            "UPDATE files SET upload_status = 'deleted', deleted_at = ?, multipart_upload_id = NULL WHERE id = ?"
-          ).bind(now, fileId),
+          withD1Retry(env.DB)
+            .prepare(
+              "UPDATE files SET upload_status = 'deleted', deleted_at = ?, multipart_upload_id = NULL WHERE id = ?"
+            )
+            .bind(now, fileId),
           prepareReleaseUploadReservation(env.DB, fileId, now),
         ]
 
@@ -684,7 +694,7 @@ export async function abortMultipart(request: Request, env: Env): Promise<Respon
         now
       )
     )
-    await env.DB.batch(statements)
+    await withD1Retry(env.DB).batch(statements)
 
     return jsonResponse({ success: true, queued })
   } catch (error) {

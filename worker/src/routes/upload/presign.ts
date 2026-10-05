@@ -1,3 +1,4 @@
+import { withD1Retry } from '../../utils/db'
 import type { Env } from '../../config/env'
 import { getMaxFileSize } from '../../config/env'
 import { jsonResponse, parseJson, getUser, calcPresignedDownloadUrlTtlSeconds } from '../utils'
@@ -201,9 +202,10 @@ export async function confirmUpload(request: Request, env: Env): Promise<Respons
   try {
     const body = await parseJson<{ file_id: string }>(request)
 
-    const file = await env.DB.prepare(
-      'SELECT id, owner_id, filename, r2_key, expires_at, short_code, require_login, size FROM files WHERE id = ? LIMIT 1'
-    )
+    const file = await withD1Retry(env.DB)
+      .prepare(
+        'SELECT id, owner_id, filename, r2_key, expires_at, short_code, require_login, size FROM files WHERE id = ? LIMIT 1'
+      )
       .bind(body.file_id)
       .first()
 
@@ -235,12 +237,10 @@ export async function confirmUpload(request: Request, env: Env): Promise<Respons
     }
 
     const now = new Date().toISOString()
-    await env.DB.batch([
-      env.DB.prepare('UPDATE files SET size = ?, upload_status = ? WHERE id = ?').bind(
-        sizeValidation.actualSize,
-        'completed',
-        body.file_id
-      ),
+    await withD1Retry(env.DB).batch([
+      withD1Retry(env.DB)
+        .prepare('UPDATE files SET size = ?, upload_status = ? WHERE id = ?')
+        .bind(sizeValidation.actualSize, 'completed', body.file_id),
       prepareConsumeUploadReservation(env.DB, body.file_id, now),
     ])
 

@@ -5,7 +5,7 @@ import {
   type VerifiedAuthToken,
 } from '../services/authToken'
 import { hashToken } from '../utils/token'
-import { queryWithRetry } from '../utils/db'
+import { withD1Retry } from '../utils/db'
 
 const COOKIE_NAME = 'flares3_session'
 const SESSION_CACHE_TTL_MS = 15 * 1000
@@ -128,17 +128,8 @@ function cacheSession(tokenHash: string, session: SessionLookupResult): void {
 }
 
 async function querySession(env: Env, tokenHash: string): Promise<SessionLookupResult | null> {
-  const result = await queryWithRetry<{
-    session_id: string
-    expires_at: string
-    revoked_at: string | null
-    user_id: string
-    username: string
-    role: string
-    status: string
-    quota_bytes: number
-  }>(
-    env.DB.prepare(
+  const result = await withD1Retry(env.DB)
+    .prepare(
       `SELECT s.id AS session_id,
               s.expires_at,
               s.revoked_at,
@@ -151,9 +142,18 @@ async function querySession(env: Env, tokenHash: string): Promise<SessionLookupR
          INNER JOIN users u ON u.id = s.user_id
         WHERE s.token_hash = ?
         LIMIT 1`
-    ).bind(tokenHash),
-    { maxRetries: 2, timeoutMs: 5000, operation: 'first' }
-  )
+    )
+    .bind(tokenHash)
+    .first<{
+      session_id: string
+      expires_at: string
+      revoked_at: string | null
+      user_id: string
+      username: string
+      role: string
+      status: string
+      quota_bytes: number
+    }>()
 
   if (!result || result.revoked_at) {
     return null

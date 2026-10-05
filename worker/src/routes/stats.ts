@@ -1,3 +1,4 @@
+import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
 import { getTotalStorage } from '../config/env'
 import { formatBytes } from '../utils/format'
@@ -37,9 +38,10 @@ export async function getStats(request: Request, env: Env): Promise<Response> {
     : "owner_id = ? AND upload_status = 'completed' AND deleted_at IS NULL"
   const params = isAdmin ? [] : [user.id]
 
-  const row = await env.DB.prepare(
-    `SELECT COALESCE(SUM(size), 0) AS usedSpace, COUNT(*) AS fileCount FROM files WHERE ${where}`
-  )
+  const row = await withD1Retry(env.DB)
+    .prepare(
+      `SELECT COALESCE(SUM(size), 0) AS usedSpace, COUNT(*) AS fileCount FROM files WHERE ${where}`
+    )
     .bind(...params)
     .first()
 
@@ -51,15 +53,13 @@ export async function getStats(request: Request, env: Env): Promise<Response> {
   today.setHours(24, 0, 0, 0)
   const nextWeek = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
 
-  const expiringToday = await env.DB.prepare(
-    `SELECT COUNT(*) AS count FROM files WHERE ${where} AND expires_at < ?`
-  )
+  const expiringToday = await withD1Retry(env.DB)
+    .prepare(`SELECT COUNT(*) AS count FROM files WHERE ${where} AND expires_at < ?`)
     .bind(...params, today.toISOString())
     .first('count')
 
-  const expiringThisWeek = await env.DB.prepare(
-    `SELECT COUNT(*) AS count FROM files WHERE ${where} AND expires_at < ?`
-  )
+  const expiringThisWeek = await withD1Retry(env.DB)
+    .prepare(`SELECT COUNT(*) AS count FROM files WHERE ${where} AND expires_at < ?`)
     .bind(...params, nextWeek.toISOString())
     .first('count')
 

@@ -1,3 +1,4 @@
+import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
 import { jsonResponse, getUser, calcPresignedDownloadUrlTtlSeconds } from './utils'
 import { generateDownloadUrl, resolveR2ConfigForKey } from '../services/r2'
@@ -145,19 +146,21 @@ export async function listFiles(request: Request, env: Env): Promise<Response> {
 
   const [totalRow, rows] = await Promise.all([
     measureRouteStep(timings, 'dbCount', () =>
-      env.DB.prepare(`SELECT COUNT(*) AS total FROM files f ${whereClause}`)
+      withD1Retry(env.DB)
+        .prepare(`SELECT COUNT(*) AS total FROM files f ${whereClause}`)
         .bind(...params)
         .first('total')
     ),
     measureRouteStep(timings, 'dbRows', () =>
-      env.DB.prepare(
-        `SELECT f.id, f.owner_id, u.username AS owner_username, f.filename, f.r2_key, f.size, f.content_type, f.expires_in, f.created_at, f.expires_at, f.upload_status, f.short_code, f.require_login, f.config_id
+      withD1Retry(env.DB)
+        .prepare(
+          `SELECT f.id, f.owner_id, u.username AS owner_username, f.filename, f.r2_key, f.size, f.content_type, f.expires_in, f.created_at, f.expires_at, f.upload_status, f.short_code, f.require_login, f.config_id
          FROM files f
          LEFT JOIN users u ON u.id = f.owner_id
          ${whereClause}
          ORDER BY ${sortColumn} ${sortDir}
          LIMIT ? OFFSET ?`
-      )
+        )
         .bind(...params, limit, offset)
         .all()
     ),
@@ -314,19 +317,21 @@ export async function listTrashFiles(request: Request, env: Env): Promise<Respon
 
   const [totalRow, rows] = await Promise.all([
     measureRouteStep(timings, 'dbCount', () =>
-      env.DB.prepare(`SELECT COUNT(*) AS total FROM files f ${whereClause}`)
+      withD1Retry(env.DB)
+        .prepare(`SELECT COUNT(*) AS total FROM files f ${whereClause}`)
         .bind(...params)
         .first('total')
     ),
     measureRouteStep(timings, 'dbRows', () =>
-      env.DB.prepare(
-        `SELECT f.id, f.owner_id, u.username AS owner_username, f.filename, f.r2_key, f.size, f.content_type, f.expires_in, f.created_at, f.expires_at, f.upload_status, f.short_code, f.require_login, f.deleted_at, f.config_id
+      withD1Retry(env.DB)
+        .prepare(
+          `SELECT f.id, f.owner_id, u.username AS owner_username, f.filename, f.r2_key, f.size, f.content_type, f.expires_in, f.created_at, f.expires_at, f.upload_status, f.short_code, f.require_login, f.deleted_at, f.config_id
          FROM files f
          LEFT JOIN users u ON u.id = f.owner_id
          ${whereClause}
          ORDER BY ${sortColumn} ${sortDir}
          LIMIT ? OFFSET ?`
-      )
+        )
         .bind(...params, limit, offset)
         .all()
     ),
