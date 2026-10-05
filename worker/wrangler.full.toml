@@ -35,6 +35,8 @@ TOTAL_STORAGE = "10737418240"
 # UPSTREAM_FETCH_READONLY_RETRIES = "1"             # 只读超时重试次数，默认 1
 # 访问日志开关（可选）：设为 "1" 时额外输出 4xx/2xx 结构化请求日志，缺省仅记录 5xx。
 # LOG_ACCESS = "1"
+# 调试响应头开关（可选）：设为 "1" 时在响应中追加 Server-Timing 与 X-Flares3-* 请求耗时/isolate 诊断头。
+# FLARES3_DEBUG_HEADERS = "1"
 
 [[d1_databases]]
 binding = "DB"

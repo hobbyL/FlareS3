@@ -52,6 +52,82 @@ function formatServerError(error: unknown): { status: number; message: string } 
   console.error('[serverUpload] upstream failed', error)
   return { status: 500, message: '上传失败，请稍后重试' }
 }
+
+/**
+ * 服务端代理上传（非 R2 配置，文件经 Worker 中转写入 WebDAV / Koofr 等上游）
+ *
+ * @route POST /api/upload/server
+ * @param request - HTTP 请求对象（需要认证；Content-Type 必须为 multipart/form-data）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含文件信息和下载链接
+ *
+ * @example
+ * // 请求体（multipart/form-data 字段）
+ * config_id=default
+ * filename=example.jpg
+ * expires_in=7
+ * require_login=false
+ * dir=uploads
+ * file=<二进制文件内容>
+ *
+ * // 成功响应 (200)
+ * {
+ *   "file_id": "uuid",
+ *   "filename": "example.jpg",
+ *   "download_url": "/api/files/uuid/download",
+ *   "short_url": "/s/abc123",
+ *   "expires_at": "2026-10-13T00:00:00.000Z",
+ *   "r2_config_id": "default"
+ * }
+ *
+ * // 未授权 (401)
+ * { "error": "未授权" }
+ *
+ * // 请求格式错误 (400)
+ * { "error": "请求格式错误，需要 multipart/form-data" }
+ *
+ * // 请求体解析失败 (400)
+ * { "error": { "code": "UPLOAD_INVALID_REQUEST", "message": "无效的请求" } }
+ *
+ * // Content-Length 无效 (400)
+ * { "error": "上传文件 Content-Length 无效" }
+ *
+ * // 缺少必填字段 (400)
+ * { "error": "缺少 config_id" }
+ *
+ * // 缺少文件名 (400)
+ * { "error": "缺少 filename" }
+ *
+ * // 缺少文件 (400)
+ * { "error": "缺少文件" }
+ *
+ * // 无权使用指定上传配置 (403)
+ * { "error": { "code": "UPLOAD_CONFIG_FORBIDDEN", "message": "无权使用指定上传配置" } }
+ *
+ * // 上传配置不存在或不可用 (404)
+ * { "error": { "code": "UPLOAD_CONFIG_NOT_FOUND", "message": "配置不存在或不可用" } }
+ *
+ * // R2 配置不支持服务端上传 (400)
+ * { "error": "R2 配置请使用预签名上传" }
+ *
+ * // 缺少 Content-Length (411)
+ * { "error": "上传文件缺少 Content-Length" }
+ *
+ * // 请求体超过单请求上限 (413)
+ * { "error": "上传文件大小超过限制" }
+ *
+ * // 文件大小超过限制（单请求 100MB 上限）(413)
+ * { "error": "文件大小超过限制（最大 100MB）" }
+ *
+ * // 上游存储连接中断 (502)
+ * { "error": "上传失败（存储服务连接中断，请稍后重试）" }
+ *
+ * // 上游存储返回错误（透传上游状态码）(502)
+ * { "error": "上传失败（存储服务返回错误）" }
+ *
+ * // 上游/内部错误 (500)
+ * { "error": { "code": "UPLOAD_SERVER_FAILED", "message": "服务端上传失败" } }
+ */
 export async function serverUpload(request: Request, env: Env): Promise<Response> {
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)

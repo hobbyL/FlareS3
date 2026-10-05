@@ -630,7 +630,7 @@ export function renderContentPage({
 /**
  * 访问文本分享页面
  *
- * @route GET|POST /s/:code
+ * @route GET|POST /t/:code
  * @param request - HTTP 请求对象
  * @param env - Cloudflare Workers 环境变量
  * @param code - 分享短码
