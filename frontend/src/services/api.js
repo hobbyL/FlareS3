@@ -118,6 +118,17 @@ export default {
    */
   getAuthStatus: dedupRequest(() => api.get('/auth/status'), 'auth-status'),
 
+  /**
+   * 修改当前用户密码
+   *
+   * 成功后服务端会删除该用户全部会话，调用方需要随即登出并跳转登录页。
+   * @param {{ current_password: string, new_password: string }} payload - 当前密码与新密码
+   * @returns {Promise<{ok: boolean}>}
+   */
+  changePassword(payload) {
+    return api.post('/auth/change-password', payload)
+  },
+
   // ========== R2 配置（旧版）==========
 
   /**
@@ -163,6 +174,16 @@ export default {
    */
   getAdminJobRuns(params = {}) {
     return api.get('/admin/job-runs', { params })
+  },
+
+  // ========== 存储统计 ==========
+
+  /**
+   * 获取存储用量统计（admin 为全局口径，普通用户为个人配额口径）
+   * @returns {Promise<{usedSpace: number, totalSpace: number, usedSpaceFormatted: string, totalSpaceFormatted: string, usagePercent: number, fileCount: number}>}
+   */
+  getStats() {
+    return api.get('/stats')
   },
 
   // ========== 存储配置 ==========

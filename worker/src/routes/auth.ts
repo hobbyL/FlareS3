@@ -1,16 +1,21 @@
 import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
-import { jsonResponse, parseJson, requestBodyPolicyErrorResponse } from './utils'
+import { jsonResponse, parseJson, requestBodyPolicyErrorResponse, getUser } from './utils'
 import bcrypt from 'bcryptjs'
-import { verifyPassword } from '../services/password'
+import { hashPassword, verifyPassword } from '../services/password'
 import {
   recordFailedAttempt,
   recordFailedAttemptForUsername,
   isUsernameBlocked,
   getClientIp,
 } from '../middleware/rateLimit'
-import { logAudit } from '../services/audit'
-import { getSessionCookieName, invalidateAuthToken, type AuthUser } from '../middleware/authSession'
+import { logAudit, prepareAuditLogInsert } from '../services/audit'
+import {
+  getSessionCookieName,
+  invalidateAuthToken,
+  invalidateUserAuthTokens,
+  type AuthUser,
+} from '../middleware/authSession'
 import { createSignedAuthToken, getAuthTokenSecret } from '../services/authToken'
 import { hashToken } from '../utils/token'
 import { logError } from '../utils/log'
@@ -239,6 +244,112 @@ export async function logout(request: Request, env: Env): Promise<Response> {
   return jsonResponse({ success: true }, 200, {
     'Set-Cookie': buildSessionCookie(request, '', 0),
   })
+}
+
+/**
+ * 修改当前用户密码
+ *
+ * 改密成功后会删除该用户的全部会话（含当前会话），
+ * 客户端需要在收到成功响应后主动跳转登录页重新认证。
+ *
+ * @route POST /api/auth/change-password
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含操作结果
+ *
+ * @example
+ * // 请求体
+ * {
+ *   "current_password": "old-password-123",
+ *   "new_password": "new-password-456"
+ * }
+ *
+ * // 成功响应 (200)
+ * { "ok": true }
+ *
+ * // 未授权 (401)
+ * { "error": "未授权" }
+ *
+ * // 缺少字段 (400)
+ * { "error": "请填写当前密码和新密码" }
+ *
+ * // 新密码过短 (400)
+ * { "error": "新密码至少 8 位" }
+ *
+ * // 新密码与当前密码相同 (400)
+ * { "error": "新密码不能与当前密码相同" }
+ *
+ * // 当前密码不正确 (400)
+ * { "error": "当前密码不正确" }
+ *
+ * // 请求体超过大小限制 (413)
+ * { "error": "JSON 请求体大小超过限制" }
+ *
+ * // 服务器错误 (500)
+ * { "error": "修改密码失败" }
+ */
+export async function changePassword(request: Request, env: Env): Promise<Response> {
+  try {
+    const user = getUser(request)
+    if (!user) {
+      return jsonResponse({ error: '未授权' }, 401)
+    }
+
+    const body = await parseJson<{ current_password: string; new_password: string }>(request)
+    const currentPassword = String(body.current_password || '')
+    const newPassword = String(body.new_password || '')
+    if (!currentPassword || !newPassword) {
+      return jsonResponse({ error: '请填写当前密码和新密码' }, 400)
+    }
+    if (newPassword.length < 8) {
+      return jsonResponse({ error: '新密码至少 8 位' }, 400)
+    }
+    if (newPassword === currentPassword) {
+      return jsonResponse({ error: '新密码不能与当前密码相同' }, 400)
+    }
+
+    const row = await withD1Retry(env.DB)
+      .prepare('SELECT id, password_hash FROM users WHERE id = ? LIMIT 1')
+      .bind(user.id)
+      .first<{ id: string; password_hash: string }>()
+    // 已认证用户的输入错误返回 400（与登录失败的 401 区分）；
+    // 用户行缺失按当前密码不正确处理，不额外泄露账号状态。
+    if (!row || !verifyPassword(currentPassword, String(row.password_hash || ''))) {
+      return jsonResponse({ error: '当前密码不正确' }, 400)
+    }
+
+    const now = new Date().toISOString()
+    // 单 batch 原子提交：密码哈希更新、全部会话删除与审计写入必须一起生效，
+    // 避免出现密码已改但旧会话仍存活的中间状态（对齐 d1-write-consistency）。
+    await withD1Retry(env.DB).batch([
+      withD1Retry(env.DB)
+        .prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?')
+        .bind(hashPassword(newPassword), now, user.id),
+      withD1Retry(env.DB).prepare('DELETE FROM sessions WHERE user_id = ?').bind(user.id),
+      prepareAuditLogInsert(
+        env.DB,
+        {
+          actorUserId: user.id,
+          action: 'USER_CHANGE_PASSWORD',
+          targetType: 'user',
+          targetId: user.id,
+          ip: getClientIp(request),
+          userAgent: request.headers.get('User-Agent') || undefined,
+          metadata: { sessionsRevoked: true },
+        },
+        now
+      ),
+    ])
+    // 立即失效本 isolate 的会话缓存，消除 15s 缓存窗口内旧 token 仍可通过认证的残余
+    invalidateUserAuthTokens(user.id, Date.parse(now) || Date.now())
+
+    return jsonResponse({ ok: true })
+  } catch (error) {
+    const bodyError = requestBodyPolicyErrorResponse(error)
+    if (bodyError) return bodyError
+    logError('auth.changePassword.failed', error)
+    return jsonResponse({ error: '修改密码失败' }, 500)
+  }
 }
 
 /**

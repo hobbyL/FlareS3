@@ -1,7 +1,7 @@
 import { Router } from 'itty-router'
 import type { Env } from './config/env'
 import { requireAuth, requireAdmin } from './middleware/roleGuard'
-import { login, logout, status as authStatus } from './routes/auth'
+import { login, logout, status as authStatus, changePassword } from './routes/auth'
 import { listUsers, createUser, updateUser, resetPassword, deleteUser } from './routes/users'
 import { shortlink } from './routes/shortlink'
 import { getStats } from './routes/stats'
@@ -48,6 +48,10 @@ export const router = Router()
 // ── Auth ──
 router.post('/api/auth/login', (request, env: Env) => login(request, env))
 router.post('/api/auth/logout', (request, env: Env) => logout(request, env))
+router.post(
+  '/api/auth/change-password',
+  withAuth((request, env: Env) => changePassword(request, env))
+)
 router.get(
   '/api/auth/status',
   withAuth((request, _env: Env) => authStatus(request))

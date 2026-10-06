@@ -31,6 +31,82 @@
               <span class="kv-value">{{ userRoleLabel || '-' }}</span>
             </div>
           </div>
+
+          <div class="password-divider" />
+
+          <form class="password-form" @submit.prevent="handleChangePassword">
+            <p class="password-form-title">{{ t('more.password.sectionTitle') }}</p>
+            <FormItem :label="t('more.password.currentPlaceholder')">
+              <Input
+                v-model="passwordForm.currentPassword"
+                type="password"
+                :placeholder="t('more.password.currentPlaceholder')"
+                @keyup.enter="handleChangePassword"
+              />
+            </FormItem>
+            <FormItem :label="t('more.password.newPlaceholder')">
+              <Input
+                v-model="passwordForm.newPassword"
+                type="password"
+                :placeholder="t('more.password.newPlaceholder')"
+                @keyup.enter="handleChangePassword"
+              />
+            </FormItem>
+            <FormItem :label="t('more.password.confirmPlaceholder')">
+              <Input
+                v-model="passwordForm.confirmPassword"
+                type="password"
+                :placeholder="t('more.password.confirmPlaceholder')"
+                @keyup.enter="handleChangePassword"
+              />
+            </FormItem>
+            <Button
+              type="primary"
+              size="small"
+              block
+              :loading="changing"
+              @click="handleChangePassword"
+            >
+              {{ t('more.password.submit') }}
+            </Button>
+          </form>
+        </Card>
+
+        <Card class="more-card">
+          <template #header>
+            <div class="more-card-heading">
+              <span>{{ t('more.usage.sectionTitle') }}</span>
+              <span class="usage-scope">{{ usageScopeLabel }}</span>
+            </div>
+          </template>
+
+          <div class="usage-metrics">
+            <div class="usage-metric">
+              <div class="usage-label">{{ t('more.usage.usedSpace') }}</div>
+              <div class="usage-value">{{ usage ? usage.usedSpaceFormatted : '-' }}</div>
+            </div>
+            <div class="usage-metric">
+              <div class="usage-label">{{ t('more.usage.totalSpace') }}</div>
+              <div class="usage-value">{{ usage ? usage.totalSpaceFormatted : '-' }}</div>
+            </div>
+            <div class="usage-metric">
+              <div class="usage-label">{{ t('more.usage.fileCount') }}</div>
+              <div class="usage-value">{{ usage ? usage.fileCount : '-' }}</div>
+            </div>
+          </div>
+
+          <Progress
+            :percentage="usagePercentClamped"
+            :color="usageColor"
+            :height="10"
+            :show-indicator="false"
+          />
+
+          <div v-if="usageError" class="usage-retry">
+            <Button type="default" size="small" @click="loadUsage">
+              {{ t('more.usage.retry') }}
+            </Button>
+          </div>
         </Card>
 
         <Card class="more-card">
@@ -115,7 +191,7 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { HardDrive, History, LayoutDashboard, Settings, Users } from 'lucide-vue-next'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -123,8 +199,13 @@ import LogoutConfirmModal from '../components/auth/LogoutConfirmModal.vue'
 import AppLayout from '../components/layout/AppLayout.vue'
 import Button from '../components/ui/button/Button.vue'
 import Card from '../components/ui/card/Card.vue'
+import FormItem from '../components/ui/form-item/FormItem.vue'
+import Input from '../components/ui/input/Input.vue'
+import Progress from '../components/ui/progress/Progress.vue'
 import { useLogoutConfirm } from '../composables/useLogoutConfirm.js'
+import { useMessage } from '../composables/useMessage.js'
 import { toggleLocale } from '../locales'
+import api from '../services/api.js'
 import { useAuthStore } from '../stores/auth'
 import { useThemeStore } from '../stores/theme'
 import { buildMorePageAdminItems } from '../utils/navigation.js'
@@ -133,6 +214,7 @@ const router = useRouter()
 const authStore = useAuthStore()
 const themeStore = useThemeStore()
 const { t, locale } = useI18n({ useScope: 'global' })
+const message = useMessage()
 
 const adminIconMap = {
   chart: LayoutDashboard,
@@ -203,6 +285,88 @@ const handleCycleUiTheme = () => {
 const handleToggleLocale = () => {
   toggleLocale()
 }
+
+// ── 修改密码 ──
+const passwordForm = ref({
+  currentPassword: '',
+  newPassword: '',
+  confirmPassword: '',
+})
+const changing = ref(false)
+
+const handleChangePassword = async () => {
+  // 提交进行中直接忽略重复触发（回车 + 按钮点击可能同时发生）
+  if (changing.value) return
+
+  const { currentPassword, newPassword, confirmPassword } = passwordForm.value
+  if (!currentPassword || !newPassword || !confirmPassword) {
+    message.error(t('more.password.required'))
+    return
+  }
+  if (newPassword.length < 8) {
+    message.error(t('more.password.minLength'))
+    return
+  }
+  if (newPassword !== confirmPassword) {
+    message.error(t('more.password.mismatch'))
+    return
+  }
+  if (newPassword === currentPassword) {
+    message.error(t('more.password.sameAsCurrent'))
+    return
+  }
+
+  try {
+    changing.value = true
+    await api.changePassword({
+      current_password: currentPassword,
+      new_password: newPassword,
+    })
+    // 服务端已删除全部会话，本端立即登出跳登录页，避免依赖 401 拦截器被动触发
+    message.success(t('more.password.changed'))
+    await authStore.logout()
+    await router.push('/login')
+  } catch (error) {
+    // 错误提示已由 api 拦截器统一呈现（400 透传后端消息，其余走 errors.* 兜底）
+  } finally {
+    changing.value = false
+  }
+}
+
+// ── 存储用量 ──
+const usage = ref(null)
+const usageError = ref(false)
+
+const usageScopeLabel = computed(() =>
+  authStore.isAdmin ? t('more.usage.globalScope') : t('more.usage.userScope')
+)
+
+const usagePercentClamped = computed(() => {
+  const value = Number(usage.value?.usagePercent)
+  if (!Number.isFinite(value) || value <= 0) return 0
+  return Math.min(100, value)
+})
+
+const usageColor = computed(() => {
+  const value = usagePercentClamped.value
+  if (value > 90) return 'var(--nb-danger)'
+  if (value > 70) return 'var(--nb-warning)'
+  return 'var(--nb-success)'
+})
+
+const loadUsage = async () => {
+  try {
+    usageError.value = false
+    usage.value = await api.getStats()
+  } catch (error) {
+    // 用量拉取失败不阻塞页面其余区块，显示「-」占位 + 重试入口
+    usageError.value = true
+  }
+}
+
+onMounted(() => {
+  loadUsage()
+})
 
 const { logoutConfirmVisible, logoutSubmitting, openLogoutConfirm, confirmLogout } =
   useLogoutConfirm()
@@ -309,6 +473,54 @@ const { logoutConfirmVisible, logoutSubmitting, openLogoutConfirm, confirmLogout
   font-size: var(--nb-font-size-sm);
 }
 
+.password-divider {
+  height: 1px;
+  margin: var(--nb-space-md) 0;
+  background: var(--nb-border);
+}
+
+.password-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nb-space-sm);
+}
+
+.password-form-title {
+  margin: 0 0 var(--nb-space-xs, 4px);
+  color: var(--nb-muted-foreground, var(--nb-gray-500));
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.usage-scope {
+  color: var(--nb-muted-foreground, var(--nb-gray-500));
+  font-size: 12px;
+}
+
+.usage-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--nb-space-sm);
+  margin-bottom: var(--nb-space-md);
+}
+
+.usage-label {
+  color: var(--nb-muted-foreground, var(--nb-gray-500));
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.usage-value {
+  margin-top: 2px;
+  font-size: var(--nb-font-size-lg);
+  font-weight: var(--nb-font-weight-semibold, 700);
+  word-break: break-word;
+}
+
+.usage-retry {
+  margin-top: var(--nb-space-sm);
+}
+
 .kv-list,
 .action-list,
 .admin-link-list {
@@ -384,6 +596,10 @@ const { logoutConfirmVisible, logoutSubmitting, openLogoutConfirm, confirmLogout
 
 @media (max-width: 768px) {
   .more-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .usage-metrics {
     grid-template-columns: minmax(0, 1fr);
   }
 
