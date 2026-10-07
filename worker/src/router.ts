@@ -478,6 +478,33 @@ router.post(
     )
   )
 )
+router.post(
+  '/api/mount/folder-share',
+  withAuth(
+    lazyRoute(
+      () => import('./routes/folderShares'),
+      (module, request, env) => module.createFolderShare(request, env)
+    )
+  )
+)
+router.get(
+  '/api/mount/folder-share',
+  withAuth(
+    lazyRoute(
+      () => import('./routes/folderShares'),
+      (module, request, env) => module.getFolderShare(request, env)
+    )
+  )
+)
+router.delete(
+  '/api/mount/folder-share',
+  withAuth(
+    lazyRoute(
+      () => import('./routes/folderShares'),
+      (module, request, env) => module.deleteFolderShare(request, env)
+    )
+  )
+)
 
 // ── File shares ──
 router.get(
@@ -512,6 +539,21 @@ router.delete(
 router.get(
   '/api/shares',
   withAuth((request, env: Env) => listShares(request, env))
+)
+router.get(
+  '/api/shares/:shareType/:shareId/accesses',
+  withAuth(
+    lazyRoute(
+      () => import('./routes/shares'),
+      (module, request, env) =>
+        module.listShareAccesses(
+          request,
+          env,
+          (request as any).params.shareType,
+          (request as any).params.shareId
+        )
+    )
+  )
 )
 
 // ── Stats ──

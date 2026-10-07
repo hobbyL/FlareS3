@@ -44,6 +44,7 @@
           @edit="emit('edit', $event)"
           @disable="emit('disable', $event)"
           @regenerate="emit('regenerate', $event)"
+          @access-log="emit('access-log', $event)"
           @toggle-select="(rowId, checked) => emit('toggle-select', rowId, checked)"
         />
 
@@ -120,6 +121,7 @@ const emit = defineEmits([
   'edit',
   'disable',
   'regenerate',
+  'access-log',
   'toggle-select',
 ])
 </script>

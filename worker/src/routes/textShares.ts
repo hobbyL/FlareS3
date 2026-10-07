@@ -21,6 +21,7 @@ import { generateRandomCode } from '../utils/random'
 import { SHARE_SHORT_CODE_LENGTH } from '../utils/codePolicy'
 import { buildPage, escapeHtml, htmlResponse } from './sharePage'
 import { formatDateTimeLocal } from '../services/shareFormatting'
+import { recordShareAccess } from '../services/shareAccessLog'
 
 type LoadTextAuthResult =
   | { response: Response }
@@ -30,7 +31,9 @@ type LoadTextAuthResult =
       ownerId: string
     }
 
-type ResolveShareRecordResult = { error: { status: number; message: string } } | { share: unknown }
+type ResolveShareRecordResult =
+  | { error: { status: number; message: string; shareId?: string } }
+  | { share: unknown }
 
 async function loadTextAndAuthorize(
   request: Request,
@@ -460,26 +463,35 @@ async function resolveShareRecord(env: Env, code: string): Promise<ResolveShareR
     return { error: { status: 404, message: '分享链接不存在' } }
   }
 
+  // 访问日志的 share_id 口径与 /api/shares 列表的 resource_id 一致（text → text_id）
+  const accessShareId = String((share as any).text_id ?? '')
+
   if ((share as any).text_deleted_at) {
-    return { error: { status: 404, message: '内容不存在' } }
+    return { error: { status: 404, message: '内容不存在', shareId: accessShareId } }
   }
 
   if (String((share as any).owner_status || '') !== 'active') {
-    return { error: { status: 404, message: '内容不存在' } }
+    return { error: { status: 404, message: '内容不存在', shareId: accessShareId } }
   }
 
   const expiresAt = String((share as any).expires_at || '').trim()
   if (expiresAt) {
     const expiresAtMs = new Date(expiresAt).getTime()
     if (Number.isFinite(expiresAtMs) && Date.now() > expiresAtMs) {
-      return { error: { status: 410, message: '链接已过期' } }
+      return { error: { status: 410, message: '链接已过期', shareId: accessShareId } }
     }
   }
 
   const maxViews = Number((share as any).max_views || 0)
   const views = Number((share as any).views || 0)
   if (Number.isFinite(maxViews) && maxViews > 0 && views >= maxViews) {
-    return { error: { status: 410, message: SHARE_VIEW_LIMIT_EXHAUSTED_MESSAGE } }
+    return {
+      error: {
+        status: 410,
+        message: SHARE_VIEW_LIMIT_EXHAUSTED_MESSAGE,
+        shareId: accessShareId,
+      },
+    }
   }
 
   return { share }
@@ -682,11 +694,31 @@ export async function viewTextShare(request: Request, env: Env, code: string): P
 
   const resolved = await resolveShareRecord(env, normalizedCode)
   if ('error' in resolved) {
+    if (request.method.toUpperCase() === 'POST') {
+      const accessResult =
+        resolved.error.message === SHARE_VIEW_LIMIT_EXHAUSTED_MESSAGE
+          ? 'exhausted'
+          : resolved.error.status === 410
+            ? 'expired'
+            : resolved.error.status === 404
+              ? 'not_found'
+              : null
+      if (accessResult) {
+        await recordShareAccess(env, {
+          share_type: 'text',
+          share_id: resolved.error.shareId ?? '',
+          ip: getClientIp(request),
+          user_agent: request.headers.get('User-Agent'),
+          result: accessResult,
+        })
+      }
+    }
     return renderMessagePage('分享', resolved.error.message, resolved.error.status)
   }
 
   const share = resolved.share
   const shareId = String((share as any).id)
+  const accessShareId = String((share as any).text_id ?? '')
   const title = String((share as any).text_title || '共享文档')
   const content = String((share as any).text_content || '')
 
@@ -715,9 +747,23 @@ export async function viewTextShare(request: Request, env: Env, code: string): P
     try {
       const { consumed } = await consumeTextShareViewIfAllowed(env.DB, shareId)
       if (!consumed) {
+        await recordShareAccess(env, {
+          share_type: 'text',
+          share_id: accessShareId,
+          ip: getClientIp(request),
+          user_agent: request.headers.get('User-Agent'),
+          result: 'exhausted',
+        })
         return renderMessagePage('分享', SHARE_VIEW_LIMIT_EXHAUSTED_MESSAGE, 410)
       }
 
+      await recordShareAccess(env, {
+        share_type: 'text',
+        share_id: accessShareId,
+        ip: getClientIp(request),
+        user_agent: request.headers.get('User-Agent'),
+        result: 'ok',
+      })
       return renderContentPage({ title, meta, content })
     } catch {
       return renderMessagePage('分享', '访问失败，请稍后重试', 500)
@@ -763,6 +809,13 @@ export async function viewTextShare(request: Request, env: Env, code: string): P
 
     if (!verifyPassword(password, passwordHash)) {
       await recordSharePasswordFailedAttempt(env, normalizedCode, ip)
+      await recordShareAccess(env, {
+        share_type: 'text',
+        share_id: accessShareId,
+        ip,
+        user_agent: request.headers.get('User-Agent'),
+        result: 'rejected_password',
+      })
       if (await isSharePasswordBlocked(env, normalizedCode, ip)) {
         return renderPasswordForm({ title, meta, error: '尝试次数过多，请 10 分钟后重试' })
       }

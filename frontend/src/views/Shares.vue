@@ -43,6 +43,7 @@
         @edit="openEditShare"
         @disable="openConfirmAction('disable', $event)"
         @regenerate="openConfirmAction('regenerate', $event)"
+        @access-log="openAccessLog"
         @toggle-select="toggleRowSelection"
       />
 
@@ -60,6 +61,15 @@
         :text-id="activeTextId"
         :text-title="activeResourceName"
         @update:show="handleTextShareModalUpdate"
+      />
+
+      <ShareAccessLogModal
+        v-if="accessLogModalVisible"
+        :show="accessLogModalVisible"
+        :share-type="accessLogType"
+        :share-id="accessLogId"
+        :share-name="accessLogName"
+        @update:show="handleAccessLogModalUpdate"
       />
 
       <SharesConfirmModal
@@ -101,6 +111,7 @@ import {
   getBatchDisableFeedbackMeta,
   getShareActionKey,
   getShareConfirmMeta,
+  hasAccessLogConfig,
   hasEditableConfig,
   isShareActionLoading,
   normalizeShareText as normalizeText,
@@ -108,6 +119,9 @@ import {
 
 const FileShareModal = defineAsyncComponent(() => import('../components/files/FileShareModal.vue'))
 const TextShareModal = defineAsyncComponent(() => import('../components/texts/TextShareModal.vue'))
+const ShareAccessLogModal = defineAsyncComponent(
+  () => import('../components/shares/ShareAccessLogModal.vue')
+)
 
 const { t, locale } = useI18n({ useScope: 'global' })
 const authStore = useAuthStore()
@@ -369,6 +383,30 @@ async function handleTextShareModalUpdate(value) {
   }
 }
 
+// ── 访问记录 ──
+
+const accessLogModalVisible = ref(false)
+const accessLogRecord = ref(null)
+
+const accessLogType = computed(() => normalizeText(accessLogRecord.value?.type))
+const accessLogId = computed(() => normalizeText(accessLogRecord.value?.resource_id))
+const accessLogName = computed(() => normalizeText(accessLogRecord.value?.resource_name))
+
+function openAccessLog(record) {
+  if (!hasAccessLogConfig(record)) return
+  if (loading.value || batchDisableSubmitting.value) return
+
+  accessLogRecord.value = record
+  accessLogModalVisible.value = true
+}
+
+function handleAccessLogModalUpdate(value) {
+  accessLogModalVisible.value = value
+  if (!value) {
+    accessLogRecord.value = null
+  }
+}
+
 function openConfirmAction(kind, record) {
   if (!record || loading.value || batchDisableSubmitting.value) return
   pendingConfirmAction.value = { kind, record }
@@ -430,6 +468,12 @@ async function requestDisableShare(record) {
 
   if (record?.type === 'text_one_time') {
     await api.deleteTextOneTimeShare(resourceId)
+    return
+  }
+
+  if (record?.type === 'folder') {
+    // folder 分享按短码撤销（同 scope 唯一，resource_id 是 folder_shares.id）
+    await api.deleteFolderShare({ share_code: normalizeText(record?.share_code) })
     return
   }
 
@@ -538,6 +582,7 @@ const columns = computed(() =>
     onOpenShareLink: openShareLink,
     onEditShare: openEditShare,
     onConfirmAction: openConfirmAction,
+    onOpenAccessLog: openAccessLog,
   })
 )
 

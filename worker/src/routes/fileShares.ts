@@ -21,6 +21,8 @@ import {
 } from '../services/shareViewGuard'
 import { buildSharedDownloadResponse } from '../services/fileShareDownload'
 import { formatDateTimeLocal } from '../services/shareFormatting'
+import { recordShareAccess, type ShareAccessResult } from '../services/shareAccessLog'
+import { tryHandleFolderShareView } from './folderShareView'
 import {
   renderFileConfirmPage,
   renderFileMessagePage,
@@ -490,7 +492,7 @@ export async function deleteFileShare(
 }
 
 type ResolveFileShareRecordResult =
-  | { error: { status: number; message: string } }
+  | { error: { status: number; message: string; shareId?: string } }
   | {
       share: {
         id: string
@@ -531,21 +533,24 @@ async function resolveFileShareRecord(
     return { error: { status: 404, message: '分享链接不存在' } }
   }
 
+  // 访问日志的 share_id 口径与 /api/shares 列表的 resource_id 一致（file → file_id）
+  const accessShareId = String(row.file_id ?? '')
+
   if (!row.filename || !row.r2_key || row.upload_status !== 'completed' || row.deleted_at) {
-    return { error: { status: 404, message: '文件不存在' } }
+    return { error: { status: 404, message: '文件不存在', shareId: accessShareId } }
   }
 
   if (String(row.owner_status || '') !== 'active') {
-    return { error: { status: 404, message: '文件不存在' } }
+    return { error: { status: 404, message: '文件不存在', shareId: accessShareId } }
   }
 
   const fileExpiresAt = new Date(String(row.file_expires_at))
   const fileExpiresAtMs = fileExpiresAt.getTime()
   if (Number.isNaN(fileExpiresAtMs)) {
-    return { error: { status: 500, message: '文件过期时间无效' } }
+    return { error: { status: 500, message: '文件过期时间无效', shareId: accessShareId } }
   }
   if (Date.now() > fileExpiresAtMs) {
-    return { error: { status: 410, message: '文件已过期' } }
+    return { error: { status: 410, message: '文件已过期', shareId: accessShareId } }
   }
 
   const shareExpiresAtRaw = row.share_expires_at ? String(row.share_expires_at).trim() : ''
@@ -553,10 +558,10 @@ async function resolveFileShareRecord(
     const shareExpiresAt = new Date(shareExpiresAtRaw)
     const shareExpiresAtMs = shareExpiresAt.getTime()
     if (Number.isNaN(shareExpiresAtMs)) {
-      return { error: { status: 500, message: '链接过期时间无效' } }
+      return { error: { status: 500, message: '链接过期时间无效', shareId: accessShareId } }
     }
     if (Date.now() > shareExpiresAtMs) {
-      return { error: { status: 410, message: '链接已过期' } }
+      return { error: { status: 410, message: '链接已过期', shareId: accessShareId } }
     }
   }
 
@@ -565,7 +570,13 @@ async function resolveFileShareRecord(
   const safeMaxViews = Number.isFinite(maxViews) ? Math.floor(maxViews) : 0
   const safeViews = Number.isFinite(views) ? Math.floor(views) : 0
   if (safeMaxViews > 0 && safeViews >= safeMaxViews) {
-    return { error: { status: 410, message: SHARE_VIEW_LIMIT_EXHAUSTED_MESSAGE } }
+    return {
+      error: {
+        status: 410,
+        message: SHARE_VIEW_LIMIT_EXHAUSTED_MESSAGE,
+        shareId: accessShareId,
+      },
+    }
   }
 
   return {
@@ -585,6 +596,17 @@ async function resolveFileShareRecord(
       config_id: row.config_id ? String(row.config_id) : null,
     },
   }
+}
+
+/** resolve 错误 → 访问日志 result（无 shareId 的「code 未知」不落库） */
+function mapFileShareResolveErrorToAccessResult(error: {
+  status: number
+  message: string
+}): ShareAccessResult | null {
+  if (error.message === SHARE_VIEW_LIMIT_EXHAUSTED_MESSAGE) return 'exhausted'
+  if (error.status === 410) return 'expired'
+  if (error.status === 404) return 'not_found'
+  return null
 }
 
 /**
@@ -637,8 +659,27 @@ export async function viewFileShare(request: Request, env: Env, code: string): P
     return renderFileMessagePage('分享', '短码不能为空', 400)
   }
 
+  // /f/:code 双模：folder_shares 未命中（返回 null）时继续走既有 file 流程，
+  // file 分享行为与响应保持零改动
+  const folderResponse = await tryHandleFolderShareView(request, env, normalized)
+  if (folderResponse) {
+    return folderResponse
+  }
+
   const resolved = await resolveFileShareRecord(env, normalized)
   if ('error' in resolved) {
+    if (request.method.toUpperCase() === 'POST') {
+      const accessResult = mapFileShareResolveErrorToAccessResult(resolved.error)
+      if (accessResult) {
+        await recordShareAccess(env, {
+          share_type: 'file',
+          share_id: resolved.error.shareId ?? '',
+          ip: getClientIp(request),
+          user_agent: request.headers.get('User-Agent'),
+          result: accessResult,
+        })
+      }
+    }
     return renderFileMessagePage('分享', resolved.error.message, resolved.error.status)
   }
 
@@ -668,13 +709,35 @@ export async function viewFileShare(request: Request, env: Env, code: string): P
     try {
       const { consumed } = await consumeFileShareViewIfAllowed(env.DB, share.id)
       if (!consumed) {
+        await recordShareAccess(env, {
+          share_type: 'file',
+          share_id: share.file_id,
+          ip: getClientIp(request),
+          user_agent: request.headers.get('User-Agent'),
+          result: 'exhausted',
+        })
         return renderFileMessagePage('分享', SHARE_VIEW_LIMIT_EXHAUSTED_MESSAGE, 410)
       }
 
       const download = await buildSharedDownloadResponse(env, file)
       if (!download.ok) {
+        // 消费已发生（访问成立），下载失败仍记 ok
+        await recordShareAccess(env, {
+          share_type: 'file',
+          share_id: share.file_id,
+          ip: getClientIp(request),
+          user_agent: request.headers.get('User-Agent'),
+          result: 'ok',
+        })
         return renderFileMessagePage('分享', download.error.message, download.error.status)
       }
+      await recordShareAccess(env, {
+        share_type: 'file',
+        share_id: share.file_id,
+        ip: getClientIp(request),
+        user_agent: request.headers.get('User-Agent'),
+        result: 'ok',
+      })
       return download.response
     } catch {
       return renderFileMessagePage('分享', '访问失败，请稍后重试', 500)
@@ -720,6 +783,13 @@ export async function viewFileShare(request: Request, env: Env, code: string): P
 
     if (!verifyPassword(password, passwordHash)) {
       await recordSharePasswordFailedAttempt(env, normalized, ip)
+      await recordShareAccess(env, {
+        share_type: 'file',
+        share_id: share.file_id,
+        ip,
+        user_agent: request.headers.get('User-Agent'),
+        result: 'rejected_password',
+      })
       if (await isSharePasswordBlocked(env, normalized, ip)) {
         return renderFilePasswordForm({ title, meta, error: '尝试次数过多，请 10 分钟后重试' })
       }

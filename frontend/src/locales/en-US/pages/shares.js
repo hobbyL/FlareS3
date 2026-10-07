@@ -38,6 +38,7 @@ export default {
       file: 'File share',
       text: 'Document share',
       textOneTime: 'One-time document share',
+      folder: 'Folder share',
       unknown: 'Unknown type',
     },
     status: {
@@ -56,10 +57,32 @@ export default {
       focusExpired: 'Expired queue',
       focusExpiring: 'Expiring soon',
       regenerate: 'Reset',
+      accessLog: 'Access log',
     },
     password: {
       set: 'Set',
       unset: 'Not set',
+    },
+    access: {
+      title: 'Access log',
+      loading: 'Loading...',
+      empty: 'No access records yet',
+      loadFailed: 'Failed to load access records',
+      columns: {
+        time: 'Time',
+        ip: 'IP address',
+        userAgent: 'User agent',
+        result: 'Result',
+        path: 'Path',
+      },
+      results: {
+        ok: 'OK',
+        rejectedPassword: 'Wrong password',
+        expired: 'Expired',
+        exhausted: 'Exhausted',
+        notFound: 'Not found',
+        unknown: 'Unknown',
+      },
     },
     visits: {
       unlimited: 'Unlimited',

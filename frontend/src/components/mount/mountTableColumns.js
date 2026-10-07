@@ -1,5 +1,5 @@
 import { h } from 'vue'
-import { Download, Eye, FolderInput, FolderOpen, Pencil, Trash2 } from 'lucide-vue-next'
+import { Download, Eye, FolderInput, FolderOpen, Pencil, Share2, Trash2 } from 'lucide-vue-next'
 import Button from '../ui/button/Button.vue'
 import Tooltip from '../ui/tooltip/Tooltip.vue'
 import TableCellText from '../ui/table/TableCellText.vue'
@@ -21,6 +21,7 @@ export function buildMountTableColumns({
   onDeleteObject = () => {},
   onRenameObject = () => {},
   onMoveObject = () => {},
+  onShareFolder = () => {},
 } = {}) {
   const translate = typeof t === 'function' ? t : (key) => key
 
@@ -75,7 +76,7 @@ export function buildMountTableColumns({
     {
       title: translate('mount.table.actions'),
       key: 'actions',
-      width: locale === 'zh-CN' ? 520 : 600,
+      width: locale === 'zh-CN' ? 600 : 680,
       align: 'center',
       ellipsis: false,
       render: (row) => {
@@ -95,6 +96,19 @@ export function buildMountTableColumns({
               () => [
                 h(FolderOpen, { size: 16, style: 'margin-right: 4px' }),
                 translate('mount.actions.open'),
+              ]
+            ),
+            h(
+              Button,
+              {
+                size: 'small',
+                type: 'default',
+                disabled: loading || deleting,
+                onClick: () => onShareFolder(row.key),
+              },
+              () => [
+                h(Share2, { size: 16, style: 'margin-right: 4px' }),
+                translate('mount.shareFolder.actionShare'),
               ]
             ),
             h(

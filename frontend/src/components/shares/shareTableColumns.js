@@ -1,5 +1,5 @@
 import { h } from 'vue'
-import { Copy, ExternalLink, Pencil, RefreshCw, Trash2 } from 'lucide-vue-next'
+import { Copy, ExternalLink, History, Pencil, RefreshCw, Trash2 } from 'lucide-vue-next'
 import Button from '../ui/button/Button.vue'
 import Tag from '../ui/tag/Tag.vue'
 import Tooltip from '../ui/tooltip/Tooltip.vue'
@@ -8,6 +8,7 @@ import {
   canOpenShare,
   formatShareVisits,
   getSharePasswordText,
+  hasAccessLogConfig,
   hasEditableConfig,
   normalizeShareText,
   toShareSelectionKey,
@@ -33,6 +34,7 @@ export function buildSharesTableColumns({
   onOpenShareLink = () => {},
   onEditShare = () => {},
   onConfirmAction = () => {},
+  onOpenAccessLog = () => {},
 } = {}) {
   const translate = typeof t === 'function' ? t : (key) => key
   const selectedKeys = selectedIdSet instanceof Set ? selectedIdSet : new Set()
@@ -78,7 +80,17 @@ export function buildSharesTableColumns({
       key: 'name',
       width: 180,
       ellipsis: true,
-      render: (row) => h(TableCellText, { value: normalizeShareText(row?.resource_name) }),
+      render: (row) => {
+        const name = normalizeShareText(row?.resource_name)
+        if (normalizeShareText(row?.type) === 'folder') {
+          // folder 行展示分享前缀，并附带挂载点名便于区分同名目录
+          const configName = normalizeShareText(row?.config_name)
+          return h(TableCellText, {
+            value: configName ? `${name}（${configName}）` : name || '/',
+          })
+        }
+        return h(TableCellText, { value: name })
+      },
     },
     {
       title: translate('shares.columns.link'),
@@ -185,7 +197,7 @@ export function buildSharesTableColumns({
     {
       title: translate('shares.columns.actions'),
       key: 'actions',
-      width: 220,
+      width: translate('shares.columns.actions') === '操作' ? 320 : 360,
       align: 'center',
       ellipsis: false,
       render: (row) => {
@@ -207,7 +219,8 @@ export function buildSharesTableColumns({
               ]
             )
           )
-        } else {
+        } else if (normalizeShareText(row?.type) === 'text_one_time') {
+          // 仅一次性分享支持重置；folder 分享创建后短码固定，不走重置
           buttons.push(
             h(
               Button,
@@ -221,6 +234,24 @@ export function buildSharesTableColumns({
               () => [
                 h(RefreshCw, { size: 16, style: 'margin-right: 4px' }),
                 translate('shares.actions.regenerate'),
+              ]
+            )
+          )
+        }
+
+        if (hasAccessLogConfig(row)) {
+          buttons.push(
+            h(
+              Button,
+              {
+                size: 'small',
+                type: 'default',
+                disabled: loading || batchDisableSubmitting,
+                onClick: () => onOpenAccessLog(row),
+              },
+              () => [
+                h(History, { size: 16, style: 'margin-right: 4px' }),
+                translate('shares.actions.accessLog'),
               ]
             )
           )

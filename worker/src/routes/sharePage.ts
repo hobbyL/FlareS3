@@ -330,6 +330,113 @@ function buildPage({ title, body }: { title: string; body: string }): string {
       color: var(--share-muted);
       line-height: 1.5;
     }
+
+    /* ── folder 分享目录列表 ── */
+
+    .dir-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 24px;
+      border-bottom: var(--share-border-width) solid var(--share-border);
+      background: color-mix(in oklab, var(--share-primary) 4%, var(--share-card));
+    }
+
+    .dir-path {
+      margin: 0;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--share-muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .dir-list {
+      list-style: none;
+      margin: 0;
+      padding: 8px 0;
+    }
+
+    .dir-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 24px;
+    }
+
+    .dir-row:hover {
+      background: color-mix(in oklab, var(--share-primary) 5%, var(--share-card));
+    }
+
+    .dir-name {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      flex: 1;
+      font-size: 14px;
+      color: var(--share-text);
+      text-decoration: none;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    a.dir-name:hover {
+      text-decoration: underline;
+    }
+
+    .dir-icon {
+      flex-shrink: 0;
+      font-size: 14px;
+    }
+
+    .dir-meta {
+      flex-shrink: 0;
+      color: var(--share-muted);
+      font-size: 12px;
+    }
+
+    .dir-download {
+      flex-shrink: 0;
+      padding: 8px 14px;
+      font-size: 13px;
+    }
+
+    .dir-empty {
+      margin: 0;
+      padding: 28px 24px;
+      text-align: center;
+      color: var(--share-muted);
+      font-size: 14px;
+    }
+
+    .dir-back {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+      padding: 6px 10px;
+      border: var(--share-border-width) solid var(--share-border);
+      border-radius: var(--share-radius);
+      background: var(--share-card);
+      color: var(--share-text);
+      font-size: 12px;
+      font-weight: 600;
+      text-decoration: none;
+    }
+
+    a.dir-back:hover {
+      background: color-mix(in oklab, var(--share-primary) 10%, var(--share-card));
+    }
+
+    .dir-row form {
+      margin: 0;
+      max-width: none;
+    }
   </style>
 </head>
 <body>

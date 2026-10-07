@@ -166,6 +166,14 @@ test("cleanupRetention deletes stale sessions, rate limits and audit logs using 
         match: /DELETE FROM audit_logs/,
         value: { meta: { changes: 0 } },
       },
+      {
+        match: /DELETE FROM share_access_logs/,
+        value: { meta: { changes: 5 } },
+      },
+      {
+        match: /DELETE FROM share_access_logs/,
+        value: { meta: { changes: 0 } },
+      },
     ],
   });
 
@@ -174,8 +182,8 @@ test("cleanupRetention deletes stale sessions, rate limits and audit logs using 
 
   assert.equal(result.jobName, "cleanupRetention");
   assert.equal(result.status, "success");
-  assert.equal(result.processed, 9);
-  assert.equal(result.succeeded, 9);
+  assert.equal(result.processed, 14);
+  assert.equal(result.succeeded, 14);
   assert.equal(result.failed, 0);
   assert.equal(typeof result.startedAt, "string");
   assert.equal(typeof result.finishedAt, "string");
@@ -184,6 +192,7 @@ test("cleanupRetention deletes stale sessions, rate limits and audit logs using 
     sessions: 2,
     rateLimits: 3,
     auditLogs: 4,
+    shareAccessLogs: 5,
   });
 
   const sessionRun = state.runs.find((entry) =>
@@ -215,6 +224,21 @@ test("cleanupRetention deletes stale sessions, rate limits and audit logs using 
     auditRun.sql,
     new RegExp(`LIMIT ${retention.AUDIT_LOG_DELETE_BATCH_SIZE}`),
   );
+
+  const shareAccessRun = state.runs.find((entry) =>
+    /DELETE FROM share_access_logs/.test(entry.sql),
+  );
+  assert.ok(shareAccessRun, "share_access_logs DELETE 应至少执行一轮");
+  assert.deepEqual(shareAccessRun.args, [
+    new Date(
+      now.getTime() - retention.SHARE_ACCESS_LOG_RETENTION_MS,
+    ).toISOString(),
+  ]);
+  assert.match(shareAccessRun.sql, /WHERE id IN \(/);
+  assert.match(
+    shareAccessRun.sql,
+    new RegExp(`LIMIT ${retention.AUDIT_LOG_DELETE_BATCH_SIZE}`),
+  );
 });
 
 test("cleanupRetention loops batched audit_logs DELETE until a round deletes nothing", async () => {
@@ -227,6 +251,10 @@ test("cleanupRetention loops batched audit_logs DELETE until a round deletes not
       { match: /DELETE FROM audit_logs/, value: { meta: { changes: 500 } } },
       { match: /DELETE FROM audit_logs/, value: { meta: { changes: 300 } } },
       { match: /DELETE FROM audit_logs/, value: { meta: { changes: 0 } } },
+      {
+        match: /DELETE FROM share_access_logs/,
+        value: { meta: { changes: 0 } },
+      },
     ],
   });
 
@@ -234,6 +262,7 @@ test("cleanupRetention loops batched audit_logs DELETE until a round deletes not
 
   assert.equal(result.status, "success");
   assert.equal(result.details.auditLogs, 1300);
+  assert.equal(result.details.shareAccessLogs, 0);
   const auditRuns = state.runs.filter((entry) =>
     /DELETE FROM audit_logs/.test(entry.sql),
   );
@@ -252,6 +281,10 @@ test("cleanupRetention caps audit_logs batches per cron run and logs a warning",
         match: /DELETE FROM audit_logs/,
         value: { meta: { changes: retention.AUDIT_LOG_DELETE_BATCH_SIZE } },
       })),
+      {
+        match: /DELETE FROM share_access_logs/,
+        value: { meta: { changes: 0 } },
+      },
     ],
   });
 
@@ -274,6 +307,44 @@ test("cleanupRetention caps audit_logs batches per cron run and logs a warning",
   const log = JSON.parse(warnings[0][0]);
   assert.equal(log.level, "warn");
   assert.equal(log.event, "job.cleanupRetention.auditLogsCapped");
+});
+
+test("cleanupRetention caps share_access_logs batches per cron run and logs a warning", async () => {
+  const retention = loadModule("jobs/cleanupRetention.js");
+  const rounds = retention.AUDIT_LOG_DELETE_MAX_ROUNDS;
+  const { db } = createDb({
+    runHandlers: [
+      { match: /DELETE FROM sessions/, value: { meta: { changes: 0 } } },
+      { match: /DELETE FROM rate_limits/, value: { meta: { changes: 0 } } },
+      { match: /DELETE FROM audit_logs/, value: { meta: { changes: 0 } } },
+      // share_access_logs 每轮删满一批：验证轮数上限与独立 capped 告警事件
+      ...Array.from({ length: rounds }, () => ({
+        match: /DELETE FROM share_access_logs/,
+        value: { meta: { changes: retention.AUDIT_LOG_DELETE_BATCH_SIZE } },
+      })),
+    ],
+  });
+
+  const originalWarn = console.warn;
+  const warnings = [];
+  console.warn = (...args) => warnings.push(args);
+  let result;
+  try {
+    result = await retention.cleanupRetention({ DB: db }, new Date());
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(result.status, "success");
+  assert.equal(
+    result.details.shareAccessLogs,
+    rounds * retention.AUDIT_LOG_DELETE_BATCH_SIZE,
+  );
+  assert.equal(warnings.length, 1);
+  const log = JSON.parse(warnings[0][0]);
+  assert.equal(log.level, "warn");
+  assert.equal(log.event, "job.cleanupRetention.shareAccessLogsCapped");
+  assert.equal(log.table, "share_access_logs");
 });
 
 test("cleanupExpired releases active upload reservation after marking expired file deleted", async () => {

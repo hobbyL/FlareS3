@@ -45,3 +45,16 @@ export async function consumeTextShareViewIfAllowed(
     shareId
   )
 }
+
+export async function consumeFolderShareViewIfAllowed(
+  db: D1Database,
+  shareId: string
+): Promise<ShareViewConsumeResult> {
+  return consumeShareViewIfAllowed(
+    db,
+    `UPDATE folder_shares
+     SET views = views + 1, updated_at = ?
+     WHERE id = ? AND (max_views = 0 OR views < max_views)`,
+    shareId
+  )
+}

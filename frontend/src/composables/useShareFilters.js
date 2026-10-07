@@ -21,6 +21,7 @@ export function useShareFilters({ t, isAdmin, owners }) {
     { label: t('shares.types.file'), value: 'file' },
     { label: t('shares.types.text'), value: 'text' },
     { label: t('shares.types.textOneTime'), value: 'text_one_time' },
+    { label: t('shares.types.folder'), value: 'folder' },
   ])
   const statusOptions = computed(() => [
     { label: t('shares.filters.allStatuses'), value: '' },

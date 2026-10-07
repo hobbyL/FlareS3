@@ -110,3 +110,47 @@ test("relationship integrity guards are managed by migrations", () => {
   assert.match(migration, /r2_configs/);
   assert.match(migration, /webdav_configs/);
 });
+
+test("folder shares and share access logs are managed by migrations", () => {
+  const migration = fs.readFileSync(
+    path.join(workerRoot, "migrations", "0007_folder_shares.sql"),
+    "utf8",
+  );
+
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS folder_shares \(/);
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS share_access_logs \(/);
+
+  for (const indexName of [
+    "idx_folder_shares_scope",
+    "idx_folder_shares_share_code",
+    "idx_folder_shares_owner_id",
+    "idx_share_access_logs_share",
+  ]) {
+    assert.match(
+      migration,
+      new RegExp(`CREATE (UNIQUE )?INDEX IF NOT EXISTS ${indexName}\\b`),
+    );
+  }
+
+  // scope 唯一：同一 config 的同一 prefix 只允许一条 folder 分享
+  assert.match(
+    migration,
+    /CREATE UNIQUE INDEX IF NOT EXISTS idx_folder_shares_scope ON folder_shares\(config_id, prefix\)/,
+  );
+
+  for (const triggerName of [
+    "trg_folder_shares_owner_exists_insert",
+    "trg_folder_shares_owner_exists_update",
+  ]) {
+    assert.match(
+      migration,
+      new RegExp(`CREATE TRIGGER IF NOT EXISTS ${triggerName}\\b`),
+    );
+  }
+
+  // 访问明细查询索引必须覆盖 (share_type, share_id) 前缀并按 id 倒序
+  assert.match(
+    migration,
+    /CREATE INDEX IF NOT EXISTS idx_share_access_logs_share ON share_access_logs\(share_type, share_id, id DESC\)/,
+  );
+});

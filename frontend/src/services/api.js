@@ -574,6 +574,46 @@ export default {
     return api.get('/shares', { params })
   },
 
+  /**
+   * 获取分享访问记录（分页，仅 owner/admin）
+   * @param {string} shareType - 分享类型（file / text / folder）
+   * @param {string} shareId - 资源 ID（file_id / text_id / folder_shares.id）
+   * @param {object} params - 查询参数（page）
+   * @returns {Promise<{items: Array, total: number, page: number, limit: number}>}
+   */
+  getShareAccesses(shareType, shareId, params = {}) {
+    return api.get(`/shares/${shareType}/${shareId}/accesses`, { params })
+  },
+
+  // ========== 文件夹分享 ==========
+
+  /**
+   * 查询目录的文件夹分享（同 scope 唯一）
+   * @param {object} params - 查询参数（config_id / prefix）
+   * @returns {Promise<{share: object|null}>}
+   */
+  getFolderShare(params = {}) {
+    return api.get('/mount/folder-share', { params })
+  },
+
+  /**
+   * 创建文件夹分享
+   * @param {object} payload - { config_id, prefix, password?, expires_at?, max_views? }
+   * @returns {Promise<{share: object}>}
+   */
+  createFolderShare(payload) {
+    return api.post('/mount/folder-share', payload)
+  },
+
+  /**
+   * 撤销文件夹分享
+   * @param {object} payload - { share_code } 或 { config_id, prefix }
+   * @returns {Promise<{success: boolean, deleted: boolean}>}
+   */
+  deleteFolderShare(payload) {
+    return api.delete('/mount/folder-share', { data: payload })
+  },
+
   // ========== 挂载管理 ==========
 
   /**

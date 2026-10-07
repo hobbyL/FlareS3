@@ -38,6 +38,7 @@ export default {
       file: '文件分享',
       text: '文档分享',
       textOneTime: '一次性文档分享',
+      folder: '文件夹分享',
       unknown: '未知类型',
     },
     status: {
@@ -56,10 +57,32 @@ export default {
       focusExpired: '已过期治理',
       focusExpiring: '即将过期治理',
       regenerate: '重置',
+      accessLog: '访问记录',
     },
     password: {
       set: '已设置',
       unset: '未设置',
+    },
+    access: {
+      title: '访问记录',
+      loading: '加载中...',
+      empty: '暂无访问记录',
+      loadFailed: '加载访问记录失败',
+      columns: {
+        time: '访问时间',
+        ip: 'IP 地址',
+        userAgent: '浏览器标识',
+        result: '结果',
+        path: '访问路径',
+      },
+      results: {
+        ok: '成功',
+        rejectedPassword: '口令错误',
+        expired: '已过期',
+        exhausted: '已耗尽',
+        notFound: '不存在',
+        unknown: '未知',
+      },
     },
     visits: {
       unlimited: '不限',

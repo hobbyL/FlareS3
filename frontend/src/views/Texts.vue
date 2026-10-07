@@ -153,6 +153,7 @@
             @view="openView"
             @qrcode="openQrCode"
             @share="openShare"
+            @access-log="openAccessLog"
             @edit="openEdit"
             @delete="handleDelete"
             @load-more="loadMore"
@@ -191,6 +192,15 @@
         :text-title="sharingTitle"
       />
 
+      <ShareAccessLogModal
+        v-if="accessLogModalVisible"
+        :show="accessLogModalVisible"
+        :share-type="accessLogType"
+        :share-id="accessLogId"
+        :share-name="accessLogName"
+        @update:show="handleAccessLogModalUpdate"
+      />
+
       <Modal
         :show="showDeleteModal"
         :title="t('texts.modals.deleteTitle')"
@@ -219,6 +229,7 @@ import { computed, h, onMounted, ref, watch, defineAsyncComponent } from 'vue'
 import {
   Eye,
   FileText,
+  History,
   LayoutGrid,
   Pencil,
   Plus,
@@ -252,6 +263,9 @@ const TextFormModal = defineAsyncComponent(() => import('../components/texts/Tex
 const TextViewModal = defineAsyncComponent(() => import('../components/texts/TextViewModal.vue'))
 const TextShareModal = defineAsyncComponent(() => import('../components/texts/TextShareModal.vue'))
 const TextQrModal = defineAsyncComponent(() => import('../components/texts/TextQrModal.vue'))
+const ShareAccessLogModal = defineAsyncComponent(
+  () => import('../components/shares/ShareAccessLogModal.vue')
+)
 
 const authStore = useAuthStore()
 const themeStore = useThemeStore()
@@ -399,6 +413,19 @@ const columns = computed(() => {
             Button,
             { size: 'small', type: 'default', disabled, onClick: () => openShare(row) },
             () => [h(Share2, { size: 16, style: 'margin-right: 4px' }), t('texts.actions.share')]
+          ),
+          h(
+            Button,
+            {
+              size: 'small',
+              type: 'default',
+              disabled: loading.value || deleting.value || !id,
+              onClick: () => openAccessLog(row),
+            },
+            () => [
+              h(History, { size: 16, style: 'margin-right: 4px' }),
+              t('texts.actions.accessLog'),
+            ]
           ),
           h(
             Button,
@@ -560,6 +587,30 @@ const openQrCode = (row) => {
   qrTextId.value = id
   qrTextTitle.value = String(row?.title ?? '').trim()
   qrModalVisible.value = true
+}
+
+const accessLogModalVisible = ref(false)
+const accessLogRecord = ref(null)
+const accessLogType = computed(() => 'text')
+const accessLogId = computed(() => normalizeId(accessLogRecord.value?.id))
+const accessLogName = computed(() => String(accessLogRecord.value?.title ?? '').trim())
+
+const openAccessLog = (row) => {
+  const id = normalizeId(row?.id)
+  if (!id) return
+  if (loading.value || deleting.value) return
+
+  accessLogRecord.value = row
+  accessLogModalVisible.value = true
+}
+
+const handleAccessLogModalUpdate = (nextValue) => {
+  if (nextValue) {
+    accessLogModalVisible.value = true
+    return
+  }
+  accessLogModalVisible.value = false
+  accessLogRecord.value = null
 }
 
 const openDeleteModal = (row) => {

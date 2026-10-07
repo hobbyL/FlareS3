@@ -74,6 +74,7 @@
             :format-bytes="formatBytes"
             :format-date-time="formatDateTime"
             @open-folder="emit('open-folder', $event)"
+            @share-folder="emit('share-folder', $event)"
             @preview="emit('preview', $event)"
             @download="emit('download', $event)"
             @rename="emit('rename', $event)"
@@ -197,6 +198,7 @@ const emit = defineEmits([
   'update:page',
   'update:page-size',
   'open-folder',
+  'share-folder',
   'preview',
   'download',
   'rename',

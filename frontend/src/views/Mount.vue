@@ -47,6 +47,7 @@
         @update:page="handlePaginationPageChange"
         @update:page-size="handlePaginationPageSizeChange"
         @open-folder="openFolder"
+        @share-folder="openShareFolder"
         @preview="openPreview"
         @download="downloadObject"
         @rename="(key) => openMoveModal(key, 'rename')"
@@ -101,6 +102,14 @@
         :progress="uploadProgress"
         @update:show="handleUploadProgressModalUpdate"
       />
+
+      <FolderShareModal
+        v-if="folderShareModalVisible"
+        :show="folderShareModalVisible"
+        :config-id="folderShareConfigId"
+        :prefix="folderSharePrefix"
+        @update:show="handleFolderShareModalUpdate"
+      />
     </div>
   </AppLayout>
 </template>
@@ -135,6 +144,9 @@ const MountedObjectPreviewModal = defineAsyncComponent(
   () => import('../components/mount/MountedObjectPreviewModal.vue')
 )
 const MountMoveModal = defineAsyncComponent(() => import('../components/mount/MountMoveModal.vue'))
+const FolderShareModal = defineAsyncComponent(
+  () => import('../components/mount/FolderShareModal.vue')
+)
 
 const { t, locale } = useI18n({ useScope: 'global' })
 const message = useMessage()
@@ -460,6 +472,34 @@ const handleMoveConfirm = async ({ toDir, newName } = {}) => {
   }
 }
 
+// ── 文件夹分享 ──
+
+const folderShareModalVisible = ref(false)
+const folderShareConfigId = ref('')
+const folderSharePrefix = ref('')
+
+const openShareFolder = (key) => {
+  const configId = String(selectedConfigId.value || '').trim()
+  const folderKey = String(key || '').trim()
+  if (!configId || !folderKey) return
+  if (!folderKey.endsWith('/')) return
+  if (loading.value || deleting.value) return
+
+  folderShareConfigId.value = configId
+  folderSharePrefix.value = folderKey
+  folderShareModalVisible.value = true
+}
+
+const handleFolderShareModalUpdate = (nextValue) => {
+  if (nextValue) {
+    folderShareModalVisible.value = true
+    return
+  }
+  folderShareModalVisible.value = false
+  folderShareConfigId.value = ''
+  folderSharePrefix.value = ''
+}
+
 // ── 上传文件 ──
 
 const handleUploadFileChange = async (event) => {
@@ -540,6 +580,7 @@ const columns = computed(() =>
     onDeleteObject: handleDeleteObject,
     onRenameObject: (key) => openMoveModal(key, 'rename'),
     onMoveObject: (key) => openMoveModal(key, 'move'),
+    onShareFolder: openShareFolder,
   })
 )
 
@@ -550,6 +591,9 @@ watch(
     previewKey.value = ''
     closeDeleteModal()
     if (!moving.value) closeMoveModal()
+    folderShareModalVisible.value = false
+    folderShareConfigId.value = ''
+    folderSharePrefix.value = ''
 
     await resetForConfig(value)
   }

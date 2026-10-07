@@ -141,6 +141,7 @@ export function toShareTypeLabelKey(type) {
   if (normalized === 'file') return 'shares.types.file'
   if (normalized === 'text') return 'shares.types.text'
   if (normalized === 'text_one_time') return 'shares.types.textOneTime'
+  if (normalized === 'folder') return 'shares.types.folder'
   return 'shares.types.unknown'
 }
 
@@ -178,6 +179,16 @@ export function formatShareVisits(record = {}, t = (key) => key) {
 export function hasEditableConfig(record = {}) {
   const type = normalizeType(record.type)
   return type === 'file' || type === 'text'
+}
+
+/**
+ * 是否可查看访问记录：file / text / folder 三类在服务端落 share_access_logs，
+ * text_one_time 不落库（无记录入口）。resource_id 口径与 /api/shares 一致。
+ */
+export function hasAccessLogConfig(record = {}) {
+  const type = normalizeType(record.type)
+  const resourceId = normalizeText(record.resource_id)
+  return Boolean(resourceId) && (type === 'file' || type === 'text' || type === 'folder')
 }
 
 export function canOpenShare(record = {}) {

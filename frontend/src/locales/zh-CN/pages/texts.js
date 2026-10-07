@@ -23,6 +23,7 @@ export default {
       delete: '删除',
       copy: '复制',
       qrcode: '二维码',
+      accessLog: '访问记录',
       loadMore: '加载更多',
     },
     modals: {

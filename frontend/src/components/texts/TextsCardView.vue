@@ -51,6 +51,18 @@
                   <Share2 :size="18" />
                 </Button>
               </Tooltip>
+              <Tooltip :content="t('texts.actions.accessLog')">
+                <Button
+                  type="ghost"
+                  size="small"
+                  class="icon-btn"
+                  :aria-label="t('texts.actions.accessLog')"
+                  :disabled="loading || deleting"
+                  @click.stop="emit('access-log', row)"
+                >
+                  <History :size="18" />
+                </Button>
+              </Tooltip>
               <Tooltip :content="t('texts.actions.copy')">
                 <Button
                   type="ghost"
@@ -122,7 +134,7 @@
 <script setup>
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Copy, FileText, Pencil, QrCode, Share2, Trash2 } from 'lucide-vue-next'
+import { Copy, FileText, History, Pencil, QrCode, Share2, Trash2 } from 'lucide-vue-next'
 import api from '../../services/api'
 import { useMessage } from '../../composables/useMessage'
 import Card from '../ui/card/Card.vue'
@@ -181,7 +193,7 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['view', 'qrcode', 'share', 'edit', 'delete', 'load-more'])
+const emit = defineEmits(['view', 'qrcode', 'share', 'access-log', 'edit', 'delete', 'load-more'])
 
 const { t } = useI18n({ useScope: 'global' })
 const message = useMessage()

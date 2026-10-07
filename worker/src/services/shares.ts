@@ -1,9 +1,10 @@
 import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
 import type { AuthUser } from '../middleware/authSession'
+import { logWarn } from '../utils/log'
 import { measureRouteStep, type RouteTimingEntry } from '../utils/routeTiming'
 
-export type ShareRecordType = 'file' | 'text' | 'text_one_time'
+export type ShareRecordType = 'file' | 'text' | 'text_one_time' | 'folder'
 export type ShareRecordStatus = 'active' | 'expired' | 'exhausted' | 'consumed'
 export type ShareSortBy = 'updated_at' | 'expires_at'
 export type ShareSortOrder = 'asc' | 'desc'
@@ -12,6 +13,8 @@ export type ShareListItem = {
   type: ShareRecordType
   resource_id: string
   resource_name: string
+  /** folder 分享的挂载点名称（其余类型为 null） */
+  config_name: string | null
   owner_id: string
   owner_username: string
   share_code: string
@@ -208,6 +211,7 @@ function toFileShareItem(row: Record<string, unknown>): ShareListItem | null {
     type: 'file',
     resource_id: normalizeText(row.file_id),
     resource_name: normalizeText(row.filename),
+    config_name: null,
     owner_id: normalizeText(row.owner_id),
     owner_username: normalizeText(row.owner_username),
     share_code: shareCode,
@@ -232,6 +236,7 @@ function toTextShareItem(row: Record<string, unknown>): ShareListItem | null {
     type: 'text',
     resource_id: normalizeText(row.text_id),
     resource_name: normalizeText(row.text_title),
+    config_name: null,
     owner_id: normalizeText(row.owner_id),
     owner_username: normalizeText(row.owner_username),
     share_code: shareCode,
@@ -256,6 +261,7 @@ function toTextOneTimeShareItem(row: Record<string, unknown>): ShareListItem | n
     type: 'text_one_time',
     resource_id: normalizeText(row.text_id),
     resource_name: normalizeText(row.text_title),
+    config_name: null,
     owner_id: normalizeText(row.owner_id),
     owner_username: normalizeText(row.owner_username),
     share_code: shareCode,
@@ -337,16 +343,73 @@ async function queryTextOneTimeShares(
     .filter(Boolean) as ShareListItem[]
 }
 
+function toFolderShareItem(row: Record<string, unknown>): ShareListItem | null {
+  if (normalizeText(row.owner_status) !== 'active') return null
+
+  const shareCode = normalizeText(row.share_code)
+  return {
+    type: 'folder',
+    resource_id: normalizeText(row.id),
+    resource_name: normalizeText(row.prefix),
+    config_name: normalizeNullableText(row.config_name),
+    owner_id: normalizeText(row.owner_id),
+    owner_username: normalizeText(row.owner_username),
+    share_code: shareCode,
+    share_url: `/f/${shareCode}`,
+    status: resolveStandardShareStatus(row),
+    views: normalizeNumber(row.views),
+    max_views: normalizeNumber(row.max_views),
+    has_password: Boolean(normalizeText(row.password_hash)),
+    expires_at: normalizeNullableText(row.expires_at),
+    consumed_at: null,
+    created_at: normalizeText(row.created_at),
+    updated_at: normalizeText(row.updated_at),
+  }
+}
+
+async function queryFolderShares(
+  db: D1Database,
+  timings: RouteTimingEntry[] = []
+): Promise<ShareListItem[]> {
+  try {
+    const rows = await measureRouteStep(timings, 'shareFolderRows', () =>
+      withD1Retry(db)
+        .prepare(
+          `SELECT s.id, s.owner_id, s.share_code, s.password_hash, s.expires_at, s.max_views, s.views, s.created_at, s.updated_at,
+                  COALESCE(rc.name, wc.name) AS config_name,
+                  u.username AS owner_username, u.status AS owner_status
+           FROM folder_shares s
+           LEFT JOIN r2_configs rc ON rc.id = s.config_id
+           LEFT JOIN webdav_configs wc ON wc.id = s.config_id
+           LEFT JOIN users u ON u.id = s.owner_id`
+        )
+        .all()
+    )
+
+    return (rows.results || [])
+      .map((row) => toFolderShareItem(row as Record<string, unknown>))
+      .filter(Boolean) as ShareListItem[]
+  } catch (error) {
+    // folder_shares 表缺失（migration 未跑）等场景下降级为空列表，
+    // 不阻断 file/text 分享的既有列表行为
+    logWarn('share.folder.list.failed', {
+      error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+    })
+    return []
+  }
+}
+
 export async function listShareItems(
   env: Env,
   user: AuthUser,
   filters: ShareListFilters,
   timings: RouteTimingEntry[] = []
 ): Promise<{ items: ShareListItem[]; total: number }> {
-  const [fileItems, textItems, textOneTimeItems] = await Promise.all([
+  const [fileItems, textItems, textOneTimeItems, folderItems] = await Promise.all([
     queryFileShares(env.DB, timings),
     queryTextShares(env.DB, timings),
     queryTextOneTimeShares(env.DB, timings),
+    queryFolderShares(env.DB, timings),
   ])
 
   const effectiveOwnerId = user.role === 'admin' ? normalizeText(filters.owner_id) : user.id
@@ -359,7 +422,7 @@ export async function listShareItems(
   const expiresToTime = toNullableTime(filters.expires_to)
 
   const filtered = await measureRouteStep(timings, 'shareFilterSort', async () =>
-    [...fileItems, ...textItems, ...textOneTimeItems]
+    [...fileItems, ...textItems, ...textOneTimeItems, ...folderItems]
       .filter(
         (item) => item.owner_id === effectiveOwnerId || (user.role === 'admin' && !effectiveOwnerId)
       )

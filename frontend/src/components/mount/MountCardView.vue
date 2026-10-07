@@ -53,6 +53,17 @@
                     <FolderOpen :size="18" />
                   </Button>
                 </Tooltip>
+                <Tooltip :content="t('mount.shareFolder.actionShare')">
+                  <Button
+                    type="ghost"
+                    size="small"
+                    class="icon-btn"
+                    :disabled="loading || deleting"
+                    @click.stop="emit('share-folder', row.key)"
+                  >
+                    <Share2 :size="18" />
+                  </Button>
+                </Tooltip>
                 <Tooltip :content="t('mount.actions.delete')">
                   <Button
                     type="ghost"
@@ -164,7 +175,16 @@
 </template>
 
 <script setup>
-import { Download, Eye, File, FolderInput, FolderOpen, Pencil, Trash2 } from 'lucide-vue-next'
+import {
+  Download,
+  Eye,
+  File,
+  FolderInput,
+  FolderOpen,
+  Pencil,
+  Share2,
+  Trash2,
+} from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import Button from '../ui/button/Button.vue'
 import Card from '../ui/card/Card.vue'
@@ -215,6 +235,7 @@ defineProps({
 
 const emit = defineEmits([
   'open-folder',
+  'share-folder',
   'preview',
   'download',
   'rename',

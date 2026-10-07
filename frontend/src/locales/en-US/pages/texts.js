@@ -23,6 +23,7 @@ export default {
       delete: 'Delete',
       copy: 'Copy',
       qrcode: 'QR code',
+      accessLog: 'Access log',
       loadMore: 'Load more',
     },
     modals: {

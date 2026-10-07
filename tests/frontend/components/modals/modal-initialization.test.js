@@ -14,6 +14,8 @@ const directShowModalSources = [
   "../../../../frontend/src/components/users/UserEditModal.vue",
   "../../../../frontend/src/components/setup/R2ConfigModal.vue",
   "../../../../frontend/src/components/setup/StorageConfigModal.vue",
+  "../../../../frontend/src/components/mount/FolderShareModal.vue",
+  "../../../../frontend/src/components/shares/ShareAccessLogModal.vue",
 ];
 
 const arrayShowModalSources = [

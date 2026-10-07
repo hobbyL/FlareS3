@@ -106,6 +106,15 @@
                 <Button
                   type="ghost"
                   size="small"
+                  class="share-action-btn"
+                  :disabled="loading || !hasAccessLogConfig(record)"
+                  @click.stop="emit('access-log', record)"
+                >
+                  <History :size="16" />
+                </Button>
+                <Button
+                  type="ghost"
+                  size="small"
                   class="share-action-btn share-action-danger"
                   :disabled="loading"
                   @click.stop="emit('disable', record)"
@@ -123,7 +132,7 @@
 
 <script setup>
 import { computed } from 'vue'
-import { Copy, ExternalLink, Pencil, RefreshCw, Trash2 } from 'lucide-vue-next'
+import { Copy, ExternalLink, History, Pencil, RefreshCw, Trash2 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import Button from '../ui/button/Button.vue'
 import Card from '../ui/card/Card.vue'
@@ -131,6 +140,7 @@ import Tag from '../ui/tag/Tag.vue'
 import {
   canOpenShare,
   formatShareVisits,
+  hasAccessLogConfig,
   hasEditableConfig,
   toShareSelectionKey,
   toShareStatusLabelKey,
@@ -171,6 +181,7 @@ const emit = defineEmits([
   'edit',
   'disable',
   'regenerate',
+  'access-log',
   'toggle-select',
 ])
 

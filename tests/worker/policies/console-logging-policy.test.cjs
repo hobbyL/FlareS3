@@ -26,6 +26,7 @@ const MODULE_TAG_EXEMPT_FILES = new Set([
   "routes/upload/multipart.ts", // [multipart] 直链回退吞错点
   "services/filePreview.ts", // [filePreview] 上游失败固定文案（spec 契约）
   "services/fileShareDownload.ts", // [fileShareDownload] 共享下载 502 吞错点
+  "routes/folderShareView.ts", // [folderShareView] folder 分享下载/列表上游失败吞错点
 ]);
 
 function listSourceFiles(dir) {

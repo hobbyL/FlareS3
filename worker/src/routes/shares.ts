@@ -1,5 +1,7 @@
 import type { Env } from '../config/env'
+import { withD1Retry } from '../utils/db'
 import { listShareItems, type ShareRecordStatus, type ShareRecordType } from '../services/shares'
+import { listShareAccessLogs, type ShareAccessLogShareType } from '../services/shareAccessLog'
 import { getUser, jsonResponse } from './utils'
 import { withRouteTimingHeaders, type RouteTimingEntry } from '../utils/routeTiming'
 
@@ -104,4 +106,124 @@ export async function listShares(request: Request, env: Env): Promise<Response> 
     }),
     timings
   )
+}
+
+/** 访问明细端点支持的分享类型（text_one_time 无密码/无消费记录，不在范围内） */
+const ACCESS_SHARE_TYPES: readonly ShareAccessLogShareType[] = ['file', 'text', 'folder']
+
+/**
+ * 按「列表口径 id」查对应分享表的 owner：
+ * - file → file_shares.file_id
+ * - text → text_shares.text_id
+ * - folder → folder_shares.id
+ * 与 /api/shares 列表返回的 resource_id 保持一致，前端可直接透传。
+ */
+async function findShareOwner(
+  env: Env,
+  shareType: ShareAccessLogShareType,
+  shareId: string
+): Promise<{ ownerId: string } | null> {
+  const statementByType: Record<ShareAccessLogShareType, string> = {
+    file: 'SELECT owner_id FROM file_shares WHERE file_id = ? LIMIT 1',
+    text: 'SELECT owner_id FROM text_shares WHERE text_id = ? LIMIT 1',
+    folder: 'SELECT owner_id FROM folder_shares WHERE id = ? LIMIT 1',
+  }
+
+  const row = await withD1Retry(env.DB).prepare(statementByType[shareType]).bind(shareId).first()
+
+  if (!row) return null
+  const ownerId = String((row as any).owner_id ?? '')
+  return ownerId ? { ownerId } : null
+}
+
+/**
+ * 获取分享的访问明细
+ *
+ * @route GET /api/shares/:shareType/:shareId/accesses
+ * @param request - HTTP 请求对象（需要认证，owner/admin）
+ * @param env - Cloudflare Workers 环境变量
+ * @param shareType - 分享类型（file | text | folder）
+ * @param shareId - 分享资源 ID（与 /api/shares 列表的 resource_id 同口径）
+ * @returns JSON 响应，包含访问日志分页
+ *
+ * @example
+ * // 查询参数
+ * // page: 页码（默认 1，每页固定 20 条）
+ *
+ * // 成功响应 (200)
+ * {
+ *   "items": [
+ *     {
+ *       "id": 21,
+ *       "ip": "203.0.113.7",
+ *       "user_agent": "Mozilla/5.0 ...",
+ *       "path": "docs/readme.md",
+ *       "result": "ok",
+ *       "created_at": "2026-10-07T01:00:00.000Z"
+ *     }
+ *   ],
+ *   "total": 41,
+ *   "page": 1,
+ *   "limit": 20
+ * }
+ *
+ * // 未授权 (401)
+ * { "error": "未授权" }
+ *
+ * // 无效的分享类型 (400)
+ * { "error": "无效的分享类型" }
+ *
+ * // 分享不存在 (404)
+ * { "error": "分享不存在" }
+ *
+ * // 无权限（非 owner 且非 admin）(403)
+ * { "error": "无权限" }
+ */
+export async function listShareAccesses(
+  request: Request,
+  env: Env,
+  shareType: string,
+  shareId: string
+): Promise<Response> {
+  const user = getUser(request)
+  if (!user) {
+    return jsonResponse({ error: '未授权' }, 401)
+  }
+
+  const normalizedType = String(shareType || '').trim() as ShareAccessLogShareType
+  if (!ACCESS_SHARE_TYPES.includes(normalizedType)) {
+    return jsonResponse({ error: '无效的分享类型' }, 400)
+  }
+
+  const normalizedShareId = String(shareId || '').trim()
+  if (!normalizedShareId) {
+    return jsonResponse({ error: '分享不存在' }, 404)
+  }
+
+  const owner = await findShareOwner(env, normalizedType, normalizedShareId)
+  if (!owner) {
+    return jsonResponse({ error: '分享不存在' }, 404)
+  }
+
+  if (user.role !== 'admin' && owner.ownerId !== user.id) {
+    return jsonResponse({ error: '无权限' }, 403)
+  }
+
+  const url = new URL(request.url)
+  const page = Math.max(1, Math.floor(Number(url.searchParams.get('page') ?? 1)) || 1)
+  const limit = 20
+
+  const result = await listShareAccessLogs(env.DB, {
+    share_type: normalizedType,
+    share_id: normalizedShareId,
+    page,
+    limit,
+  })
+
+  return jsonResponse({
+    items: result.items,
+    total: result.total,
+    page,
+    limit,
+  })
 }
