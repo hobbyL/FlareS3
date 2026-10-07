@@ -1,5 +1,5 @@
 import { h } from 'vue'
-import { Download, Eye, FolderOpen, Trash2 } from 'lucide-vue-next'
+import { Download, Eye, FolderInput, FolderOpen, Pencil, Trash2 } from 'lucide-vue-next'
 import Button from '../ui/button/Button.vue'
 import Tooltip from '../ui/tooltip/Tooltip.vue'
 import TableCellText from '../ui/table/TableCellText.vue'
@@ -19,6 +19,8 @@ export function buildMountTableColumns({
   onOpenPreview = () => {},
   onDownloadObject = () => {},
   onDeleteObject = () => {},
+  onRenameObject = () => {},
+  onMoveObject = () => {},
 } = {}) {
   const translate = typeof t === 'function' ? t : (key) => key
 
@@ -73,7 +75,7 @@ export function buildMountTableColumns({
     {
       title: translate('mount.table.actions'),
       key: 'actions',
-      width: locale === 'zh-CN' ? 360 : 420,
+      width: locale === 'zh-CN' ? 520 : 600,
       align: 'center',
       ellipsis: false,
       render: (row) => {
@@ -139,6 +141,32 @@ export function buildMountTableColumns({
             () => [
               h(Download, { size: 16, style: 'margin-right: 4px' }),
               translate('mount.actions.download'),
+            ]
+          ),
+          h(
+            Button,
+            {
+              size: 'small',
+              type: 'default',
+              disabled: loading || deleting,
+              onClick: () => onRenameObject(row.key),
+            },
+            () => [
+              h(Pencil, { size: 16, style: 'margin-right: 4px' }),
+              translate('mount.move.actionRename'),
+            ]
+          ),
+          h(
+            Button,
+            {
+              size: 'small',
+              type: 'default',
+              disabled: loading || deleting,
+              onClick: () => onMoveObject(row.key),
+            },
+            () => [
+              h(FolderInput, { size: 16, style: 'margin-right: 4px' }),
+              translate('mount.move.actionMove'),
             ]
           ),
           h(

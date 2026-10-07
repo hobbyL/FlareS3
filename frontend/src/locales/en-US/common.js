@@ -27,6 +27,7 @@ export default {
     pleaseSelect: 'Please select',
     expand: 'Expand',
     collapse: 'Collapse',
+    retry: 'Retry',
   },
   languageName: {
     'zh-CN': '中文',

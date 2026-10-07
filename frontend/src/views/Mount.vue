@@ -49,6 +49,8 @@
         @open-folder="openFolder"
         @preview="openPreview"
         @download="downloadObject"
+        @rename="(key) => openMoveModal(key, 'rename')"
+        @move="(key) => openMoveModal(key, 'move')"
         @delete="handleDeleteObject"
         @load-more="nextPage"
       />
@@ -79,6 +81,20 @@
         @create="handleCreateFolder"
       />
 
+      <MountMoveModal
+        v-if="showMoveModal"
+        :show="showMoveModal"
+        :mode="moveMode"
+        :source-key="moveSourceKey"
+        :source-name="moveSourceName"
+        :source-dir="moveSourceDir"
+        :loading="moving"
+        :load-folders="loadMountFolderNodes"
+        @update:show="handleMoveModalUpdate"
+        @cancel="closeMoveModal"
+        @confirm="handleMoveConfirm"
+      />
+
       <MountUploadProgressModal
         :show="showUploadProgressModal"
         :uploading="uploading"
@@ -106,9 +122,11 @@ import MountUploadProgressModal from '../components/mount/MountUploadProgressMod
 import { buildMountTableColumns } from '../components/mount/mountTableColumns.js'
 import {
   buildMountDownloadUrl,
+  buildMountFolderNodes,
   formatMountBytes,
   formatMountDateTime,
   getMountObjectBasename,
+  getMountObjectDirPrefix,
   isMountedObjectPreviewSupported,
   normalizeMountPrefix,
 } from '../utils/mountObjects.js'
@@ -116,6 +134,7 @@ import {
 const MountedObjectPreviewModal = defineAsyncComponent(
   () => import('../components/mount/MountedObjectPreviewModal.vue')
 )
+const MountMoveModal = defineAsyncComponent(() => import('../components/mount/MountMoveModal.vue'))
 
 const { t, locale } = useI18n({ useScope: 'global' })
 const message = useMessage()
@@ -351,6 +370,96 @@ const handleCreateFolder = async () => {
   }
 }
 
+// ── 移动 / 重命名 ──
+
+const showMoveModal = ref(false)
+const moveMode = ref('move')
+const moveSourceKey = ref('')
+const moveSourceName = ref('')
+const moveSourceDir = ref('')
+const moving = ref(false)
+
+// 目录树懒加载：复用 getMountObjects，仅取文件夹行
+const loadMountFolderNodes = async (dirPrefix) => {
+  const configId = String(selectedConfigId.value || '').trim()
+  if (!configId) return []
+
+  const result = await api.listMountedObjects({
+    configId,
+    prefix: normalizeMountPrefix(dirPrefix),
+    limit: 100,
+  })
+  return buildMountFolderNodes({
+    basePrefix: normalizeMountPrefix(dirPrefix),
+    folders: result?.folders,
+  })
+}
+
+const openMoveModal = (key, mode = 'move') => {
+  const objectKey = String(key || '').trim()
+  if (!objectKey || objectKey.endsWith('/')) return
+  if (loading.value || moving.value) return
+  if (!selectedConfigId.value) return
+
+  moveMode.value = mode === 'rename' ? 'rename' : 'move'
+  moveSourceKey.value = objectKey
+  moveSourceName.value = getMountObjectBasename(objectKey) || objectKey
+  moveSourceDir.value = getMountObjectDirPrefix(objectKey)
+  showMoveModal.value = true
+}
+
+const closeMoveModal = () => {
+  if (moving.value) return
+  showMoveModal.value = false
+  moveSourceKey.value = ''
+  moveSourceName.value = ''
+  moveSourceDir.value = ''
+}
+
+const handleMoveModalUpdate = (nextValue) => {
+  if (moving.value) return
+  if (!nextValue) {
+    closeMoveModal()
+    return
+  }
+  showMoveModal.value = true
+}
+
+// 提交成功后强制关闭（绕过 moving 守卫的时序）
+const closeMoveModalForce = () => {
+  showMoveModal.value = false
+  moveSourceKey.value = ''
+  moveSourceName.value = ''
+  moveSourceDir.value = ''
+}
+
+const handleMoveConfirm = async ({ toDir, newName } = {}) => {
+  if (moving.value) return
+
+  const configId = String(selectedConfigId.value || '').trim()
+  const sourceKey = String(moveSourceKey.value || '').trim()
+  const targetDir = String(toDir || '').trim()
+  const targetName = String(newName || '').trim()
+  if (!configId || !sourceKey || !targetName) return
+
+  moving.value = true
+  try {
+    await api.moveMountObject({
+      configId,
+      key: sourceKey,
+      toDir: targetDir,
+      newName: targetName,
+    })
+    message.success(t('mount.move.success'))
+    closeMoveModalForce()
+    await handleRefresh()
+  } catch (error) {
+    message.error(error.response?.data?.error || t('mount.move.failed'))
+  } finally {
+    moving.value = false
+  }
+}
+
 // ── 上传文件 ──
 
 const handleUploadFileChange = async (event) => {
@@ -429,6 +538,8 @@ const columns = computed(() =>
     onOpenPreview: openPreview,
     onDownloadObject: downloadObject,
     onDeleteObject: handleDeleteObject,
+    onRenameObject: (key) => openMoveModal(key, 'rename'),
+    onMoveObject: (key) => openMoveModal(key, 'move'),
   })
 )
 
@@ -438,6 +549,7 @@ watch(
     previewModalVisible.value = false
     previewKey.value = ''
     closeDeleteModal()
+    if (!moving.value) closeMoveModal()
 
     await resetForConfig(value)
   }

@@ -742,3 +742,202 @@ export async function createMountedFolder(request: Request, env: Env): Promise<R
     return jsonResponse({ error: `创建目录失败（${formatted.message}）` }, formatted.status)
   }
 }
+
+// ── 移动 / 重命名 ──
+
+/**
+ * 判断 provider 异常是否表示源对象不存在。
+ */
+function isMoveSourceMissingError(error: unknown): boolean {
+  return (
+    error instanceof StorageError && (error.httpStatusCode === 404 || error.code === 'NotFound')
+  )
+}
+
+/**
+ * 判断 provider 异常是否表示目标已存在（WebDAV MOVE Overwrite:F 的 412/409）。
+ */
+function isMoveTargetConflictError(error: unknown): boolean {
+  return (
+    error instanceof StorageError && (error.httpStatusCode === 409 || error.code === 'Conflict')
+  )
+}
+
+/**
+ * 判断 provider 异常是否表示对象超过 R2 CopyObject 上限。
+ */
+function isMoveEntityTooLargeError(error: unknown): boolean {
+  return (
+    error instanceof StorageError &&
+    (error.httpStatusCode === 413 || error.code === 'EntityTooLarge')
+  )
+}
+
+/**
+ * 移动 / 重命名挂载对象（同一挂载点内）
+ *
+ * 重命名 = 目标目录为对象当前目录 + 新文件名；移动 = 新目录（可同时改名）。
+ * 仅支持文件对象：key 带尾斜杠（目录）会被路径校验直接拒绝。
+ *
+ * @route POST /api/mount/move
+ * @param request - HTTP 请求对象（需要 admin 认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含移动后的对象 key
+ *
+ * @example
+ * // 请求体
+ * {
+ *   "config_id": "default",
+ *   "key": "docs/report.pdf",
+ *   "to_dir": "archive",
+ *   "new_name": "report-2026.pdf"
+ * }
+ *
+ * // 重命名（同目录）请求体
+ * {
+ *   "config_id": "default",
+ *   "key": "docs/report.pdf",
+ *   "to_dir": "docs",
+ *   "new_name": "report-final.pdf"
+ * }
+ *
+ * // 成功响应 (200)
+ * {
+ *   "ok": true,
+ *   "key": "archive/report-2026.pdf"
+ * }
+ *
+ * // 未授权 (401)
+ * { "error": "未授权" }
+ *
+ * // 缺少参数 / 路径非法（穿越、绝对路径、空段、尾斜杠 key、非法文件名）(400)
+ * { "error": "路径不能包含 . 或 .." }
+ * { "error": "路径不能以 / 结尾" }
+ * { "error": "文件名不能包含路径分隔符" }
+ * { "error": "目标与源相同" }
+ *
+ * // 目标已存在 (409)
+ * { "error": "目标文件已存在" }
+ *
+ * // 源对象不存在 (404)
+ * { "error": "对象不存在" }
+ *
+ * // 配置不存在 (404)
+ * { "error": "配置不存在或不可用" }
+ *
+ * // 对象超过 R2 复制上限 (413)
+ * { "error": "文件过大，超过 R2 复制上限（5GiB），请删除后重新上传到目标名称" }
+ *
+ * // 上游存储失败 (502)
+ * { "error": "移动对象失败（存储操作失败）" }
+ */
+export async function moveMountedObject(request: Request, env: Env): Promise<Response> {
+  const user = getUser(request)
+  if (!user) return jsonResponse({ error: '未授权' }, 401)
+
+  let configId = ''
+  let rawKey = ''
+  let rawToDir: string | undefined
+  let rawNewName = ''
+
+  try {
+    const body = await parseJson<{
+      config_id?: string
+      key?: string
+      to_dir?: string
+      new_name?: string
+    }>(request)
+    configId = String(body.config_id || '').trim()
+    rawKey = String(body.key || '').trim()
+    rawToDir = body.to_dir
+    rawNewName = String(body.new_name || '').trim()
+  } catch (error) {
+    return invalidJsonBodyResponse(error, '请求格式错误')
+  }
+
+  if (!configId) {
+    return jsonResponse({ error: '缺少 config_id' }, 400)
+  }
+  if (!rawKey) {
+    return jsonResponse({ error: '缺少 key' }, 400)
+  }
+  if (!rawNewName) {
+    return jsonResponse({ error: '缺少 new_name' }, 400)
+  }
+
+  // 源 key：文件对象（不允许尾斜杠，目录/前缀操作不在第一版范围）
+  const keyResult = normalizeMountKey(rawKey)
+  if ('response' in keyResult) return keyResult.response
+  const sourceKey = keyResult.key
+
+  // 目标目录：可空（挂载点根）、可带尾斜杠
+  const toDirResult = normalizeStoragePath(rawToDir, {
+    allowEmpty: true,
+    allowTrailingSlash: true,
+  })
+  if (!toDirResult.ok) {
+    return jsonResponse({ error: toDirResult.message }, 400)
+  }
+  const targetDir = toDirResult.key.replace(/\/+$/, '')
+
+  const nameResult = normalizeStorageFilename(rawNewName)
+  if (!nameResult.ok) {
+    return jsonResponse({ error: nameResult.message }, 400)
+  }
+
+  const destKey = targetDir ? `${targetDir}/${nameResult.key}` : nameResult.key
+  if (sourceKey === destKey) {
+    return jsonResponse({ error: '目标与源相同' }, 400)
+  }
+
+  const provider = await createProvider(env, configId)
+  if (!provider) {
+    return jsonResponse({ error: '配置不存在或不可用' }, 404)
+  }
+
+  // 目标占用检查（对齐 delete 的 404 对称语义，冲突用 409）
+  try {
+    const destExists = await provider.checkExists(destKey)
+    if (destExists) {
+      return jsonResponse({ error: '目标文件已存在' }, 409)
+    }
+  } catch (error) {
+    const formatted = formatStorageError(error)
+    return jsonResponse({ error: `检查目标失败（${formatted.message}）` }, formatted.status)
+  }
+
+  try {
+    await provider.move(sourceKey, destKey)
+  } catch (error) {
+    if (isMoveSourceMissingError(error)) {
+      return jsonResponse({ error: '对象不存在' }, 404)
+    }
+    if (isMoveTargetConflictError(error)) {
+      return jsonResponse({ error: '目标文件已存在' }, 409)
+    }
+    if (isMoveEntityTooLargeError(error)) {
+      return jsonResponse(
+        { error: '文件过大，超过 R2 复制上限（5GiB），请删除后重新上传到目标名称' },
+        413
+      )
+    }
+    const formatted = formatStorageError(error)
+    return jsonResponse({ error: `移动对象失败（${formatted.message}）` }, formatted.status)
+  }
+
+  await logAudit(env.DB, {
+    actorUserId: user.id,
+    action: 'MOUNT_OBJECT_MOVE',
+    targetType: 'mount_object',
+    targetId: destKey,
+    ip: getClientIp(request),
+    userAgent: request.headers.get('User-Agent') || undefined,
+    metadata: {
+      configId,
+      fromKey: sourceKey,
+      toKey: destKey,
+    },
+  })
+
+  return jsonResponse({ ok: true, key: destKey })
+}

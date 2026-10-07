@@ -44,6 +44,43 @@ export function getMountParentPrefix(value) {
   return trimmed.slice(0, idx + 1)
 }
 
+/**
+ * 对象所在目录（不含尾斜杠）：与后端 /api/mount/move 的 to_dir 规范一致。
+ * 'docs/team/a.txt' -> 'docs/team'；'a.txt' -> ''（挂载点根）
+ */
+export function getMountObjectDirPrefix(key) {
+  const raw = String(key || '')
+  const idx = raw.lastIndexOf('/')
+  return idx >= 0 ? raw.slice(0, idx) : ''
+}
+
+/**
+ * 组合移动/重命名目标 key：toDir 为空表示挂载点根。
+ */
+export function buildMountMoveTargetKey(toDir, fileName) {
+  const dir = String(toDir || '')
+    .trim()
+    .replace(/\/+$/, '')
+  const name = String(fileName || '').trim()
+  if (!name) return ''
+  return dir ? `${dir}/${name}` : name
+}
+
+/**
+ * 目标与源是否相同（同目录同文件名的 no-op 移动）。
+ */
+export function isSameMountMoveTarget(sourceKey, toDir, fileName) {
+  const targetKey = buildMountMoveTargetKey(toDir, fileName)
+  return Boolean(targetKey) && targetKey === String(sourceKey || '')
+}
+
+/**
+ * 从 listMountedObjects 结果提取目录树子节点（仅文件夹行）。
+ */
+export function buildMountFolderNodes({ basePrefix = '', folders = [] } = {}) {
+  return buildMountedObjectRows({ basePrefix, folders }).filter((row) => row.kind === 'folder')
+}
+
 export function isMountedObjectPreviewSupported(key) {
   return Boolean(getMountedPreviewKind(key))
 }

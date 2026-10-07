@@ -683,4 +683,35 @@ export class WebDAVProvider implements StorageProvider {
 
     throwForStatus(response, 'WebDAV 创建目录')
   }
+
+  // ── MOVE（移动 / 重命名） ──
+
+  async move(sourceKey: string, destKey: string, _options?: { size?: number }): Promise<void> {
+    const sourcePath = sourceKey.startsWith('/') ? sourceKey : `/${sourceKey}`
+    // Destination 必须是绝对 URL，且与请求 URL 一样逐段编码
+    const destinationUrl = this.buildUrl(destKey)
+
+    let response: Response
+    try {
+      response = await this.webdavRequest('MOVE', sourcePath, {
+        headers: {
+          Destination: destinationUrl,
+          // 禁止覆盖目标：目标已存在时服务端返回 412，路由层映射为 409 冲突
+          Overwrite: 'F',
+        },
+      })
+    } catch (error) {
+      throw wrapWebDAVError(error, 'WebDAV 移动失败')
+    }
+
+    if (response.status === 404) {
+      throw new StorageError('对象不存在', 'NotFound', 404)
+    }
+    if (response.status === 412 || response.status === 409) {
+      throw new StorageError('目标文件已存在', 'Conflict', 409)
+    }
+    if (!response.ok) {
+      throwForStatus(response, 'WebDAV 移动')
+    }
+  }
 }

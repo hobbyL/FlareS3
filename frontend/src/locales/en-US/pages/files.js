@@ -58,6 +58,12 @@ export default {
       clearTrash: 'Empty',
       loadMore: 'Load more',
     },
+    rename: {
+      action: 'Rename',
+      title: 'Rename File',
+      label: 'New file name',
+      placeholder: 'Enter a new file name',
+    },
     modals: {
       infoTitle: 'File info',
       uploadTitle: 'Upload',
@@ -127,6 +133,8 @@ export default {
       clearTrashFailed: 'Failed to empty trash',
       restoreSuccess: 'File restored',
       restoreFailed: 'Failed to restore file',
+      renameSuccess: 'File renamed',
+      renameFailed: 'Failed to rename file',
       shareLoadFailed: 'Failed to load share info',
       shareSaveSuccess: 'Share settings saved',
       shareSaveCopied: 'Share settings saved and link copied',

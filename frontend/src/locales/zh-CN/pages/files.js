@@ -58,6 +58,12 @@ export default {
       clearTrash: '清空',
       loadMore: '加载更多',
     },
+    rename: {
+      action: '重命名',
+      title: '重命名文件',
+      label: '新文件名',
+      placeholder: '请输入新文件名',
+    },
     modals: {
       infoTitle: '文件信息',
       uploadTitle: '上传文件',
@@ -126,6 +132,8 @@ export default {
       clearTrashFailed: '清空回收站失败',
       restoreSuccess: '文件恢复成功',
       restoreFailed: '恢复文件失败',
+      renameSuccess: '文件已重命名',
+      renameFailed: '重命名文件失败',
       shareLoadFailed: '获取分享信息失败',
       shareSaveSuccess: '分享设置已保存',
       shareSaveCopied: '分享设置已保存，链接已复制到剪贴板',

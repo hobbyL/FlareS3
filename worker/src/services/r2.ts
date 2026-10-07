@@ -33,6 +33,7 @@ import {
 } from './r2SignedRequests'
 import {
   checkObjectExists as objectsCheckObjectExists,
+  copyObject as objectsCopyObject,
   deleteObject as objectsDeleteObject,
   deleteObjectsByPrefix as objectsDeleteObjectsByPrefix,
   generateDownloadUrl as objectsGenerateDownloadUrl,
@@ -147,6 +148,14 @@ export async function getObjectSize(config: R2Config, key: string): Promise<numb
 
 export async function deleteObject(config: R2Config, key: string): Promise<void> {
   return objectsDeleteObject(config, key)
+}
+
+export async function copyObject(
+  config: R2Config,
+  sourceKey: string,
+  destKey: string
+): Promise<void> {
+  return objectsCopyObject(config, sourceKey, destKey)
 }
 
 export async function deleteObjectsByPrefix(

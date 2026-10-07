@@ -40,6 +40,11 @@ export type StorageUploadResult =
   | { kind: 'redirect'; url: string }
   | { kind: 'consumed'; key: string }
 
+export type StorageMoveOptions = {
+  /** 对象大小（字节）。R2 后端用于预检 CopyObject 单请求上限（~5GiB）。 */
+  size?: number
+}
+
 // ── 错误 ──
 
 export class StorageError extends Error {
@@ -77,4 +82,6 @@ export interface StorageProvider {
     size: number
   ): Promise<StorageUploadResult>
   createFolder(key: string): Promise<void>
+  /** 同一配置内移动/重命名对象（key 均为路由层校验后的规范 key）。 */
+  move(sourceKey: string, destKey: string, options?: StorageMoveOptions): Promise<void>
 }

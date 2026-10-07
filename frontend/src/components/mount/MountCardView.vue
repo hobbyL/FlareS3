@@ -90,6 +90,28 @@
                     <Download :size="18" />
                   </Button>
                 </Tooltip>
+                <Tooltip :content="t('mount.move.actionRename')">
+                  <Button
+                    type="ghost"
+                    size="small"
+                    class="icon-btn"
+                    :disabled="loading || deleting"
+                    @click.stop="emit('rename', row.key)"
+                  >
+                    <Pencil :size="18" />
+                  </Button>
+                </Tooltip>
+                <Tooltip :content="t('mount.move.actionMove')">
+                  <Button
+                    type="ghost"
+                    size="small"
+                    class="icon-btn"
+                    :disabled="loading || deleting"
+                    @click.stop="emit('move', row.key)"
+                  >
+                    <FolderInput :size="18" />
+                  </Button>
+                </Tooltip>
                 <Tooltip :content="t('mount.actions.delete')">
                   <Button
                     type="ghost"
@@ -142,7 +164,7 @@
 </template>
 
 <script setup>
-import { Download, Eye, File, FolderOpen, Trash2 } from 'lucide-vue-next'
+import { Download, Eye, File, FolderInput, FolderOpen, Pencil, Trash2 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import Button from '../ui/button/Button.vue'
 import Card from '../ui/card/Card.vue'
@@ -191,7 +213,15 @@ defineProps({
   },
 })
 
-const emit = defineEmits(['open-folder', 'preview', 'download', 'delete', 'load-more'])
+const emit = defineEmits([
+  'open-folder',
+  'preview',
+  'download',
+  'rename',
+  'move',
+  'delete',
+  'load-more',
+])
 const { t } = useI18n({ useScope: 'global' })
 </script>
 
@@ -252,15 +282,16 @@ const { t } = useI18n({ useScope: 'global' })
 
 .mount-card:hover :deep(.header-extra),
 .mount-card:focus-within :deep(.header-extra) {
-  max-width: 124px;
+  max-width: 88px;
   margin-left: var(--nb-space-xs);
   opacity: 1;
   pointer-events: auto;
 }
 
-.mount-card:has(.mount-card-actions > :nth-child(2)):hover :deep(.header-extra),
-.mount-card:has(.mount-card-actions > :nth-child(2)):focus-within :deep(.header-extra) {
-  max-width: 84px;
+/* 对象卡（≥3 个操作按钮）需要更宽的悬浮操作区 */
+.mount-card:has(.mount-card-actions > :nth-child(3)):hover :deep(.header-extra),
+.mount-card:has(.mount-card-actions > :nth-child(3)):focus-within :deep(.header-extra) {
+  max-width: 224px;
 }
 
 .mount-card-header {
@@ -404,7 +435,7 @@ const { t } = useI18n({ useScope: 'global' })
   }
 
   .mount-card :deep(.header-extra) {
-    max-width: 110px;
+    max-width: 224px;
     margin-left: var(--nb-space-xs);
     opacity: 1;
     pointer-events: auto;

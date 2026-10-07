@@ -1,5 +1,5 @@
 import { h } from 'vue'
-import { Info, RotateCcw, Share2, Trash, Trash2 } from 'lucide-vue-next'
+import { Info, Pencil, RotateCcw, Share2, Trash, Trash2 } from 'lucide-vue-next'
 import Button from '../ui/button/Button.vue'
 import Tag from '../ui/tag/Tag.vue'
 import TableCellText from '../ui/table/TableCellText.vue'
@@ -26,6 +26,7 @@ export function buildFilesTableColumns({
   onDeleteFile = () => {},
   onRestoreFile = () => {},
   onDeletePermanent = () => {},
+  onRenameFile = () => {},
 } = {}) {
   const translate = typeof t === 'function' ? t : (key) => key
 
@@ -111,7 +112,7 @@ export function buildFilesTableColumns({
       title: translate('files.columns.actions'),
       key: 'actions',
       width:
-        locale === 'zh-CN' ? (uiTheme === 'shadcn' ? 280 : 330) : uiTheme === 'shadcn' ? 330 : 380,
+        locale === 'zh-CN' ? (uiTheme === 'shadcn' ? 360 : 420) : uiTheme === 'shadcn' ? 410 : 480,
       align: 'center',
       ellipsis: false,
       render: (row) => {
@@ -149,6 +150,8 @@ export function buildFilesTableColumns({
 
         const rowDisabled = disabled || isFileDeleted(row)
         const shareDisabled = disabled || !canManageFileShare(row)
+        // 仅完成上传的文件可重命名（pending/uploading 等未落远端，改名无对象可 move）
+        const renameDisabled = rowDisabled || row.upload_status !== 'completed'
         return h('div', { class: 'action-buttons' }, [
           h(
             Button,
@@ -159,6 +162,19 @@ export function buildFilesTableColumns({
               onClick: () => onShowFileInfo(row),
             },
             () => [h(Info, { size: 16, style: 'margin-right: 4px' }), translate('common.details')]
+          ),
+          h(
+            Button,
+            {
+              size: 'small',
+              type: 'default',
+              disabled: renameDisabled,
+              onClick: () => onRenameFile(row),
+            },
+            () => [
+              h(Pencil, { size: 16, style: 'margin-right: 4px' }),
+              translate('files.rename.action'),
+            ]
           ),
           h(
             Button,

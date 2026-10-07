@@ -136,6 +136,49 @@ export async function deleteObject(config: R2Config, key: string): Promise<void>
   throw buildS3HttpError(response.status, text)
 }
 
+/**
+ * S3 CopyObject：对目标 key 发预签名 PUT，并通过 `x-amz-copy-source` 头指定源对象。
+ *
+ * 单请求上限约 5GiB（S3 规范），超限由调用方预检或按上游错误映射。
+ * 成功响应 body 为 `<CopyObjectResult>`；个别兼容实现会以 200 返回 `<Error>` body，
+ * 因此成功状态码仍需检查 body。
+ */
+export async function copyObject(
+  config: R2Config,
+  sourceKey: string,
+  destKey: string
+): Promise<void> {
+  const client = createS3Client(config)
+  const encodedSourceKey = sourceKey
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/')
+  const response = await fetchSigned(
+    client,
+    new PutObjectCommand({
+      Bucket: config.bucketName,
+      Key: destKey,
+    }),
+    {
+      method: 'PUT',
+      headers: {
+        'x-amz-copy-source': `/${config.bucketName}/${encodedSourceKey}`,
+      },
+      expiresInSeconds: 60,
+    }
+  )
+
+  if (!response.ok) {
+    const text = await readS3ErrorText(response)
+    throw buildS3HttpError(response.status, text)
+  }
+
+  const text = await readS3XmlText(response, 'S3 复制对象响应')
+  if (extractXmlBlocks(text, 'Error').length > 0) {
+    throw buildS3HttpError(response.status, text)
+  }
+}
+
 const DELETE_BY_PREFIX_PAGE_SIZE = 1000
 /** S3 DeleteObjects 单批上限（与 listObjectsV2 单页一致） */
 const DELETE_OBJECTS_BATCH_SIZE = 1000

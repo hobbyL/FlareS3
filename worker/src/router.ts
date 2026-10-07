@@ -378,6 +378,15 @@ router.post(
     )
   )
 )
+router.post(
+  '/api/files/:id/rename',
+  withAuth(
+    lazyRoute(
+      () => import('./routes/files'),
+      (module, request, env) => module.renameFile(request, env, (request as any).params.id)
+    )
+  )
+)
 router.delete(
   '/api/files/:id/permanent',
   withAuth(
@@ -457,6 +466,15 @@ router.post(
     lazyRoute(
       () => import('./routes/mount'),
       (module, request, env) => module.createMountedFolder(request, env)
+    )
+  )
+)
+router.post(
+  '/api/mount/move',
+  withAdmin(
+    lazyRoute(
+      () => import('./routes/mount'),
+      (module, request, env) => module.moveMountedObject(request, env)
     )
   )
 )

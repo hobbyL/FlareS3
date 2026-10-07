@@ -76,6 +76,8 @@
             @open-folder="emit('open-folder', $event)"
             @preview="emit('preview', $event)"
             @download="emit('download', $event)"
+            @rename="emit('rename', $event)"
+            @move="emit('move', $event)"
             @delete="emit('delete', $event)"
             @load-more="emit('load-more')"
           />
@@ -197,6 +199,8 @@ const emit = defineEmits([
   'open-folder',
   'preview',
   'download',
+  'rename',
+  'move',
   'delete',
   'load-more',
 ])

@@ -1,6 +1,13 @@
 import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
-import { jsonResponse, getUser, calcPresignedDownloadUrlTtlSeconds, redirect } from './utils'
+import {
+  invalidJsonBodyResponse,
+  jsonResponse,
+  getUser,
+  calcPresignedDownloadUrlTtlSeconds,
+  redirect,
+  parseJson,
+} from './utils'
 import {
   checkObjectExists,
   generateDownloadUrl,
@@ -9,7 +16,9 @@ import {
 } from '../services/r2'
 import { logAudit, prepareAuditLogInsert } from '../services/audit'
 import { createProvider } from '../services/storage/factory'
-import { StorageError } from '../services/storage/types'
+import { StorageError, type StorageProvider } from '../services/storage/types'
+import { R2Provider } from '../services/storage/r2-provider'
+import { normalizeStorageFilename } from '../services/storage/pathPolicy'
 import { prepareEnqueueFileDeletionIfNeeded } from '../services/deleteQueue'
 import { getClientIp } from '../middleware/rateLimit'
 import { prepareReleaseUploadReservation } from '../services/uploadReservations'
@@ -640,6 +649,229 @@ export async function permanentlyDeleteFile(
   const queued = Number(queueInsertResult?.meta?.changes || 0) > 0
 
   return jsonResponse({ success: true, queued })
+}
+
+// ── 重命名 ──
+
+/**
+ * 判断 provider 异常是否表示对象超过 R2 CopyObject 上限。
+ */
+function isRenameEntityTooLargeError(error: unknown): boolean {
+  return (
+    error instanceof StorageError &&
+    (error.httpStatusCode === 413 || error.code === 'EntityTooLarge')
+  )
+}
+
+/**
+ * 判断 provider 异常是否表示对象在远端不存在。
+ */
+function isRenameObjectMissingError(error: unknown): boolean {
+  return (
+    error instanceof StorageError && (error.httpStatusCode === 404 || error.code === 'NotFound')
+  )
+}
+
+/**
+ * 从既有 r2_key 推导重命名后的 key：保留最后一段之前的全部前缀（configId 与目录），
+ * 仅替换尾段文件名。对 `storage/<configId>/<dir>/<name>` 与 `flares3/<configId>/<name>`
+ * 两种结构同样成立。
+ */
+function buildRenamedR2Key(r2Key: string, newFilename: string): string {
+  const lastSlash = r2Key.lastIndexOf('/')
+  const prefix = lastSlash >= 0 ? r2Key.slice(0, lastSlash + 1) : ''
+  return `${prefix}${newFilename}`
+}
+
+/**
+ * 重命名文件（更新 D1 登记记录与存储 key 尾段）
+ *
+ * 执行顺序为「先远端后 DB」：provider.move 成功后才用带状态守卫的单 batch
+ * 更新 `files.filename` / `files.r2_key` 并写审计（对齐 d1-write-consistency 状态机模式）。
+ *
+ * @route POST /api/files/:id/rename
+ * @param request - HTTP 请求对象（需要认证，owner 或 admin）
+ * @param env - Cloudflare Workers 环境变量
+ * @param fileId - 文件 ID
+ * @returns JSON 响应，包含新文件名与新存储 key
+ *
+ * @example
+ * // 请求体
+ * { "new_name": "report-final.pdf" }
+ *
+ * // 成功响应 (200)
+ * {
+ *   "success": true,
+ *   "filename": "report-final.pdf",
+ *   "r2_key": "storage/config-1/docs/report-final.pdf"
+ * }
+ *
+ * // 未授权 (401)
+ * { "error": "未授权" }
+ *
+ * // 文件不存在 (404)
+ * { "error": "文件不存在" }
+ *
+ * // 无权限 (403)
+ * { "error": "无权限" }
+ *
+ * // 文件未完成上传 / 状态不符 (409)
+ * { "error": "仅完成上传的文件可重命名" }
+ *
+ * // 新文件名与原文件名相同 (400)
+ * { "error": "新文件名与原文件名相同" }
+ *
+ * // 文件名非法（含路径分隔符、控制字符等）(400)
+ * { "error": "文件名不能包含路径分隔符" }
+ *
+ * // 同名文件已存在（D1 记录或远端对象占用）(409)
+ * { "error": "同名文件已存在" }
+ *
+ * // 文件对象在远端不存在 (409)
+ * { "error": "文件对象不存在，无法重命名" }
+ *
+ * // 并发状态下守卫 UPDATE 未命中 (409)
+ * { "error": "文件状态已变化，请刷新后重试" }
+ *
+ * // 对象超过 R2 复制上限 (413)
+ * { "error": "文件过大，超过 R2 复制上限（5GiB），请删除后重新上传到目标名称" }
+ *
+ * // 存储配置未找到 (503)
+ * { "error": "存储配置未找到" }
+ *
+ * // 上游存储失败 (502)
+ * { "error": "文件重命名失败：上游存储服务暂时不可用" }
+ */
+export async function renameFile(request: Request, env: Env, fileId: string): Promise<Response> {
+  const user = getUser(request)
+  if (!user) return jsonResponse({ error: '未授权' }, 401)
+
+  let rawNewName = ''
+  try {
+    const body = await parseJson<{ new_name?: string }>(request)
+    rawNewName = String(body.new_name || '').trim()
+  } catch (error) {
+    return invalidJsonBodyResponse(error, '请求格式错误')
+  }
+
+  if (!rawNewName) {
+    return jsonResponse({ error: '缺少 new_name' }, 400)
+  }
+
+  const file = await withD1Retry(env.DB)
+    .prepare(
+      'SELECT id, owner_id, filename, r2_key, size, upload_status, deleted_at, config_id FROM files WHERE id = ? LIMIT 1'
+    )
+    .bind(fileId)
+    .first()
+
+  if (!file) {
+    return jsonResponse({ error: '文件不存在' }, 404)
+  }
+  if (user.role !== 'admin' && file.owner_id !== user.id) {
+    return jsonResponse({ error: '无权限' }, 403)
+  }
+  if (file.upload_status !== 'completed' || file.deleted_at) {
+    return jsonResponse({ error: '仅完成上传的文件可重命名' }, 409)
+  }
+
+  const nameResult = normalizeStorageFilename(rawNewName)
+  if (!nameResult.ok) {
+    return jsonResponse({ error: nameResult.message }, 400)
+  }
+
+  const oldKey = String(file.r2_key)
+  const newKey = buildRenamedR2Key(oldKey, nameResult.key)
+  if (newKey === oldKey) {
+    return jsonResponse({ error: '新文件名与原文件名相同' }, 400)
+  }
+
+  // D1 占用检查（files.r2_key UNIQUE，对齐 upload 的 occupied 检查；排除自身）
+  const occupied = await withD1Retry(env.DB)
+    .prepare('SELECT id FROM files WHERE r2_key = ? AND id != ? LIMIT 1')
+    .bind(newKey, fileId)
+    .first('id')
+  if (occupied) {
+    return jsonResponse({ error: '同名文件已存在' }, 409)
+  }
+
+  // 解析存储 provider：显式 provider 配置（storage/<configId>/...）或 legacy R2 key
+  let provider: StorageProvider | null = null
+  const explicitProviderConfigId = getExplicitProviderConfigId(file)
+  if (explicitProviderConfigId) {
+    provider = await createProvider(env, explicitProviderConfigId)
+    if (!provider) return jsonResponse({ error: '存储配置未找到' }, 503)
+  } else {
+    const loaded = await resolveR2ConfigForKey(env, oldKey)
+    if (!loaded) return jsonResponse({ error: '存储配置未找到' }, 503)
+    provider = new R2Provider(loaded.config)
+  }
+
+  // 远端占用检查
+  try {
+    const destExists = await provider.checkExists(newKey)
+    if (destExists) {
+      return jsonResponse({ error: '同名文件已存在' }, 409)
+    }
+  } catch (error) {
+    return jsonResponse({ error: `文件重命名校验失败：${formatUpstreamFetchError(error)}` }, 502)
+  }
+
+  // 先远端后 DB：move 成功才落库
+  try {
+    await provider.move(oldKey, newKey, { size: Number(file.size) })
+  } catch (error) {
+    if (isRenameEntityTooLargeError(error)) {
+      return jsonResponse(
+        { error: '文件过大，超过 R2 复制上限（5GiB），请删除后重新上传到目标名称' },
+        413
+      )
+    }
+    if (isRenameObjectMissingError(error)) {
+      return jsonResponse({ error: '文件对象不存在，无法重命名' }, 409)
+    }
+    return jsonResponse({ error: `文件重命名失败：${formatUpstreamFetchError(error)}` }, 502)
+  }
+
+  // 带守卫的单 batch：状态被并发变更（删除/回收站）时 0 行命中
+  const now = new Date().toISOString()
+  const [updateResult] = await withD1Retry(env.DB).batch([
+    withD1Retry(env.DB)
+      .prepare(
+        "UPDATE files SET filename = ?, r2_key = ? WHERE id = ? AND upload_status = 'completed' AND deleted_at IS NULL"
+      )
+      .bind(nameResult.key, newKey, fileId),
+    prepareAuditLogInsert(
+      env.DB,
+      {
+        actorUserId: user.id,
+        action: 'FILE_RENAME',
+        targetType: 'file',
+        targetId: fileId,
+        ip: getClientIp(request),
+        userAgent: request.headers.get('User-Agent') || undefined,
+        metadata: {
+          oldKey,
+          newKey,
+          oldFilename: String(file.filename || ''),
+          newFilename: nameResult.key,
+        },
+      },
+      now
+    ),
+  ])
+
+  if (!updateResult?.meta?.changes) {
+    // 远端已 move 但 DB 未推进：warn 记录残留，与 multipart 守卫失败语义一致
+    console.warn('[files] rename: remote object moved but guarded update missed', {
+      fileId,
+      oldKey,
+      newKey,
+    })
+    return jsonResponse({ error: '文件状态已变化，请刷新后重试' }, 409)
+  }
+
+  return jsonResponse({ success: true, filename: nameResult.key, r2_key: newKey })
 }
 
 /**

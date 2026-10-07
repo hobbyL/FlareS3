@@ -61,6 +61,7 @@
             :is-trash-mode="isTrashMode"
             @show-info="showFileInfo"
             @share="showFileShare"
+            @rename="showFileRename"
             @delete="handleDelete"
             @restore="handleRestore"
             @delete-permanent="handleDeletePermanent"
@@ -82,6 +83,16 @@
         v-model:show="showShareModal"
         :file-id="sharingFileId"
         :filename="sharingFilename"
+      />
+
+      <FileRenameModal
+        v-if="showRenameModal"
+        :show="showRenameModal"
+        v-model:filename="renamingFilename"
+        :loading="renaming"
+        @update:show="handleRenameModalUpdate"
+        @cancel="closeRenameModal"
+        @confirm="handleRenameConfirm"
       />
 
       <Modal
@@ -132,6 +143,9 @@ const FileUploadModal = defineAsyncComponent(
   () => import('../components/files/FileUploadModal.vue')
 )
 const FileShareModal = defineAsyncComponent(() => import('../components/files/FileShareModal.vue'))
+const FileRenameModal = defineAsyncComponent(
+  () => import('../components/files/FileRenameModal.vue')
+)
 
 const authStore = useAuthStore()
 const filesStore = useFilesStore()
@@ -151,6 +165,63 @@ const showDeleteModal = ref(false)
 const deleting = ref(false)
 const pendingDeleteId = ref('')
 const pendingDeleteMode = ref('soft')
+
+// ── 重命名 ──
+
+const showRenameModal = ref(false)
+const renaming = ref(false)
+const renamingFileId = ref('')
+const renamingFilename = ref('')
+
+const canRenameFile = (row) =>
+  Boolean(row) && row.upload_status === 'completed' && !isFileDeleted(row)
+
+const showFileRename = (row) => {
+  if (!canRenameFile(row)) return
+  if (deleting.value || renaming.value) return
+
+  renamingFileId.value = String(row.id ?? '')
+  renamingFilename.value = String(row.filename ?? '')
+  showRenameModal.value = true
+}
+
+const closeRenameModal = () => {
+  if (renaming.value) return
+  showRenameModal.value = false
+  renamingFileId.value = ''
+  renamingFilename.value = ''
+}
+
+const handleRenameModalUpdate = (nextValue) => {
+  if (renaming.value) return
+  if (!nextValue) {
+    closeRenameModal()
+    return
+  }
+  showRenameModal.value = true
+}
+
+const handleRenameConfirm = async () => {
+  if (renaming.value) return
+
+  const fileId = String(renamingFileId.value || '').trim()
+  const newName = String(renamingFilename.value || '').trim()
+  if (!fileId || !newName) return
+
+  renaming.value = true
+  try {
+    await api.renameFile(fileId, { new_name: newName })
+    message.success(t('files.messages.renameSuccess'))
+    showRenameModal.value = false
+    renamingFileId.value = ''
+    renamingFilename.value = ''
+    await loadFiles()
+  } catch (error) {
+    message.error(error.response?.data?.error || t('files.messages.renameFailed'))
+  } finally {
+    renaming.value = false
+  }
+}
 
 const filters = ref({
   filename: '',
@@ -266,6 +337,7 @@ const columns = computed(() =>
     onDeleteFile: handleDelete,
     onRestoreFile: handleRestore,
     onDeletePermanent: handleDeletePermanent,
+    onRenameFile: showFileRename,
   })
 )
 

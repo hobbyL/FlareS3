@@ -26,6 +26,7 @@ export default {
     pleaseSelect: '请选择',
     expand: '展开',
     collapse: '收起',
+    retry: '重试',
   },
   languageName: {
     'zh-CN': '中文',

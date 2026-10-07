@@ -516,6 +516,17 @@ export default {
   },
 
   /**
+   * 重命名文件（同目录更新文件名与存储 key 尾段）
+   * @param {string} fileId - 文件 ID
+   * @param {object} payload - 重命名载荷
+   * @param {string} payload.new_name - 新文件名
+   * @returns {Promise<{success: boolean, filename: string, r2_key: string}>}
+   */
+  renameFile(fileId, payload) {
+    return api.post(`/files/${fileId}/rename`, payload)
+  },
+
+  /**
    * 获取文件下载 URL
    * @param {string} fileId - 文件 ID
    * @returns {string} 下载 URL
@@ -633,6 +644,24 @@ export default {
    */
   createMountedFolder({ configId, key }) {
     return api.post('/mount/folder', { config_id: configId, key })
+  },
+
+  /**
+   * 移动 / 重命名挂载对象（同一挂载点内）
+   * @param {object} options - 移动选项
+   * @param {string} options.configId - 配置 ID
+   * @param {string} options.key - 源对象键（文件对象，不允许尾斜杠）
+   * @param {string} options.toDir - 目标目录（空字符串表示挂载点根）
+   * @param {string} options.newName - 新文件名
+   * @returns {Promise<{ok: boolean, key: string}>}
+   */
+  moveMountObject({ configId, key, toDir = '', newName } = {}) {
+    return api.post('/mount/move', {
+      config_id: configId,
+      key,
+      to_dir: toDir,
+      new_name: newName,
+    })
   },
 
   // ========== 用户管理 ==========

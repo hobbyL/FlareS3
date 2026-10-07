@@ -1,4 +1,5 @@
 import {
+  copyObject as r2CopyObject,
   createS3Client,
   deleteObject as r2DeleteObject,
   deleteObjectsByPrefix as r2DeleteObjectsByPrefix,
@@ -21,6 +22,7 @@ import type {
   StorageUploadResult,
 } from './types'
 import { StorageError } from './types'
+import { logWarn } from '../../utils/log'
 
 function wrapS3Error(error: unknown): StorageError {
   const summary = summarizeS3Error(error)
@@ -35,6 +37,9 @@ function wrapS3Error(error: unknown): StorageError {
     summary.httpStatusCode
   )
 }
+
+/** S3 CopyObject 单请求上限（约 5GiB），超过需走分片复制，此处直接拒绝 */
+const R2_COPY_OBJECT_MAX_BYTES = 5 * 1024 * 1024 * 1024
 
 export class R2Provider implements StorageProvider {
   constructor(private readonly config: R2Config) {}
@@ -163,6 +168,42 @@ export class R2Provider implements StorageProvider {
     } catch (error) {
       if (error instanceof StorageError) throw error
       throw wrapS3Error(error)
+    }
+  }
+
+  async move(sourceKey: string, destKey: string, options?: { size?: number }): Promise<void> {
+    const size = options?.size
+    if (typeof size === 'number' && Number.isFinite(size) && size > R2_COPY_OBJECT_MAX_BYTES) {
+      throw new StorageError(
+        '文件过大，超过 R2 复制上限（5GiB），请删除后重新上传到目标名称',
+        'EntityTooLarge',
+        413
+      )
+    }
+
+    // copy 失败（含上游 EntityTooLarge）原样映射上抛
+    try {
+      await r2CopyObject(this.config, sourceKey, destKey)
+    } catch (error) {
+      throw wrapS3Error(error)
+    }
+
+    // copy 成功后删除源对象；非原子两步。delete 失败仅 warn（与 deleteByPrefix 容错语义
+    // 一致）：残留源对象可由用户手动清理，幂等重试同一 move 即可收敛
+    try {
+      await r2DeleteObject(this.config, sourceKey)
+    } catch (error) {
+      const wrapped = wrapS3Error(error)
+      if (wrapped.httpStatusCode === 404 || wrapped.code === 'NoSuchKey') return
+      logWarn('storage.r2.moveDeleteSourceFailed', {
+        sourceKey,
+        destKey,
+        error: {
+          code: wrapped.code,
+          httpStatusCode: wrapped.httpStatusCode,
+          message: wrapped.message,
+        },
+      })
     }
   }
 }
