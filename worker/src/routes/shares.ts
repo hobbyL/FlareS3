@@ -117,6 +117,10 @@ const ACCESS_SHARE_TYPES: readonly ShareAccessLogShareType[] = ['file', 'text', 
  * - text → text_shares.text_id
  * - folder → folder_shares.id
  * 与 /api/shares 列表返回的 resource_id 保持一致，前端可直接透传。
+ *
+ * text/file 的分享行不存在（从未分享或分享已关闭）时回退查资源表 owner：
+ * 访问日志是历史数据，资源仍存在时应继续可查（如文档列表的"分享记录"入口）。
+ * folder 的 id 即分享行本身，删除后无资源可回退，维持 404。
  */
 async function findShareOwner(
   env: Env,
@@ -131,8 +135,19 @@ async function findShareOwner(
 
   const row = await withD1Retry(env.DB).prepare(statementByType[shareType]).bind(shareId).first()
 
-  if (!row) return null
-  const ownerId = String((row as any).owner_id ?? '')
+  const shareOwnerId = row ? String((row as any).owner_id ?? '') : ''
+  if (shareOwnerId) return { ownerId: shareOwnerId }
+
+  const fallbackByType: Partial<Record<ShareAccessLogShareType, string>> = {
+    file: 'SELECT owner_id FROM files WHERE id = ? AND deleted_at IS NULL LIMIT 1',
+    text: 'SELECT owner_id FROM texts WHERE id = ? AND deleted_at IS NULL LIMIT 1',
+  }
+  const fallbackSql = fallbackByType[shareType]
+  if (!fallbackSql) return null
+
+  const resource = await withD1Retry(env.DB).prepare(fallbackSql).bind(shareId).first()
+
+  const ownerId = resource ? String((resource as any).owner_id ?? '') : ''
   return ownerId ? { ownerId } : null
 }
 

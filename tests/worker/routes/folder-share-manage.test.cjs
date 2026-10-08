@@ -624,6 +624,12 @@ test("listShareAccesses validates type/owner and paginates newest-first", async 
             match: /SELECT owner_id FROM file_shares WHERE file_id = \?/i,
             value: null,
           },
+          {
+            // 分享行不存在时回退查资源表 owner，资源也不存在才 404
+            match:
+              /SELECT owner_id FROM files WHERE id = \? AND deleted_at IS NULL/i,
+            value: null,
+          },
         ],
       }).db,
     },

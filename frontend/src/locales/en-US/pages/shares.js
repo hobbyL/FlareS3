@@ -67,7 +67,6 @@ export default {
       title: 'Access log',
       loading: 'Loading...',
       empty: 'No access records yet',
-      loadFailed: 'Failed to load access records',
       columns: {
         time: 'Time',
         ip: 'IP address',

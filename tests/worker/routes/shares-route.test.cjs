@@ -1069,3 +1069,144 @@ test("deleteTextOneTimeShare returns idempotent success when share record is abs
     false,
   );
 });
+
+test("listShareAccesses resolves owner from the active text share row", async () => {
+  const { listShareAccesses } = loadModule("routes/shares.js");
+  const { db } = createDb({
+    firstHandlers: [
+      {
+        match: /FROM text_shares WHERE text_id = \?/,
+        value: { owner_id: "user-1" },
+      },
+      {
+        match: /COUNT\(\*\) AS total/,
+        value: { total: 1 },
+      },
+    ],
+    allHandlers: [
+      {
+        match: /FROM share_access_logs/,
+        value: {
+          results: [
+            {
+              id: 21,
+              ip: "203.0.113.7",
+              user_agent: "Mozilla/5.0",
+              path: "/t/code",
+              result: "ok",
+              created_at: "2026-10-07T01:00:00.000Z",
+            },
+          ],
+        },
+      },
+    ],
+  });
+
+  const response = await listShareAccesses(
+    createAuthedRequest(
+      "https://example.com/api/shares/text/text-1/accesses?page=1",
+    ),
+    { DB: db },
+    "text",
+    "text-1",
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.total, 1);
+  assert.equal(body.items.length, 1);
+});
+
+test("listShareAccesses falls back to the text owner when the share row is absent", async () => {
+  const { listShareAccesses } = loadModule("routes/shares.js");
+  const { db } = createDb({
+    firstHandlers: [
+      {
+        match: /FROM text_shares WHERE text_id = \?/,
+        value: null,
+      },
+      {
+        match: /FROM texts WHERE id = \? AND deleted_at IS NULL/,
+        value: { owner_id: "user-1" },
+      },
+      {
+        match: /COUNT\(\*\) AS total/,
+        value: { total: 0 },
+      },
+    ],
+    allHandlers: [
+      {
+        match: /FROM share_access_logs/,
+        value: { results: [] },
+      },
+    ],
+  });
+
+  const response = await listShareAccesses(
+    createAuthedRequest(
+      "https://example.com/api/shares/text/text-1/accesses?page=1",
+    ),
+    { DB: db },
+    "text",
+    "text-1",
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.total, 0);
+  assert.equal(body.items.length, 0);
+});
+
+test("listShareAccesses returns 404 when neither share row nor text exists", async () => {
+  const { listShareAccesses } = loadModule("routes/shares.js");
+  const { db } = createDb({
+    firstHandlers: [
+      {
+        match: /FROM text_shares WHERE text_id = \?/,
+        value: null,
+      },
+      {
+        match: /FROM texts WHERE id = \? AND deleted_at IS NULL/,
+        value: null,
+      },
+    ],
+  });
+
+  const response = await listShareAccesses(
+    createAuthedRequest(
+      "https://example.com/api/shares/text/text-1/accesses?page=1",
+    ),
+    { DB: db },
+    "text",
+    "text-1",
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 404);
+  assert.deepEqual(body, { error: "分享不存在" });
+});
+
+test("listShareAccesses keeps folder 404 when the share row is absent", async () => {
+  const { listShareAccesses } = loadModule("routes/shares.js");
+  const { db } = createDb({
+    firstHandlers: [
+      {
+        match: /FROM folder_shares WHERE id = \?/,
+        value: null,
+      },
+    ],
+  });
+
+  const response = await listShareAccesses(
+    createAuthedRequest(
+      "https://example.com/api/shares/folder/fs-1/accesses?page=1",
+    ),
+    { DB: db },
+    "folder",
+    "fs-1",
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 404);
+  assert.deepEqual(body, { error: "分享不存在" });
+});

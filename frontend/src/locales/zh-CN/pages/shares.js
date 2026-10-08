@@ -67,7 +67,6 @@ export default {
       title: '访问记录',
       loading: '加载中...',
       empty: '暂无访问记录',
-      loadFailed: '加载访问记录失败',
       columns: {
         time: '访问时间',
         ip: 'IP 地址',

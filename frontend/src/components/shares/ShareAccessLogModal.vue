@@ -72,7 +72,6 @@ import Button from '../ui/button/Button.vue'
 import Tag from '../ui/tag/Tag.vue'
 import Pagination from '../ui/pagination/Pagination.vue'
 import api from '../../services/api'
-import { useMessage } from '../../composables/useMessage'
 import { formatShareDateTime } from '../../utils/shares.js'
 
 const props = defineProps({
@@ -85,7 +84,6 @@ const props = defineProps({
 const emit = defineEmits(['update:show'])
 
 const { t, locale } = useI18n({ useScope: 'global' })
-const message = useMessage()
 
 const loading = ref(false)
 const items = ref([])
@@ -147,8 +145,8 @@ const loadAccesses = async () => {
     if (Number.isFinite(resolvedPage) && resolvedPage > 0) {
       page.value = resolvedPage
     }
-  } catch (error) {
-    message.error(error.response?.data?.error || t('shares.access.loadFailed'))
+  } catch (_error) {
+    // 错误提示由 api 拦截器统一弹出，这里仅复位加载态，避免双 toast
   } finally {
     loading.value = false
   }
