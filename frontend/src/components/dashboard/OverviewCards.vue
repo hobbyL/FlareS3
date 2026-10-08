@@ -31,6 +31,11 @@ const cards = computed(() =>
           <div v-for="metric in card.metrics" :key="metric.key" class="overview-card-metric">
             <div class="overview-card-metric-header">
               <span class="overview-card-metric-label">{{ metric.label }}</span>
+              <span
+                v-if="metric.unit"
+                class="overview-card-metric-label overview-card-metric-unit"
+                >{{ metric.unit }}</span
+              >
               <Tag v-if="metric.tagLabel" :type="metric.tagType" size="small">
                 {{ metric.tagLabel }}
               </Tag>
@@ -101,6 +106,11 @@ const cards = computed(() =>
   color: var(--nb-muted-foreground, var(--nb-gray-500));
   font-size: 12px;
   line-height: 1.4;
+}
+
+/* 与 metric-label 同字体同颜色，单位缀于标签行尾 */
+.overview-card-metric-unit {
+  margin-left: auto;
 }
 
 .overview-card-metric-value {

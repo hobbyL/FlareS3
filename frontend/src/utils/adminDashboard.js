@@ -17,6 +17,13 @@ export function getOverviewDisplayValue(value, { loading = false, fallback = '0'
   return String(value)
 }
 
+export function splitFormattedBytes(formatted) {
+  const value = String(formatted ?? '').trim()
+  const match = value.match(/^(.*?)(\s*)(B|KB|MB|GB|TB|PB)$/i)
+  if (!match) return { value, unit: '' }
+  return { value: match[1].trim(), unit: match[3] }
+}
+
 export function getUploadConfigMetric(setup, { loading = false, t }) {
   const configCount = Number(setup?.configCount || 0)
   const defaultConfigId = String(setup?.defaultConfigId || '').trim()
@@ -323,6 +330,13 @@ export function buildOverviewCardsModel({ metrics = {}, setup = {}, loading = fa
             loading,
             fallback: '0 B',
           }),
+          unit: (() => {
+            const display = getOverviewDisplayValue(metrics?.usedSpaceFormatted, {
+              loading,
+              fallback: '0 B',
+            })
+            return splitFormattedBytes(display).unit
+          })(),
         },
         {
           key: uploadConfigMetric.key,
