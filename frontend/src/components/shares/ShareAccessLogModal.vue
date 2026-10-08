@@ -55,12 +55,6 @@
         @update:page="changePage"
       />
     </template>
-
-    <template #footer>
-      <Button type="default" :disabled="loading" @click="handleUpdateShow(false)">
-        {{ t('common.close') }}
-      </Button>
-    </template>
   </Modal>
 </template>
 
@@ -68,7 +62,6 @@
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Modal from '../ui/modal/Modal.vue'
-import Button from '../ui/button/Button.vue'
 import Tag from '../ui/tag/Tag.vue'
 import Pagination from '../ui/pagination/Pagination.vue'
 import api from '../../services/api'

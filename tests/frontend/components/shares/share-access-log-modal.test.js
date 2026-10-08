@@ -75,7 +75,7 @@ test("ShareAccessLogModal 结果列与五列结构对齐服务端契约", () => 
   );
 });
 
-test("ShareAccessLogModal 关闭文案走 i18n 且错误提示交给拦截器", () => {
+test("ShareAccessLogModal 文案走 i18n 且错误提示交给拦截器", () => {
   for (const key of ["title", "loading", "empty"]) {
     assert.match(
       source,
@@ -89,4 +89,9 @@ test("ShareAccessLogModal 关闭文案走 i18n 且错误提示交给拦截器", 
     "加载失败不应在组件内弹 toast（api 拦截器已统一提示，避免双 toast）",
   );
   assert.match(source, /items\.value = \[\]/, "关闭弹窗时应清空已加载的记录");
+  assert.doesNotMatch(
+    source,
+    /template\s+#footer/,
+    "右上角与遮罩均可关闭，无需底部关闭按钮",
+  );
 });
