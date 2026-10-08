@@ -21,6 +21,9 @@ const createTaskState = () => ({
   uploadStartTime: Date.now(),
   activeMultipart: null,
   cancelRequested: false,
+  // cancelTask 是否已经发出过 abort：用于让 catch 块判断需不需要补偿调用，
+  // 避免同一个分片上传被 abort 两次
+  abortIssued: false,
   inFlightControllers: new Set(),
 })
 
@@ -76,6 +79,8 @@ export function createUploadTaskRunner({ api, t, onUploaded }) {
 
     const multipart = taskState.activeMultipart
     if (!multipart?.file_id) return
+    // 置位放在 await 之前：请求一旦发出就算已处理，失败也不该由 catch 块重试
+    taskState.abortIssued = true
     try {
       await api.abortMultipartUpload({ file_id: multipart.file_id })
     } catch {
@@ -311,7 +316,25 @@ export function createUploadTaskRunner({ api, t, onUploaded }) {
       ensureTaskActive(taskState, isCancelled)
       return resolveTaskResult(taskFile, initResponse, completeResult, taskState)
     } catch (error) {
-      if (serverFileId && !resumeProgress) {
+      const cancelled = isCancelledError(error) || taskState.cancelRequested || isCancelled()
+
+      if (cancelled) {
+        // 取消 = 放弃：清本地记录，避免续传任务被取消后留下僵尸进度
+        //（续传列表会把它显示成假条目）
+        deleteUploadProgress(fileId)
+
+        // 取消落在 init / parts 往返窗口内时，activeMultipart 还没赋值，
+        // cancelTask 会 early return 不发 abort，此处补偿一次，否则服务端会留下
+        // 无人回收的分片上传（永不过期的文件连 cleanupExpired 都兜不住）
+        if (serverFileId && !taskState.abortIssued) {
+          taskState.abortIssued = true
+          try {
+            await api.abortMultipartUpload({ file_id: serverFileId })
+          } catch {
+            // ignore：取消语义不因回收失败而改变
+          }
+        }
+      } else if (serverFileId && !resumeProgress) {
         // 新上传失败才 abort，恢复上传失败保留进度
         try {
           await api.abortMultipartUpload({ file_id: serverFileId })

@@ -55,6 +55,37 @@
       </FormItem>
     </div>
 
+    <UploadResumeList
+      v-if="visibleResumeEntries.length > 0"
+      class="upload-resume-block"
+      :items="visibleResumeEntries"
+      :format-bytes="formatBytes"
+      :format-date-time="formatDateTime"
+      @resume="handleResumeRequest"
+      @discard="requestDiscard"
+    />
+
+    <!-- 刷新后 File 对象已丢失，必须由用户重新选择同一文件才能继续上传 -->
+    <input
+      ref="resumeInputRef"
+      type="file"
+      hidden
+      aria-hidden="true"
+      tabindex="-1"
+      @change="handleResumeFileChange"
+    />
+
+    <UploadResumeDiscardModal
+      v-if="discardTarget"
+      :show="Boolean(discardTarget)"
+      :title="t('upload.resume.discardTitle')"
+      :confirm-text="t('upload.resume.discardConfirm', { filename: discardTarget.filename })"
+      :discarding="discarding"
+      @update:show="handleDiscardVisibility"
+      @cancel="cancelDiscard"
+      @confirm="confirmDiscard"
+    />
+
     <UploadQueueList
       v-if="queueItems.length > 0"
       class="upload-queue-block"
@@ -75,7 +106,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import api from '../../services/api'
 import Upload from '../ui/upload/Upload.vue'
@@ -87,17 +118,24 @@ import Alert from '../ui/alert/Alert.vue'
 import Input from '../ui/input/Input.vue'
 import UploadQueueList from './UploadQueueList.vue'
 import UploadResultPanel from './UploadResultPanel.vue'
+import UploadResumeList from './UploadResumeList.vue'
+import UploadResumeDiscardModal from './UploadResumeDiscardModal.vue'
 import { useMessage } from '../../composables/useMessage'
 import { useUploadConfigOptions } from '../../composables/useUploadConfigOptions.js'
 import { useUploadQueue } from '../../composables/useUploadQueue.js'
+import { useUploadResumeEntries } from '../../composables/useUploadResumeEntries.js'
 import { createUploadTaskRunner } from '../../services/uploadTaskRunner.js'
+import { formatBytes } from '../../utils/uploadPanel.js'
+import { generateFileId } from '../../utils/uploadResume.js'
 
 const emit = defineEmits(['uploaded'])
 
 const message = useMessage()
-const { t } = useI18n({ useScope: 'global' })
+const { t, locale } = useI18n({ useScope: 'global' })
 
 const uploadRef = ref(null)
+const resumeInputRef = ref(null)
+const pendingResumeFileId = ref('')
 const expiresIn = ref(7)
 const requireLogin = ref(true)
 const uploadDir = ref('')
@@ -116,6 +154,19 @@ const {
   uploadConfigLoadingMessage,
   loadUploadConfigOptions,
 } = useUploadConfigOptions({ api, t, message })
+
+const {
+  resumeEntries,
+  discardTarget,
+  discarding,
+  refreshResumeEntries,
+  requestDiscard,
+  cancelDiscard,
+  confirmDiscard,
+  matchResumeFile,
+} = useUploadResumeEntries({ api, t, message })
+
+const formatDateTime = (value) => new Date(value).toLocaleString(locale.value)
 
 const expiresOptions = computed(() =>
   [1, 3, 7, 30, 0].map((value) => ({
@@ -146,6 +197,21 @@ const uploadQueue = useUploadQueue({
 
 const queueItems = computed(() => uploadQueue.items.value)
 const latestSuccessResult = computed(() => uploadQueue.latestSuccessItem.value?.result || null)
+
+// 已在队列里排队/上传中的文件不重复出现在续传列表
+const activeQueueFileIds = computed(() => {
+  const ids = new Set()
+  for (const item of queueItems.value) {
+    if (item.status !== 'queued' && item.status !== 'uploading') continue
+    const rawFile = item.file?.rawFile
+    if (rawFile) ids.add(generateFileId(rawFile))
+  }
+  return ids
+})
+
+const visibleResumeEntries = computed(() =>
+  resumeEntries.value.filter((entry) => !activeQueueFileIds.value.has(entry.fileId))
+)
 
 const beforeUpload = ({ files }) => {
   if (configOptionsLoading.value) {
@@ -200,6 +266,52 @@ const handleUpload = ({ files }) => {
   uploadQueue.enqueueFiles(queuedFiles)
 }
 
+const handleResumeRequest = (fileId) => {
+  pendingResumeFileId.value = fileId
+  resumeInputRef.value?.click()
+}
+
+const handleResumeFileChange = (event) => {
+  try {
+    const file = event.target?.files?.[0]
+    const entry = resumeEntries.value.find((item) => item.fileId === pendingResumeFileId.value)
+    if (!file || !entry) return
+
+    if (!matchResumeFile(entry, file)) {
+      message.error(t('upload.resume.fileMismatch'))
+      return
+    }
+
+    uploadQueue.enqueueFiles([
+      {
+        rawFile: file,
+        name: file.name,
+        type: file.type || 'application/octet-stream',
+        size: Number(file.size || 0),
+        expiresIn: expiresIn.value,
+        requireLogin: requireLogin.value,
+        // 续传命中时 uploadLargeFile 不读这些字段；仅当服务端记录已失效、回退成
+        // 新上传时才生效，此时与当前面板设置一致
+        configId:
+          selectedConfigType.value === 'r2' ? resolvedUploadConfigId.value || undefined : undefined,
+        // 记录本身来自 R2 分片上传，必须走 uploadLargeFile 才能命中续传
+        configType: 'r2',
+        dir: uploadDir.value.trim() || undefined,
+      },
+    ])
+    refreshResumeEntries()
+    message.success(t('upload.resume.resumeStarted', { filename: entry.filename }))
+  } finally {
+    // 不复位则连续选择同一文件不会再次触发 change
+    if (event.target) event.target.value = ''
+    pendingResumeFileId.value = ''
+  }
+}
+
+const handleDiscardVisibility = (visible) => {
+  if (!visible) cancelDiscard()
+}
+
 const cancelQueueItem = (itemId) => {
   uploadQueue.cancelItem(itemId)
 }
@@ -226,7 +338,19 @@ const copyDownloadUrl = () => {
   }
 }
 
-onMounted(loadUploadConfigOptions)
+// 队列条目进入终态后进度记录可能已被删除，重读一次。
+// 触发源必须是 activeItemId 而不是条目状态：cancelItem 会同步把状态改成
+// cancelled，此时 runner 的 catch 块还没删 localStorage 记录，按状态刷新会把
+// 已放弃的记录重新读回列表（R4 的僵尸条目）。activeItemId 在队列的 finally 里
+// 复位，严格晚于 deleteUploadProgress，刷新到的才是删后状态。
+watch(uploadQueue.activeItemId, () => {
+  refreshResumeEntries()
+})
+
+onMounted(() => {
+  loadUploadConfigOptions()
+  refreshResumeEntries()
+})
 
 onUnmounted(() => {
   uploadQueue.dispose()
@@ -270,6 +394,10 @@ onUnmounted(() => {
   align-items: center;
   color: var(--nb-text, var(--foreground));
   word-break: break-all;
+}
+
+.upload-resume-block {
+  margin-top: var(--nb-space-lg);
 }
 
 .upload-queue-block {

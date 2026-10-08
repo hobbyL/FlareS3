@@ -48,6 +48,22 @@ export default {
         remove: 'Remove',
       },
     },
+    resume: {
+      title: 'Unfinished uploads',
+      partsProgress: '{uploaded}/{total} parts done',
+      lastUploadAt: 'Last upload {time}',
+      actions: {
+        resume: 'Resume',
+        discard: 'Discard',
+      },
+      reselectHint: 'Reselect the same file to continue the upload',
+      fileMismatch: 'The selected file does not match this unfinished upload. Pick the same file.',
+      discardTitle: 'Discard unfinished upload',
+      discardConfirm:
+        'Discard the unfinished upload of "{filename}"? Uploaded parts will be released.',
+      discarded: 'Unfinished upload discarded',
+      resumeStarted: 'Resuming "{filename}"',
+    },
     errors: {
       partMissingEtag: 'Part {partNumber} did not return an ETag',
       incompleteMultipart: 'Incomplete multipart upload: {uploaded}/{total}',

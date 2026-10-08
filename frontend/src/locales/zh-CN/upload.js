@@ -48,6 +48,21 @@ export default {
         remove: '移除',
       },
     },
+    resume: {
+      title: '未完成的上传',
+      partsProgress: '已完成 {uploaded}/{total} 分片',
+      lastUploadAt: '最后上传 {time}',
+      actions: {
+        resume: '继续上传',
+        discard: '放弃',
+      },
+      reselectHint: '请重新选择同一个文件以继续上传',
+      fileMismatch: '所选文件与未完成记录不一致，请选择同一个文件',
+      discardTitle: '放弃未完成的上传',
+      discardConfirm: '确定放弃「{filename}」的未完成上传吗？已上传的分片将被释放。',
+      discarded: '已放弃该未完成上传',
+      resumeStarted: '已继续上传「{filename}」',
+    },
     errors: {
       partMissingEtag: '分片 {partNumber} 未返回 ETag',
       incompleteMultipart: '分片上传不完整: {uploaded}/{total}',

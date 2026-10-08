@@ -37,6 +37,7 @@ const {
   deleteUploadProgress,
   cleanExpiredProgress,
   initUploadResume,
+  listUploadProgress,
 } = await import("../../../frontend/src/utils/uploadResume.js");
 
 const realNow = Date.now;
@@ -64,6 +65,38 @@ function withSilencedWarn(fn) {
   } finally {
     console.warn = original;
   }
+}
+
+function countWrites(fn) {
+  const original = storage.setItem;
+  let writes = 0;
+  storage.setItem = (key, value) => {
+    writes += 1;
+    original.call(storage, key, value);
+  };
+  try {
+    return { result: fn(), writes };
+  } finally {
+    storage.setItem = original;
+  }
+}
+
+function writeRaw(records) {
+  storage.setItem(STORAGE_KEY, JSON.stringify(records));
+}
+
+function validRecord(overrides = {}) {
+  return {
+    serverFileId: "server-1",
+    uploadId: "upload-1",
+    filename: "movie.mp4",
+    size: 1024,
+    partSize: 256,
+    totalParts: 4,
+    uploadedParts: [1, 2],
+    lastUploadAt: 1_000_000,
+    ...overrides,
+  };
 }
 
 test("generateFileId 由文件名、大小与修改时间组合而成", () => {
@@ -193,6 +226,133 @@ test("存储内容损坏时降级为空进度并告警，而不是抛错", () =>
   assert.equal(result, undefined);
   assert.equal(warnings.length, 1);
   assert.match(String(warnings[0][0]), /Failed to load upload progress/);
+});
+
+test("listUploadProgress 合法记录字段齐备且按 lastUploadAt 倒序", () => {
+  reset();
+  freezeNow(1_000_000);
+  writeRaw({
+    older: validRecord({ serverFileId: "s-old", lastUploadAt: 900_000 }),
+    newer: validRecord({ serverFileId: "s-new", lastUploadAt: 999_000 }),
+  });
+
+  const entries = listUploadProgress();
+
+  assert.deepEqual(
+    entries.map((entry) => entry.fileId),
+    ["newer", "older"],
+    "最近上传的记录应排在前面",
+  );
+  assert.deepEqual(entries[0], {
+    fileId: "newer",
+    serverFileId: "s-new",
+    uploadId: "upload-1",
+    filename: "movie.mp4",
+    size: 1024,
+    partSize: 256,
+    totalParts: 4,
+    uploadedParts: [1, 2],
+    lastUploadAt: 999_000,
+  });
+});
+
+test("listUploadProgress 过滤结构非法记录并从存储中清除", () => {
+  reset();
+  freezeNow(1_000_000);
+  writeRaw({
+    ok: validRecord(),
+    "missing-server-id": validRecord({ serverFileId: "" }),
+    "missing-upload-id": validRecord({ uploadId: undefined }),
+    "missing-filename": validRecord({ filename: "" }),
+    "bad-size": validRecord({ size: 0 }),
+    "bad-total-parts": validRecord({ totalParts: "4" }),
+    "bad-last-upload-at": validRecord({ lastUploadAt: undefined }),
+    "not-an-object": "nope",
+  });
+
+  const entries = listUploadProgress();
+
+  assert.deepEqual(
+    entries.map((entry) => entry.fileId),
+    ["ok"],
+  );
+  assert.deepEqual(
+    Object.keys(readRaw()),
+    ["ok"],
+    "非法记录应同时从 localStorage 中剔除",
+  );
+});
+
+test("listUploadProgress 过滤超过 24 小时的记录并清除", () => {
+  reset();
+  const now = MAX_AGE * 3;
+  freezeNow(now);
+  writeRaw({
+    fresh: validRecord({ lastUploadAt: now - 1_000 }),
+    stale: validRecord({ lastUploadAt: now - MAX_AGE - 1 }),
+    boundary: validRecord({ lastUploadAt: now - MAX_AGE }),
+  });
+
+  const entries = listUploadProgress();
+
+  assert.deepEqual(
+    entries.map((entry) => entry.fileId),
+    ["fresh", "boundary"],
+    "恰好等于 MAX_AGE 的记录沿用既有口径仍然有效",
+  );
+  assert.deepEqual(Object.keys(readRaw()).sort(), ["boundary", "fresh"]);
+});
+
+test("listUploadProgress 兼容老记录：uploadedParts 缺失归一为 []，partSize 非法归一为 0", () => {
+  reset();
+  freezeNow(1_000_000);
+  writeRaw({
+    legacy: validRecord({ uploadedParts: undefined, partSize: 0 }),
+  });
+
+  const [entry] = listUploadProgress();
+
+  assert.deepEqual(entry.uploadedParts, []);
+  assert.equal(entry.partSize, 0);
+  assert.deepEqual(
+    Object.keys(readRaw()),
+    ["legacy"],
+    "老记录可展示，不应被当成非法记录清除",
+  );
+});
+
+test("listUploadProgress 无变更时不重写存储", () => {
+  reset();
+  freezeNow(1_000_000);
+  writeRaw({ a: validRecord(), b: validRecord({ lastUploadAt: 999_000 }) });
+
+  const { result, writes } = countWrites(() => listUploadProgress());
+
+  assert.equal(result.length, 2);
+  assert.equal(writes, 0, "全部有效时不应回写 localStorage");
+});
+
+test("listUploadProgress 清理多条非法记录只写一次存储", () => {
+  reset();
+  freezeNow(1_000_000);
+  writeRaw({
+    bad1: validRecord({ uploadId: "" }),
+    bad2: validRecord({ size: -1 }),
+    ok: validRecord(),
+  });
+
+  const { writes } = countWrites(() => listUploadProgress());
+
+  assert.equal(writes, 1, "整轮清理只应写一次 localStorage");
+});
+
+test("listUploadProgress 在存储损坏时降级为空数组", () => {
+  reset();
+  storage.setItem(STORAGE_KEY, "{not-json");
+
+  const { result } = withSilencedWarn(() => listUploadProgress());
+
+  assert.deepEqual(result, []);
 });
 
 test("localStorage 写入失败时不会中断上传流程", () => {
