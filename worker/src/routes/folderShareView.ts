@@ -21,6 +21,7 @@ import {
   rejectInvalidContentLength,
 } from '../services/requestBodyPolicy'
 import { buildShareCookieName, signShareCookie, verifyShareCookie } from '../services/shareCookie'
+import { isSecureRequest } from '../utils/requestSecurity'
 import { formatDateTimeLocal } from '../services/shareFormatting'
 import {
   renderFolderListPage,
@@ -251,10 +252,12 @@ export async function tryHandleFolderShareView(
         )
         if (cookieValue) {
           const maxAge = Number(cookieValue.split('.')[0]) - Math.floor(Date.now() / 1000)
+          // 与会话 cookie 相同的条件 Secure 判定：https 下带 Secure，本地 http dev 不带
+          const secureFlag = isSecureRequest(request) ? '; Secure' : ''
           const headers = new Headers(response.headers)
           headers.append(
             'Set-Cookie',
-            `${cookieName}=${cookieValue}; HttpOnly; SameSite=Lax; Path=/f/${share.share_code}; Max-Age=${Math.max(1, maxAge)}`
+            `${cookieName}=${cookieValue}; HttpOnly; SameSite=Lax; Path=/f/${share.share_code}; Max-Age=${Math.max(1, maxAge)}${secureFlag}`
           )
           return new Response(response.body, {
             status: response.status,

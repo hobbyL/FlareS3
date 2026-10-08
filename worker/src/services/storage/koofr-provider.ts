@@ -2,11 +2,13 @@
  * KoofrProvider — 继承 WebDAVProvider，特化 Koofr REST API v2 能力。
  *
  * 核心增强：
- * - download: 优先通过 REST API 创建分享链接，失败回退 WebDAV 代理
+ * - download: 直接继承 WebDAV 代理流式下载。不走 REST 分享链接——
+ *   Koofr 永久分享链接无过期、无次数限制、从不删除，会绕过 FlareS3
+ *   的分享生命周期模型（过期/次数/撤销），曾因此被安全审计移除。
  * - testConnection: 先测试 WebDAV，再测试 REST API（验证 mountId）
  */
 
-import type { StorageDownloadResult, StorageUploadResult } from './types'
+import type { StorageUploadResult } from './types'
 import { StorageError } from './types'
 import { WebDAVProvider, type WebDAVConfig } from './webdav-provider'
 import { readBoundedResponseJson } from '../upstreamResponsePolicy'
@@ -129,64 +131,6 @@ export class KoofrProvider extends WebDAVProvider {
   private async restAuthHeader(): Promise<string> {
     const token = await this.authenticateRest()
     return `Token token=${token}`
-  }
-
-  // ── 覆盖 download：优先分享链接 ──
-
-  async download(
-    key: string,
-    filename: string,
-    expiresInSeconds: number
-  ): Promise<StorageDownloadResult> {
-    try {
-      const shareUrl = await this.createShareLink(key)
-      return { kind: 'redirect', url: shareUrl }
-    } catch {
-      // 分享链接创建失败，回退 WebDAV 代理
-      return super.download(key, filename, expiresInSeconds)
-    }
-  }
-
-  // ── REST API: 创建分享链接 ──
-
-  private async createShareLink(path: string): Promise<string> {
-    // 拼接 remotePath，确保分享链接指向正确目录下的文件
-    const remotePrefix = this.remotePath || ''
-    const fullPath = remotePrefix + (path.startsWith('/') ? path : `/${path}`)
-    const normalizedPath = fullPath.startsWith('/') ? fullPath : `/${fullPath}`
-    const mountId = await this.resolveMountId()
-    const url = `${this.restEndpoint}/mounts/${mountId}/shares`
-    const authHeader = await this.restAuthHeader()
-
-    const response = await fetchWithUpstreamTimeout(url, {
-      method: 'POST',
-      headers: {
-        Authorization: authHeader,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ path: normalizedPath }),
-    })
-
-    if (!response.ok) {
-      throw new StorageError(
-        `Koofr 分享链接创建失败（HTTP ${response.status}）`,
-        undefined,
-        response.status
-      )
-    }
-
-    const data = await readBoundedResponseJson<{ id?: string; url?: string }>(response)
-    const linkId = data.id
-
-    if (!linkId) {
-      throw new StorageError('Koofr 分享链接返回数据缺少 id')
-    }
-
-    // 将 web URL 转为直接下载 URL
-    // https://app.koofr.net/links/{id} → https://app.koofr.net/content/links/{id}/files/get?path=%2F
-    const endpointUrl = new URL(this.restEndpoint)
-    const directUrl = `${endpointUrl.origin}/content/links/${linkId}/files/get?path=%2F`
-    return directUrl
   }
 
   // ── 覆盖 testConnection：同时验证 REST API ──

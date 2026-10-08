@@ -1,9 +1,4 @@
-function isSecureRequest(request: Request): boolean {
-  const url = new URL(request.url)
-  if (url.protocol === 'https:') return true
-  const forwardedProto = request.headers.get('X-Forwarded-Proto')
-  return forwardedProto?.split(',')[0]?.trim() === 'https'
-}
+import { isSecureRequest } from '../utils/requestSecurity'
 
 function isHtmlResponse(response: Response): boolean {
   const contentType = response.headers.get('Content-Type') || ''

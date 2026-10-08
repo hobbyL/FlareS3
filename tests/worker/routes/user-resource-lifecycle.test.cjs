@@ -113,6 +113,139 @@ function createDb({ firstHandlers = [], allHandlers = [], runHandlers = [] }) {
   };
 }
 
+test("createUser rejects invalid or oversized usernames with 400 before D1 access", async () => {
+  const { createUser } = loadModule("routes/users.js");
+  const invalidUsernames = [
+    "bad user!", // 非法字符（空格与感叹号）
+    "用户名", // 非白名单字符集
+    "../etc", // 路径片段
+    "a".repeat(65), // 超长
+  ];
+
+  for (const username of invalidUsernames) {
+    const response = await createUser(
+      createAuthedJsonRequest("https://example.com/api/users", {
+        username,
+        password: "password123",
+        quota_bytes: 1024,
+      }),
+      {
+        DB: {
+          prepare() {
+            throw new Error("invalid username should not touch D1");
+          },
+        },
+      },
+    );
+
+    assert.equal(response.status, 400, `用户名 "${username}" 应返回 400`);
+    assert.match(
+      (await response.json()).error,
+      /用户名仅允许字母、数字、下划线、点、连字符，长度 1-64/,
+    );
+  }
+});
+
+test("createUser accepts 64-char usernames within the whitelist", async () => {
+  const { createUser } = loadModule("routes/users.js");
+  const username = "a".repeat(64);
+  const { db, state } = createDb({
+    firstHandlers: [
+      { match: /SELECT id FROM users WHERE username = \?/, value: null },
+    ],
+    runHandlers: [
+      { match: /INSERT INTO users/, value: { meta: { changes: 1 } } },
+      { match: /INSERT INTO audit_logs/, value: { meta: { changes: 1 } } },
+    ],
+  });
+
+  const response = await createUser(
+    createAuthedJsonRequest("https://example.com/api/users", {
+      username,
+      password: "password123",
+      quota_bytes: 1024,
+    }),
+    { DB: db },
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).success, true);
+  const insert = state.runs.find((entry) =>
+    /INSERT INTO users/.test(entry.sql),
+  );
+  assert.ok(insert, "应执行用户插入");
+  assert.equal(insert.args[1], username);
+});
+
+test("resetPassword returns 404 when the target user does not exist", async () => {
+  const { resetPassword } = loadModule("routes/users.js");
+  const { db, state } = createDb({
+    firstHandlers: [
+      { match: /SELECT id FROM users WHERE id = \? LIMIT 1/, value: null },
+    ],
+  });
+
+  const response = await resetPassword(
+    createAuthedJsonRequest(
+      "https://example.com/api/users/missing-user/reset-password",
+      { password: "newpassword123" },
+    ),
+    { DB: db },
+    "missing-user",
+  );
+
+  assert.equal(response.status, 404);
+  assert.deepEqual(await response.json(), { error: "用户不存在" });
+  // 目标不存在时不得执行密码更新、会话撤销或审计写入
+  assert.equal(state.runs.length, 0);
+  assert.equal(state.batches.length, 0);
+});
+
+test("resetPassword updates the password and revokes sessions for an existing user", async () => {
+  const { resetPassword } = loadModule("routes/users.js");
+  const { db, state } = createDb({
+    firstHandlers: [
+      {
+        match: /SELECT id FROM users WHERE id = \? LIMIT 1/,
+        value: { id: "user-1" },
+      },
+    ],
+    runHandlers: [
+      {
+        match: /UPDATE users SET password_hash = \?/,
+        value: { meta: { changes: 1 } },
+      },
+      {
+        match: /UPDATE sessions SET revoked_at = \? WHERE user_id = \?/,
+        value: { meta: { changes: 1 } },
+      },
+      { match: /INSERT INTO audit_logs/, value: { meta: { changes: 1 } } },
+    ],
+  });
+
+  const response = await resetPassword(
+    createAuthedJsonRequest(
+      "https://example.com/api/users/user-1/reset-password",
+      { password: "newpassword123" },
+    ),
+    { DB: db },
+    "user-1",
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { success: true });
+  assert.ok(
+    state.runs.some((entry) =>
+      /UPDATE users SET password_hash = \?/.test(entry.sql),
+    ),
+  );
+  assert.ok(
+    state.runs.some((entry) =>
+      /UPDATE sessions SET revoked_at/.test(entry.sql),
+    ),
+  );
+});
+
 test("updateUser rejects deleted status and forces dedicated delete flow", async () => {
   const { updateUser } = loadModule("routes/users.js");
   const { db } = createDb({

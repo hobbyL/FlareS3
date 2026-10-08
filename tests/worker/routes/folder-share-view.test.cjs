@@ -406,11 +406,111 @@ test("folder share POST password validation issues the cookie and redirects back
   assert.match(setCookie, /SameSite=Lax/);
   assert.match(setCookie, /Path=\/f\/folder0000001/);
   assert.match(setCookie, /Max-Age=\d+/);
+  // https 请求下分享 cookie 必须带 Secure（与会话 cookie 判定一致）
+  assert.match(setCookie, /; Secure$/);
   // 纯验证不消费访问次数
   assert.equal(
     state.runs.some((entry) => /UPDATE folder_shares/.test(entry.sql)),
     false,
   );
+});
+
+test("folder share POST password cookie omits Secure on plain http dev requests", async () => {
+  const { hashPassword } = loadModule("services/password.js");
+  const { viewFileShare } = loadFileSharesWithProvider(LIST_PROVIDER);
+  const { db } = createDb({
+    firstHandlers: [
+      folderResolveHandler(
+        folderShareRow({ password_hash: hashPassword("secret123") }),
+      ),
+      {
+        match: /SELECT blocked_until FROM rate_limits WHERE ip = \?/,
+        value: null,
+      },
+      {
+        match: /SELECT blocked_until FROM rate_limits WHERE ip = \?/,
+        value: null,
+      },
+    ],
+    runHandlers: [
+      {
+        match:
+          /UPDATE rate_limits SET failed_attempts = 0, blocked_until = NULL/,
+        value: { meta: { changes: 1 } },
+      },
+      {
+        match:
+          /UPDATE rate_limits SET failed_attempts = 0, blocked_until = NULL/,
+        value: { meta: { changes: 1 } },
+      },
+    ],
+  });
+
+  const response = await viewFileShare(
+    createFormPostRequest("http://localhost:18787/f/folder0000001", {
+      password: "secret123",
+    }),
+    { DB: db, AUTH_TOKEN_SECRET: AUTH_SECRET },
+    "folder0000001",
+  );
+
+  assert.equal(response.status, 302);
+  const setCookie = response.headers.get("Set-Cookie") || "";
+  assert.match(setCookie, /Path=\/f\/folder0000001/);
+  assert.ok(!/Secure/.test(setCookie), "本地 http dev 下不得带 Secure");
+});
+
+test("folder share POST password cookie honors X-Forwarded-Proto https", async () => {
+  const { hashPassword } = loadModule("services/password.js");
+  const { viewFileShare } = loadFileSharesWithProvider(LIST_PROVIDER);
+  const { db } = createDb({
+    firstHandlers: [
+      folderResolveHandler(
+        folderShareRow({ password_hash: hashPassword("secret123") }),
+      ),
+      {
+        match: /SELECT blocked_until FROM rate_limits WHERE ip = \?/,
+        value: null,
+      },
+      {
+        match: /SELECT blocked_until FROM rate_limits WHERE ip = \?/,
+        value: null,
+      },
+    ],
+    runHandlers: [
+      {
+        match:
+          /UPDATE rate_limits SET failed_attempts = 0, blocked_until = NULL/,
+        value: { meta: { changes: 1 } },
+      },
+      {
+        match:
+          /UPDATE rate_limits SET failed_attempts = 0, blocked_until = NULL/,
+        value: { meta: { changes: 1 } },
+      },
+    ],
+  });
+
+  // http 直连但反代表明 https：与会话 cookie 一致，同样签发 Secure
+  const request = createFormPostRequest(
+    "http://worker.internal/f/folder0000001",
+    {
+      password: "secret123",
+    },
+  );
+  request.headers.set("X-Forwarded-Proto", "https");
+
+  const response = await viewFileShare(
+    request,
+    {
+      DB: db,
+      AUTH_TOKEN_SECRET: AUTH_SECRET,
+    },
+    "folder0000001",
+  );
+
+  assert.equal(response.status, 302);
+  assert.match(response.headers.get("Set-Cookie") || "", /; Secure$/);
 });
 
 test("folder share POST wrong password logs rejected_password and rerenders the form", async () => {

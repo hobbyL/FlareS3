@@ -1,4 +1,5 @@
 import { withD1Retry } from '../utils/db'
+import { escapeLike } from '../utils/escapeLike'
 import type { Env } from '../config/env'
 import { jsonResponse, getUser, calcPresignedDownloadUrlTtlSeconds } from './utils'
 import { generateDownloadUrl, resolveR2ConfigForKey } from '../services/r2'
@@ -126,8 +127,8 @@ export async function listFiles(request: Request, env: Env): Promise<Response> {
     params.push(ownerId)
   }
   if (filename && filename.trim()) {
-    conditions.push('f.filename LIKE ?')
-    params.push(`%${filename.trim()}%`)
+    conditions.push("f.filename LIKE ? ESCAPE '\\'")
+    params.push(`%${escapeLike(filename.trim())}%`)
   }
   if (uploadStatus) {
     conditions.push('f.upload_status = ?')
@@ -299,8 +300,8 @@ export async function listTrashFiles(request: Request, env: Env): Promise<Respon
   }
 
   if (filename && filename.trim()) {
-    conditions.push('f.filename LIKE ?')
-    params.push(`%${filename.trim()}%`)
+    conditions.push("f.filename LIKE ? ESCAPE '\\'")
+    params.push(`%${escapeLike(filename.trim())}%`)
   }
 
   if (deletedFrom) {

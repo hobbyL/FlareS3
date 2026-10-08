@@ -174,6 +174,8 @@ export async function listUsers(request: Request, env: Env): Promise<Response> {
   )
 }
 
+const USERNAME_PATTERN = /^[\w.-]{1,64}$/
+
 /**
  * 创建用户
  *
@@ -197,6 +199,9 @@ export async function listUsers(request: Request, env: Env): Promise<Response> {
  *   "username": "newuser"
  * }
  *
+ * // 用户名格式无效 (400)
+ * { "error": "用户名仅允许字母、数字、下划线、点、连字符，长度 1-64" }
+ *
  * // 用户名已存在 (409)
  * { "error": "用户名已存在" }
  *
@@ -213,6 +218,9 @@ export async function createUser(request: Request, env: Env): Promise<Response> 
     }>(request)
     if (!body.username || !body.password) {
       return jsonResponse({ error: '用户名或密码不能为空' }, 400)
+    }
+    if (!USERNAME_PATTERN.test(String(body.username))) {
+      return jsonResponse({ error: '用户名仅允许字母、数字、下划线、点、连字符，长度 1-64' }, 400)
     }
     if (String(body.password).length < 8) {
       return jsonResponse({ error: '密码长度至少为 8 位' }, 400)
@@ -413,6 +421,9 @@ export async function updateUser(request: Request, env: Env, userId: string): Pr
  *
  * // 密码为空 (400)
  * { "error": "密码不能为空" }
+ *
+ * // 用户不存在 (404)
+ * { "error": "用户不存在" }
  */
 export async function resetPassword(request: Request, env: Env, userId: string): Promise<Response> {
   try {
@@ -422,6 +433,14 @@ export async function resetPassword(request: Request, env: Env, userId: string):
     }
     if (String(body.password).length < 8) {
       return jsonResponse({ error: '密码长度至少为 8 位' }, 400)
+    }
+    // 对齐 updateUser 的 404 语义：目标不存在时明确报错，而非静默成功
+    const target = await withD1Retry(env.DB)
+      .prepare('SELECT id FROM users WHERE id = ? LIMIT 1')
+      .bind(userId)
+      .first()
+    if (!target) {
+      return jsonResponse({ error: '用户不存在' }, 404)
     }
     await withD1Retry(env.DB)
       .prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?')

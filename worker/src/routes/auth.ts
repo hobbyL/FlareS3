@@ -19,6 +19,7 @@ import {
 import { createSignedAuthToken, getAuthTokenSecret } from '../services/authToken'
 import { hashToken } from '../utils/token'
 import { logError } from '../utils/log'
+import { isSecureRequest } from '../utils/requestSecurity'
 
 const SESSION_TTL_SECONDS = 8 * 60 * 60
 
@@ -27,14 +28,6 @@ const SESSION_TTL_SECONDS = 8 * 60 * 60
  * 防止通过响应时间枚举有效用户名。硬编码 bcrypt 哈希，不含真实凭证。
  */
 const DUMMY_BCRYPT_HASH = bcrypt.hashSync('flares3-timing-equalizer', 10)
-
-function isSecureRequest(request: Request): boolean {
-  const url = new URL(request.url)
-  if (url.protocol === 'https:') return true
-  const forwardedProto = request.headers.get('X-Forwarded-Proto')
-  if (forwardedProto && forwardedProto.split(',')[0].trim() === 'https') return true
-  return false
-}
 
 function buildSessionCookie(request: Request, token: string, maxAge: number): string {
   const secure = isSecureRequest(request) ? '; Secure' : ''
