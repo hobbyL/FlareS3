@@ -386,14 +386,13 @@ const columns = computed(() => {
       width:
         locale.value === 'zh-CN'
           ? themeStore.uiTheme === 'shadcn'
-            ? 380
-            : 420
+            ? 420
+            : 460
           : themeStore.uiTheme === 'shadcn'
-            ? 400
-            : 460,
+            ? 440
+            : 500,
       align: 'center',
       ellipsis: false,
-      fixed: 'right',
       render: (row) => {
         const id = normalizeId(row?.id)
         const disabled = loading.value || deleting.value || !id
