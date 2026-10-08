@@ -393,6 +393,7 @@ const columns = computed(() => {
             : 500,
       align: 'center',
       ellipsis: false,
+      fixed: 'right',
       render: (row) => {
         const id = normalizeId(row?.id)
         const disabled = loading.value || deleting.value || !id
