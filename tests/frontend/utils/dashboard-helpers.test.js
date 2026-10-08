@@ -154,7 +154,7 @@ test("buildOverviewCardsModel groups overview metrics into combined dashboard ca
         metrics: [
           {
             key: "usedSpace",
-            value: "48 B",
+            value: "48",
             tagLabel: undefined,
             tagType: undefined,
             unit: "B",

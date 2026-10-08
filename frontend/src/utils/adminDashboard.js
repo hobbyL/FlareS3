@@ -326,17 +326,13 @@ export function buildOverviewCardsModel({ metrics = {}, setup = {}, loading = fa
         {
           key: 'usedSpace',
           label: t('dashboard.cards.usedSpace'),
-          value: getOverviewDisplayValue(metrics?.usedSpaceFormatted, {
-            loading,
-            fallback: '0 B',
-          }),
-          unit: (() => {
-            const display = getOverviewDisplayValue(metrics?.usedSpaceFormatted, {
+          // 单位拆给标题行，数值行只显示纯数字（loading/占位除外）
+          ...splitFormattedBytes(
+            getOverviewDisplayValue(metrics?.usedSpaceFormatted, {
               loading,
               fallback: '0 B',
             })
-            return splitFormattedBytes(display).unit
-          })(),
+          ),
         },
         {
           key: uploadConfigMetric.key,
