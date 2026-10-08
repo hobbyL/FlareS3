@@ -25,9 +25,13 @@ const SESSION_TTL_SECONDS = 8 * 60 * 60
 
 /**
  * 用户不存在路径的哈希均衡常量：拉平与密码错误路径的计时差，
- * 防止通过响应时间枚举有效用户名。硬编码 bcrypt 哈希，不含真实凭证。
+ * 防止通过响应时间枚举有效用户名。
+ *
+ * 预计算的 bcrypt 哈希（'flares3-timing-equalizer'，rounds=10），不在模块
+ * 顶层调用 hashSync——部署校验沙箱无 WebCrypto/Node crypto，顶层随机盐
+ * 生成会抛错导致 deploy 失败（错误码 10021）。不含真实凭证。
  */
-const DUMMY_BCRYPT_HASH = bcrypt.hashSync('flares3-timing-equalizer', 10)
+const DUMMY_BCRYPT_HASH = '$2a$10$/SAInTJYIAju0v/IVp43r.Al/pxmKs8WO2/qr/5GeLu6rYlzV9Vrm'
 
 function buildSessionCookie(request: Request, token: string, maxAge: number): string {
   const secure = isSecureRequest(request) ? '; Secure' : ''
