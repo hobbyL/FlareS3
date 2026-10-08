@@ -413,7 +413,7 @@ const columns = computed(() => [
     align: 'center',
     ellipsis: false,
     render: (row) => {
-      const text = toDisplayText(row.action)
+      const text = getActionLabel(row.action)
       if (text === '-') return text
       return h(Tag, { type: 'info', size: 'small' }, () => text)
     },
