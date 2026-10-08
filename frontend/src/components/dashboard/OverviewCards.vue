@@ -32,7 +32,7 @@ const cards = computed(() =>
             <div class="overview-card-metric-header">
               <span class="overview-card-metric-label"
                 >{{ metric.label
-                }}<span v-if="metric.unit" class="overview-card-metric-label">{{
+                }}<span v-if="metric.unit" class="overview-card-metric-unit">{{
                   metric.unit
                 }}</span></span
               >
@@ -103,6 +103,14 @@ const cards = computed(() =>
 }
 
 .overview-card-metric-label {
+  color: var(--nb-muted-foreground, var(--nb-gray-500));
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* 单位与标题同字体同颜色，间隔 5px */
+.overview-card-metric-unit {
+  margin-left: 5px;
   color: var(--nb-muted-foreground, var(--nb-gray-500));
   font-size: 12px;
   line-height: 1.4;
