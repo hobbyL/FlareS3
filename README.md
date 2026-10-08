@@ -1,13 +1,27 @@
 # FlareS3
 
-基于 Cloudflare Pages + Workers + D1 + R2 的多用户版本，保留原有上传/分片/短链能力，并新增用户管理、配额与审计。
+基于 Cloudflare Workers + D1 的多用户文件 / 文档托管与分享平台：支持 R2 / WebDAV / Koofr 多存储后端、直传与分片上传、短链与多种分享形态，内置用户管理、配额、回收站与审计。
 
 ## 架构
 
-- 前端：Vue 3 + Vite（Pages）
-- 后端：Cloudflare Workers（同域 `/api` 与 `/s`）
+- 前端：Vue 3 + Vite（可由 Pages 或 Worker 全栈托管）
+- 后端：Cloudflare Workers（同域 `/api`、`/s`、`/f`、`/t`）
 - 数据库：D1
-- 存储：R2（S3 兼容）
+- 存储：R2（S3 兼容）/ WebDAV / Koofr，多配置可并存、按需切换，访问密钥加密存储
+
+## 功能
+
+- 文件：Presign 直传 / 服务端上传 / 分片上传（multipart），短链分享（可配置下载是否需登录），重命名，回收站（软删除、恢复、永久删除、清空）
+- 文档：在线创建与管理，支持口令 / 过期时间 / 访问次数限制分享；一次性分享二维码（限时、单次访问，旧码自动失效）
+- 文件夹分享：按存储前缀分享目录，支持口令 / 有效期 / 访问次数
+- 分享中心：统一查看和管理文件、文档与一次性分享，含访问记录
+- 挂载浏览：直接浏览存储后端对象（不依赖数据库记录），支持预览 / 上传 / 移动 / 删除
+- 存储配置：多存储配置管理（R2 / WebDAV / Koofr），敏感密钥用 `R2_MASTER_KEY` 加密后写入 D1
+- 用户：角色（admin / user）、启用 / 禁用、配额管理
+- 仪表盘：用户 / 文件 / 分享 / 用量统计概览
+- 审计日志：全量操作留痕，支持动作 / 操作者 / 时间范围筛选与批量删除
+- 定时任务（每小时 Cron）：过期上传与分享清理、保留期数据清理（会话 / 限流 / 审计）、删除队列批处理
+- 其他：中英双语（zh-CN / en-US）、双主题（neo-brutalism / shadcn）、会话管理、登录限流与防爆破
 
 ## 目录结构
 
@@ -18,7 +32,7 @@
 ├── tests
 │   ├── frontend
 │   └── worker
-└── docs
+└── docs        # 本地文档工作区（不入库）
 ```
 
 ## 本地开发
@@ -46,6 +60,8 @@ npx wrangler d1 migrations apply "DB" --local
 - 如果本地 D1 是 migration 正式化之前留下的旧状态，`reconcile-legacy-d1-columns.mjs` 会补齐历史缺失列；新库会自动跳过。
 - 这会把本地数据库写到 `worker/.wrangler/state/v3/d1/`（Miniflare 持久化），不依赖远程 D1。
 - 需要重置本地数据可删除该目录或执行 `npx wrangler d1 execute DB --local --command "DELETE FROM users;"` 等。
+
+> 说明：WebDAV / Koofr 后端的访问配置同样在管理页 `/setup` 中通过 UI 创建/管理（写入 D1）。
 
 ### 2) 配置环境变量
 
@@ -153,7 +169,7 @@ npm run verify:release
 
 建议在推送前于本地执行 `npm run verify:release` 作为预检；`deploy-worker-only.yml` 也会在发布前再次强制执行同一 gate。
 
-完整运行说明见：[docs/release-runbook.md](./docs/release-runbook.md)。Day5 的联合放行记录可落到 [.trellis/tasks/04-27-project-readiness-audit/day5-go-no-go.md](./.trellis/tasks/04-27-project-readiness-audit/day5-go-no-go.md)。
+完整运行说明见本地 `docs/release-runbook.md`（本地文档工作区，不入库）。
 
 #### 0) Cloudflare 侧准备（一次性）
 
