@@ -35,3 +35,5 @@ AGENTS.md
 .trellis/
 .tmp/
 .impeccable/
+# docs 为本地文档工作区，整目录不入库
+docs/
