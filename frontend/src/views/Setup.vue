@@ -21,12 +21,12 @@
         </div>
 
         <div class="setup-actions">
-          <Button type="primary" size="large" @click="openCreate">
-            <Plus :size="18" style="margin-right: 6px" />
+          <Button type="primary" size="small" @click="openCreate">
+            <Plus :size="16" style="margin-right: 6px" />
             {{ t('setup.actions.addConfig') }}
           </Button>
-          <Button type="default" size="large" :loading="loading" @click="refresh">
-            <RefreshCw :size="18" style="margin-right: 6px" />
+          <Button type="default" size="small" :loading="loading" @click="refresh">
+            <RefreshCw :size="16" style="margin-right: 6px" />
             {{ t('setup.actions.refreshList') }}
           </Button>
         </div>
