@@ -139,16 +139,16 @@ defineProps({
   position: sticky;
   right: 0;
   z-index: 2;
-  background-color: var(--background);
+  background-color: var(--card);
 }
 
 .shadcn-table th.cell-fixed-right {
   z-index: 3;
-  background-color: var(--background);
+  background-color: var(--card);
 }
 
 .shadcn-table tbody tr:hover td.cell-fixed-right {
-  background-color: color-mix(in oklab, var(--muted) 50%, var(--background));
+  background-color: color-mix(in oklab, var(--muted) 50%, var(--card));
 }
 
 .cell-ellipsis {
