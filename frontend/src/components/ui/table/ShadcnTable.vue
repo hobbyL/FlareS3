@@ -147,6 +147,11 @@ defineProps({
   background-color: var(--card);
 }
 
+/* 与行悬停使用同一混色公式，保证 sticky 列悬停变色与其余单元格一致 */
+.shadcn-table tbody tr:hover td.cell-fixed-right {
+  background-color: color-mix(in oklab, var(--muted) 50%, var(--background));
+}
+
 .cell-ellipsis {
   max-width: 0; /* Force ellipsis to work with fixed table layout */
   overflow: hidden;
