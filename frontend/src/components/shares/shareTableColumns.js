@@ -19,6 +19,8 @@ import {
 
 export function buildSharesTableColumns({
   t,
+  locale = 'zh-CN',
+  uiTheme = '',
   isAdmin = false,
   loading = false,
   batchDisableSubmitting = false,
@@ -197,7 +199,8 @@ export function buildSharesTableColumns({
     {
       title: translate('shares.columns.actions'),
       key: 'actions',
-      width: translate('shares.columns.actions') === '操作' ? 320 : 360,
+      width:
+        locale === 'zh-CN' ? (uiTheme === 'shadcn' ? 320 : 360) : uiTheme === 'shadcn' ? 360 : 430,
       align: 'center',
       ellipsis: false,
       fixed: 'right',

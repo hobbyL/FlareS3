@@ -92,6 +92,7 @@
 import { computed, onMounted, ref, watch, defineAsyncComponent } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '../stores/auth'
+import { useThemeStore } from '../stores/theme'
 import { useUserOptionsStore } from '../stores/userOptions'
 import api from '../services/api'
 import AppLayout from '../components/layout/AppLayout.vue'
@@ -125,6 +126,7 @@ const ShareAccessLogModal = defineAsyncComponent(
 
 const { t, locale } = useI18n({ useScope: 'global' })
 const authStore = useAuthStore()
+const themeStore = useThemeStore()
 const userOptionsStore = useUserOptionsStore()
 const message = useMessage()
 
@@ -567,6 +569,8 @@ async function handleConfirmSubmit() {
 const columns = computed(() =>
   buildSharesTableColumns({
     t,
+    locale: locale.value,
+    uiTheme: themeStore.uiTheme,
     isAdmin: authStore.isAdmin,
     loading: loading.value,
     batchDisableSubmitting: batchDisableSubmitting.value,

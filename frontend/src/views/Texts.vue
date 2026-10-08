@@ -386,11 +386,11 @@ const columns = computed(() => {
       width:
         locale.value === 'zh-CN'
           ? themeStore.uiTheme === 'shadcn'
-            ? 480
-            : 520
+            ? 500
+            : 540
           : themeStore.uiTheme === 'shadcn'
-            ? 540
-            : 600,
+            ? 550
+            : 620,
       align: 'center',
       ellipsis: false,
       fixed: 'right',

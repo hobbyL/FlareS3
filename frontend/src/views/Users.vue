@@ -217,6 +217,7 @@ import {
 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import api from '../services/api'
+import { useThemeStore } from '../stores/theme'
 import { useAuthStore } from '../stores/auth'
 import { useUserOptionsStore } from '../stores/userOptions'
 import AppLayout from '../components/layout/AppLayout.vue'
@@ -235,6 +236,7 @@ import UserEditModal from '../components/users/UserEditModal.vue'
 import { useMessage } from '../composables/useMessage'
 import { buildUserEditPayload } from '../utils/userManagement.js'
 
+const themeStore = useThemeStore()
 const message = useMessage()
 const { t, locale } = useI18n({ useScope: 'global' })
 const authStore = useAuthStore()
@@ -361,10 +363,16 @@ const columns = computed(() => [
   {
     title: t('users.columns.actions'),
     key: 'actions',
-    width: locale.value === 'zh-CN' ? 420 : 500,
+    width:
+      locale.value === 'zh-CN'
+        ? themeStore.uiTheme === 'shadcn'
+          ? 420
+          : 460
+        : themeStore.uiTheme === 'shadcn'
+          ? 500
+          : 580,
     align: 'center',
     ellipsis: false,
-    fixed: 'right',
     render: (row) =>
       h('div', { class: 'action-buttons' }, [
         h(Button, { size: 'small', type: 'default', onClick: () => openEdit(row) }, () => [
