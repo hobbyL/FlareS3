@@ -115,6 +115,7 @@ export function buildFilesTableColumns({
         locale === 'zh-CN' ? (uiTheme === 'shadcn' ? 360 : 420) : uiTheme === 'shadcn' ? 410 : 480,
       align: 'center',
       ellipsis: false,
+      fixed: 'right',
       render: (row) => {
         const disabled = loading || deleting
         if (isTrashMode) {

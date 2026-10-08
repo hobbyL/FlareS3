@@ -25,6 +25,7 @@ defineProps({
               width: col.width ? `${col.width}px` : 'auto',
               textAlign: col.align || 'left',
             }"
+            :class="{ 'cell-fixed-right': col.fixed === 'right' }"
           >
             <template v-if="col.titleRender">
               <component :is="col.titleRender()" />
@@ -46,7 +47,10 @@ defineProps({
             v-for="col in columns"
             :key="col.key"
             :style="{ textAlign: col.align || 'left' }"
-            :class="{ 'cell-ellipsis': col.ellipsis !== false }"
+            :class="{
+              'cell-ellipsis': col.ellipsis !== false,
+              'cell-fixed-right': col.fixed === 'right',
+            }"
           >
             <template v-if="col.render">
               <component :is="col.render(row)" />
@@ -156,6 +160,23 @@ defineProps({
 }
 
 .brutal-table tr:hover td {
+  background-color: var(--nb-gray-100);
+}
+
+/* Sticky right column (e.g. row actions) */
+.cell-fixed-right {
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  background-color: var(--nb-surface);
+}
+
+.brutal-table th.cell-fixed-right {
+  z-index: 3;
+  background-color: var(--nb-primary);
+}
+
+.brutal-table tr:hover td.cell-fixed-right {
   background-color: var(--nb-gray-100);
 }
 

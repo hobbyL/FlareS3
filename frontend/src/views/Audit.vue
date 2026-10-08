@@ -456,6 +456,7 @@ const columns = computed(() => [
     width: locale.value === 'zh-CN' ? 120 : 160,
     align: 'center',
     ellipsis: false,
+    fixed: 'right',
     render: (row) => {
       const id = normalizeId(row?.id)
       return h('div', { class: 'action-buttons' }, [

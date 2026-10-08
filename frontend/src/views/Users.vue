@@ -364,6 +364,7 @@ const columns = computed(() => [
     width: locale.value === 'zh-CN' ? 420 : 500,
     align: 'center',
     ellipsis: false,
+    fixed: 'right',
     render: (row) =>
       h('div', { class: 'action-buttons' }, [
         h(Button, { size: 'small', type: 'default', onClick: () => openEdit(row) }, () => [

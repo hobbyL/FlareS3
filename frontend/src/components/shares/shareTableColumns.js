@@ -200,6 +200,7 @@ export function buildSharesTableColumns({
       width: translate('shares.columns.actions') === '操作' ? 320 : 360,
       align: 'center',
       ellipsis: false,
+      fixed: 'right',
       render: (row) => {
         const buttons = []
 

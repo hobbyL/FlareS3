@@ -25,6 +25,7 @@ defineProps({
               width: col.width ? `${col.width}px` : 'auto',
               textAlign: col.align || 'left',
             }"
+            :class="{ 'cell-fixed-right': col.fixed === 'right' }"
           >
             <template v-if="col.titleRender">
               <component :is="col.titleRender()" />
@@ -46,7 +47,10 @@ defineProps({
             v-for="col in columns"
             :key="col.key"
             :style="{ textAlign: col.align || 'left' }"
-            :class="{ 'cell-ellipsis': col.ellipsis !== false }"
+            :class="{
+              'cell-ellipsis': col.ellipsis !== false,
+              'cell-fixed-right': col.fixed === 'right',
+            }"
           >
             <template v-if="col.render">
               <component :is="col.render(row)" />
@@ -128,6 +132,23 @@ defineProps({
   padding: 16px;
   color: var(--foreground);
   vertical-align: middle;
+}
+
+/* Sticky right column (e.g. row actions) */
+.cell-fixed-right {
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  background-color: var(--background);
+}
+
+.shadcn-table th.cell-fixed-right {
+  z-index: 3;
+  background-color: var(--background);
+}
+
+.shadcn-table tbody tr:hover td.cell-fixed-right {
+  background-color: color-mix(in oklab, var(--muted) 50%, var(--background));
 }
 
 .cell-ellipsis {
