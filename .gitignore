@@ -31,8 +31,7 @@ AGENTS.md
 .agents/
 .codex/
 .claude/
-# Trellis 个人工作区不入库（spec/tasks/workflow/scripts 随仓库提交）
-.trellis/workspace/
-!.trellis/scripts/
+# Trellis 为本地个人工作区，整目录不入库（任务工件/spec/scripts 只留在本机）
+.trellis/
 .tmp/
 .impeccable/
