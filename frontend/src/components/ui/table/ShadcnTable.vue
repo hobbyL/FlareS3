@@ -147,10 +147,6 @@ defineProps({
   background-color: var(--card);
 }
 
-.shadcn-table tbody tr:hover td.cell-fixed-right {
-  background-color: color-mix(in oklab, var(--muted) 50%, var(--card));
-}
-
 .cell-ellipsis {
   max-width: 0; /* Force ellipsis to work with fixed table layout */
   overflow: hidden;
