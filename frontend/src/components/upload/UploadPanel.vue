@@ -8,6 +8,18 @@
       <Upload ref="uploadRef" multiple @file-selected="handleUpload" @before-upload="beforeUpload">
         <p class="upload-hint">{{ uploadHintText }}</p>
       </Upload>
+
+      <div class="upload-folder-entry">
+        <Upload
+          ref="folderUploadRef"
+          multiple
+          directory
+          @file-selected="handleUpload"
+          @before-upload="beforeUpload"
+        >
+          <p class="upload-hint">{{ t('upload.folderHint') }}</p>
+        </Upload>
+      </div>
     </div>
 
     <Alert v-if="uploadConfigAlertMessage" type="warning" class="upload-config-alert">
@@ -125,7 +137,7 @@ import { useUploadConfigOptions } from '../../composables/useUploadConfigOptions
 import { useUploadQueue } from '../../composables/useUploadQueue.js'
 import { useUploadResumeEntries } from '../../composables/useUploadResumeEntries.js'
 import { createUploadTaskRunner } from '../../services/uploadTaskRunner.js'
-import { formatBytes } from '../../utils/uploadPanel.js'
+import { buildFolderEntryDir, formatBytes } from '../../utils/uploadPanel.js'
 import { generateFileId } from '../../utils/uploadResume.js'
 
 const emit = defineEmits(['uploaded'])
@@ -134,6 +146,7 @@ const message = useMessage()
 const { t, locale } = useI18n({ useScope: 'global' })
 
 const uploadRef = ref(null)
+const folderUploadRef = ref(null)
 const resumeInputRef = ref(null)
 const pendingResumeFileId = ref('')
 const expiresIn = ref(7)
@@ -248,7 +261,12 @@ const buildQueuedFiles = (files = []) =>
     requireLogin: requireLogin.value,
     configId: resolvedUploadConfigId.value || undefined,
     configType: selectedConfigType.value,
-    dir: uploadDir.value.trim() || undefined,
+    // 文件夹上传：每文件独立 dir（相对路径前缀拼面板 dir）；
+    // 普通多选 relativePath 为空 → 回退面板 dir
+    dir: buildFolderEntryDir(
+      item.relativePath || item.file?.webkitRelativePath || '',
+      uploadDir.value
+    ),
   }))
 
 const handleUpload = ({ files }) => {
@@ -259,10 +277,12 @@ const handleUpload = ({ files }) => {
 
   const queuedFiles = buildQueuedFiles(files)
   if (!queuedFiles.length) {
+    message.warning(t('upload.folderEmpty'))
     return
   }
 
   uploadRef.value?.clear()
+  folderUploadRef.value?.clear()
   uploadQueue.enqueueFiles(queuedFiles)
 }
 
@@ -361,6 +381,10 @@ onUnmounted(() => {
 .upload-entry.is-disabled {
   opacity: 0.6;
   pointer-events: none;
+}
+
+.upload-folder-entry {
+  margin-top: var(--nb-space-md);
 }
 
 .upload-hint {

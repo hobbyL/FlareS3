@@ -6,6 +6,7 @@ import ShadcnUpload from './ShadcnUpload.vue'
 
 const props = defineProps({
   multiple: Boolean,
+  directory: Boolean,
 })
 
 const emit = defineEmits(['file-selected', 'before-upload'])
@@ -27,6 +28,7 @@ defineExpose({
     :is="currentComponent"
     ref="innerRef"
     :multiple="props.multiple"
+    :directory="props.directory"
     @file-selected="emit('file-selected', $event)"
     @before-upload="emit('before-upload', $event)"
   >

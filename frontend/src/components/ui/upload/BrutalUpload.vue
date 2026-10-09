@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 
 const props = defineProps({
   multiple: Boolean,
+  directory: Boolean,
 })
 
 const emit = defineEmits(['file-selected', 'before-upload'])
@@ -11,6 +12,9 @@ const emit = defineEmits(['file-selected', 'before-upload'])
 const isDragging = ref(false)
 const fileInput = ref(null)
 const { t } = useI18n({ useScope: 'global' })
+
+// webkitdirectory 需作为真实 HTML 属性存在才生效；用 v-bind 对象按需挂载
+const directoryAttrs = props.directory ? { webkitdirectory: '', directory: '' } : {}
 
 const onDragOver = (e) => {
   e.preventDefault()
@@ -42,6 +46,7 @@ const handleFiles = (files) => {
     file,
     name: file.name,
     type: file.type,
+    relativePath: file.webkitRelativePath || '',
   }))
 
   const shouldContinue = emit('before-upload', { files: normalizedFiles })
@@ -68,7 +73,14 @@ defineExpose({ clear })
     @drop="onDrop"
     @click="fileInput?.click()"
   >
-    <input ref="fileInput" type="file" hidden :multiple="multiple" @change="onChange" />
+    <input
+      ref="fileInput"
+      type="file"
+      hidden
+      :multiple="multiple"
+      v-bind="directoryAttrs"
+      @change="onChange"
+    />
     <div class="upload-content">
       <div class="upload-icon">
         <svg viewBox="0 0 24 24" width="48" height="48" fill="currentColor">

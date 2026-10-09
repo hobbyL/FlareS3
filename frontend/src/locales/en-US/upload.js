@@ -5,6 +5,8 @@ export default {
     expiresIn: 'Expiration',
     uploadConfig: 'Upload config',
     uploadDir: 'Directory',
+    folderHint: 'Upload a folder (keeps directory structure)',
+    folderEmpty: 'The selected folder is empty or has no files',
     downloadPermission: 'Download access',
     requireLogin: 'Login required',
     publicDownload: 'Public',

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  buildFolderEntryDir,
   createCancelledError,
   formatBytes,
   isCancelledError,
@@ -42,4 +43,30 @@ test("upload panel utility helpers format bytes and classify cancellations", () 
   assert.equal(isCancelledError(createCancelledError()), true);
   assert.equal(isCancelledError({ code: "ERR_CANCELED" }), true);
   assert.equal(isCancelledError(new Error("other")), false);
+});
+
+test("buildFolderEntryDir derives per-file dir from webkitRelativePath", () => {
+  // 普通相对路径：取除末段文件名外的目录部分
+  assert.equal(buildFolderEntryDir("a/b/c.txt", ""), "a/b");
+  assert.equal(buildFolderEntryDir("a/f1.bin", ""), "a");
+
+  // 已有面板 dir：relativeDir 拼在面板 dir 之后
+  assert.equal(buildFolderEntryDir("a/b/c.txt", "backup/"), "backup/a/b");
+  assert.equal(buildFolderEntryDir("a/f1", "backup"), "backup/a");
+
+  // 无目录段（普通多选，relativePath 为空或仅文件名）→ 回退面板 dir
+  assert.equal(buildFolderEntryDir("", "backup/"), "backup");
+  assert.equal(buildFolderEntryDir("file.txt", "backup"), "backup");
+
+  // 面板 dir 与相对路径均为空 → undefined（与队列字段「无前缀」语义一致）
+  assert.equal(buildFolderEntryDir("", ""), undefined);
+  assert.equal(buildFolderEntryDir("file.txt", ""), undefined);
+
+  // 无扩展名文件、反斜杠分隔、冗余斜杠归一化
+  assert.equal(buildFolderEntryDir("a\\b\\README", ""), "a/b");
+  assert.equal(buildFolderEntryDir("a//b//c.txt", "//backup//"), "backup/a/b");
+
+  // 非法输入兜底：不抛错
+  assert.equal(buildFolderEntryDir(null, null), undefined);
+  assert.equal(buildFolderEntryDir(undefined, undefined), undefined);
 });

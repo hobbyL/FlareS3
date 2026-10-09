@@ -5,6 +5,8 @@ export default {
     expiresIn: '过期时间',
     uploadConfig: '上传配置',
     uploadDir: '目录',
+    folderHint: '上传文件夹（保留目录结构）',
+    folderEmpty: '所选文件夹为空或不含文件',
     downloadPermission: '下载权限',
     requireLogin: '需要登录',
     publicDownload: '公开下载',
