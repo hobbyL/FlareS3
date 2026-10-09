@@ -6,6 +6,9 @@ export default {
     filters: {
       q: 'Search',
       allOwners: 'All users',
+      mode: 'Scope',
+      activeTexts: 'Active documents',
+      trashTexts: 'Trash',
     },
     columns: {
       title: 'Title',
@@ -25,12 +28,17 @@ export default {
       qrcode: 'QR code',
       accessLog: 'Access log',
       loadMore: 'Load more',
+      restore: 'Restore',
+      deletePermanent: 'Delete permanently',
+      clearTrash: 'Empty trash',
     },
     modals: {
       createTitle: 'Create document',
       editTitle: 'Edit document',
       viewTitle: 'Document',
       deleteTitle: 'Confirm delete',
+      deletePermanentTitle: 'Confirm permanent deletion',
+      clearTrashTitle: 'Confirm empty trash',
       shareTitle: 'Share',
       qrcodeTitle: 'QR code',
     },
@@ -126,6 +134,20 @@ export default {
       contentRequired: 'Content is required',
     },
     confirmDelete: 'Delete this document?',
+    confirmPermanentDelete:
+      'The document and its shares will be permanently removed and cannot be recovered. Continue?',
+    confirmClearTrash:
+      'All documents in the trash and their shares will be permanently deleted and cannot be recovered. Continue?',
+    trash: {
+      empty: 'Trash is empty',
+      deletedAt: 'Deleted at',
+      restoreSuccess: 'Document restored',
+      restoreFailed: 'Failed to restore document',
+      permanentDeleteSuccess: 'Document permanently deleted',
+      permanentDeleteFailed: 'Failed to permanently delete document',
+      clearSuccess: 'Trash emptied ({count} item(s))',
+      clearFailed: 'Failed to empty trash',
+    },
     messages: {
       loadFailed: 'Failed to load documents',
       loadUsersFailed: 'Failed to load users',

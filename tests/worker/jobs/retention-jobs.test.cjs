@@ -19,9 +19,11 @@ function clearModule(relativePath) {
   delete require.cache[compiledPath(relativePath)];
 }
 
-function createDb({ runHandlers = [] }) {
+function createDb({ runHandlers = [], allHandlers = [] }) {
   const state = {
     runs: [],
+    alls: [],
+    batches: [],
   };
 
   function consume(list, sql, args) {
@@ -42,13 +44,43 @@ function createDb({ runHandlers = [] }) {
         return {
           bind(...args) {
             return {
+              __sql: sql,
+              __args: args,
               async run() {
                 state.runs.push({ sql, args });
                 return consume(runHandlers, sql, args);
               },
+              // texts 回收站分批清理需要 SELECT 分页；默认空结果让循环
+              // 立即退出（无软删除数据可清理），需要模拟数据时用 allHandlers
+              async all() {
+                state.alls.push({ sql, args });
+                const index = (allHandlers || []).findIndex((handler) =>
+                  handler.match.test(sql),
+                );
+                if (index === -1) {
+                  return { results: [] };
+                }
+                const [handler] = (allHandlers || []).splice(index, 1);
+                return typeof handler.value === "function"
+                  ? handler.value(args, sql, state)
+                  : handler.value;
+              },
             };
           },
         };
+      },
+      async batch(statements) {
+        state.batches.push(
+          statements.map((statement) => ({
+            sql: statement.__sql,
+            args: statement.__args || [],
+          })),
+        );
+        const results = [];
+        for (const statement of statements) {
+          results.push(await statement.run());
+        }
+        return results;
       },
     },
   };
@@ -193,6 +225,7 @@ test("cleanupRetention deletes stale sessions, rate limits and audit logs using 
     rateLimits: 3,
     auditLogs: 4,
     shareAccessLogs: 5,
+    textsTrash: 0,
   });
 
   const sessionRun = state.runs.find((entry) =>
@@ -652,4 +685,93 @@ test("cleanupDeleteQueue deletes explicit provider object before clearing queue 
   assert.equal(result.succeeded, 1);
   assert.equal(deletedKey, "storage/webdav-1/demo.bin");
   assert.equal(state.batches.length, 1);
+});
+
+test("cleanupRetention physically deletes expired trash texts and cascades shares", async () => {
+  const retention = loadModule("jobs/cleanupRetention.js");
+  const { db, state } = createDb({
+    runHandlers: [
+      { match: /DELETE FROM sessions/, value: { meta: { changes: 0 } } },
+      { match: /DELETE FROM rate_limits/, value: { meta: { changes: 0 } } },
+      { match: /DELETE FROM audit_logs/, value: { meta: { changes: 0 } } },
+      {
+        match: /DELETE FROM share_access_logs/,
+        value: { meta: { changes: 0 } },
+      },
+      // texts 回收站 batch 内的三条级联 DELETE（batch 复用 run consume）
+      {
+        match: /DELETE FROM text_shares WHERE text_id IN/,
+        value: { meta: { changes: 1 } },
+      },
+      {
+        match: /DELETE FROM text_one_time_shares WHERE text_id IN/,
+        value: { meta: { changes: 0 } },
+      },
+      {
+        match: /DELETE FROM texts WHERE id IN/,
+        value: { meta: { changes: 2 } },
+      },
+    ],
+    allHandlers: [
+      // texts 回收站分批：第一轮 2 行，第二轮空（循环退出）
+      {
+        match:
+          /SELECT id FROM texts\s+WHERE deleted_at IS NOT NULL AND deleted_at < \?/,
+        value: (args) => {
+          if (args[0] === "sentinel") return { results: [] };
+          return { results: [{ id: "text-a" }, { id: "text-b" }] };
+        },
+      },
+      {
+        match:
+          /SELECT id FROM texts\s+WHERE deleted_at IS NOT NULL AND deleted_at < \?/,
+        value: { results: [] },
+      },
+    ],
+  });
+  const now = new Date("2026-10-09T00:00:00.000Z");
+  const result = await retention.cleanupRetention({ DB: db }, now);
+
+  assert.equal(result.status, "success");
+  assert.equal(result.details.textsTrash, 2);
+  assert.equal(result.processed, 2);
+  // shares 级联删除走 batch（text_shares / text_one_time_shares / texts 同批）
+  assert.equal(state.batches.length, 1);
+  assert.deepEqual(
+    state.batches[0].map((statement) => statement.sql),
+    [
+      "DELETE FROM text_shares WHERE text_id IN (?,?)",
+      "DELETE FROM text_one_time_shares WHERE text_id IN (?,?)",
+      "DELETE FROM texts WHERE id IN (?,?)",
+    ],
+  );
+  // 阈值参数 = 30 天保留期
+  const selectAll = state.alls.find((entry) =>
+    /SELECT id FROM texts/.test(entry.sql),
+  );
+  assert.deepEqual(selectAll.args, [
+    new Date(now.getTime() - retention.TEXTS_TRASH_RETENTION_MS).toISOString(),
+  ]);
+});
+
+test("cleanupRetention keeps recent soft-deleted texts within retention window", async () => {
+  const retention = loadModule("jobs/cleanupRetention.js");
+  const { db, state } = createDb({
+    runHandlers: [
+      { match: /DELETE FROM sessions/, value: { meta: { changes: 0 } } },
+      { match: /DELETE FROM rate_limits/, value: { meta: { changes: 0 } } },
+      { match: /DELETE FROM audit_logs/, value: { meta: { changes: 0 } } },
+      {
+        match: /DELETE FROM share_access_logs/,
+        value: { meta: { changes: 0 } },
+      },
+    ],
+  });
+
+  const result = await retention.cleanupRetention({ DB: db }, new Date());
+
+  // 无软删除数据：textsTrash 为 0 且不触发任何 texts DELETE batch
+  assert.equal(result.status, "success");
+  assert.equal(result.details.textsTrash, 0);
+  assert.equal(state.batches.length, 0);
 });

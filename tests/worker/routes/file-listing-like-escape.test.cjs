@@ -138,3 +138,40 @@ test("listTrashFiles escapes LIKE wildcards in filename search", async () => {
   assert.equal((await response.json()).total, 0);
   assertLikeEscaped(state, "%50\\%\\_off%");
 });
+
+test("listFiles rejects prototype-chain sort_by values and falls back to created_at", async () => {
+  const { listFiles } = loadModule("routes/fileListing.js");
+  const { state, db } = createDb();
+
+  // constructor / __proto__ 命中 Object.prototype 时真值检查会放行 → SQL 注入构造函数源码
+  for (const malicious of ["constructor", "__proto__", "toString"]) {
+    const response = await listFiles(
+      createGetRequest(
+        `https://example.com/api/files?filename=&sort_by=${encodeURIComponent(malicious)}`,
+      ),
+      { DB: db },
+    );
+    assert.equal(response.status, 200);
+  }
+  const rowsSql = state.alls.map((entry) => entry.sql).join("\n");
+  assert.match(rowsSql, /ORDER BY f\.created_at DESC/);
+  assert.ok(!rowsSql.includes("[native code]"), "原型链属性不得注入 SQL");
+});
+
+test("listTrashFiles rejects prototype-chain sort_by values and falls back to deleted_at", async () => {
+  const { listTrashFiles } = loadModule("routes/fileListing.js");
+  const { state, db } = createDb();
+
+  for (const malicious of ["constructor", "__proto__", "toString"]) {
+    const response = await listTrashFiles(
+      createGetRequest(
+        `https://example.com/api/files/trash?filename=&sort_by=${encodeURIComponent(malicious)}`,
+      ),
+      { DB: db },
+    );
+    assert.equal(response.status, 200);
+  }
+  const rowsSql = state.alls.map((entry) => entry.sql).join("\n");
+  assert.match(rowsSql, /ORDER BY f\.deleted_at DESC/);
+  assert.ok(!rowsSql.includes("[native code]"), "原型链属性不得注入 SQL");
+});

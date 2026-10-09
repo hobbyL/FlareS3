@@ -833,6 +833,43 @@ export default {
   },
 
   /**
+   * 获取回收站文本列表
+   * @param {number} page - 页码
+   * @param {number} limit - 每页数量
+   * @param {object} params - 查询参数（q / owner_id / deleted_from / deleted_to / sort_by / sort_order）
+   * @returns {Promise<{texts: Array, total: number, page: number, limit: number}>}
+   */
+  getTrashTexts(page = 1, limit = 20, params = {}) {
+    return api.get('/texts/trash', { params: { page, limit, ...(params || {}) } })
+  },
+
+  /**
+   * 恢复回收站文本
+   * @param {string} textId - 文本 ID
+   * @returns {Promise<{success: boolean}>}
+   */
+  restoreText(textId) {
+    return api.post(`/texts/${textId}/restore`)
+  },
+
+  /**
+   * 永久删除回收站文本
+   * @param {string} textId - 文本 ID
+   * @returns {Promise<{success: boolean}>}
+   */
+  permanentlyDeleteText(textId) {
+    return api.delete(`/texts/${textId}/permanent`)
+  },
+
+  /**
+   * 清空回收站
+   * @returns {Promise<{success: boolean, deleted: number}>}
+   */
+  clearTextsTrash() {
+    return api.delete('/texts/trash/permanent')
+  },
+
+  /**
    * 创建一次性文本分享
    * @param {string} textId - 文本 ID
    * @returns {Promise<{share_url: string}>}

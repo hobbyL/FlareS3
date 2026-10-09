@@ -6,7 +6,7 @@
           <div class="texts-title-row">
             <h1 class="texts-title">{{ t('texts.title') }}</h1>
             <Button
-              v-if="isMobile"
+              v-if="isMobile && listMode === 'active'"
               type="ghost"
               size="small"
               class="texts-mobile-create-btn"
@@ -99,10 +99,52 @@
                 </Tooltip>
               </div>
             </div>
+
+            <div class="filter-item mode-toggle" role="group" :aria-label="t('texts.filters.mode')">
+              <Tooltip :content="t('texts.filters.activeTexts')">
+                <Button
+                  type="ghost"
+                  size="small"
+                  class="view-mode-btn"
+                  :class="{ 'is-active': listMode === 'active' }"
+                  :disabled="loading"
+                  :aria-label="t('texts.filters.activeTexts')"
+                  @click="setListMode('active')"
+                >
+                  <FileText :size="16" />
+                </Button>
+              </Tooltip>
+              <Tooltip :content="t('texts.filters.trashTexts')">
+                <Button
+                  type="ghost"
+                  size="small"
+                  class="view-mode-btn"
+                  :class="{ 'is-active': listMode === 'trash' }"
+                  :disabled="loading"
+                  :aria-label="t('texts.filters.trashTexts')"
+                  @click="setListMode('trash')"
+                >
+                  <Trash2 :size="16" />
+                </Button>
+              </Tooltip>
+            </div>
+
+            <Button
+              v-if="listMode === 'trash'"
+              type="danger"
+              size="small"
+              class="texts-clear-trash-btn"
+              :loading="clearingTrash"
+              :disabled="loading || clearingTrash || !texts.length"
+              @click="showClearTrashModal = true"
+            >
+              <Trash2 :size="16" style="margin-right: 6px" />
+              {{ t('texts.actions.clearTrash') }}
+            </Button>
           </div>
 
           <Button
-            v-if="!isMobile"
+            v-if="!isMobile && listMode === 'active'"
             type="primary"
             size="small"
             :disabled="loading"
@@ -121,6 +163,24 @@
           :columns="columns.length"
           :cards="6"
         />
+
+        <template v-else-if="listMode === 'trash'">
+          <TextsTableView
+            v-if="viewMode === 'table'"
+            :columns="trashColumns"
+            :data="texts"
+            :loading="loading"
+            :total="pagination.itemCount"
+            :page="pagination.page"
+            :page-size="pagination.pageSize"
+            :disabled="loading"
+            @update:page="changePage"
+            @update:page-size="changePageSize"
+          />
+          <div v-else class="texts-empty">
+            <p>{{ texts.length ? '' : t('texts.trash.empty') }}</p>
+          </div>
+        </template>
 
         <template v-else>
           <TextsTableView
@@ -220,6 +280,40 @@
           }}</Button>
         </template>
       </Modal>
+
+      <Modal
+        :show="showPermanentModal"
+        :title="t('texts.modals.deletePermanentTitle')"
+        width="420px"
+        @update:show="handlePermanentModalUpdate"
+      >
+        <p class="texts-confirm-text">{{ t('texts.confirmPermanentDelete') }}</p>
+        <template #footer>
+          <Button type="default" :disabled="trashActionPending" @click="closePermanentModal">{{
+            t('common.cancel')
+          }}</Button>
+          <Button type="danger" :loading="trashActionPending" @click="handlePermanentConfirm">{{
+            t('texts.actions.deletePermanent')
+          }}</Button>
+        </template>
+      </Modal>
+
+      <Modal
+        :show="showClearTrashModal"
+        :title="t('texts.modals.clearTrashTitle')"
+        width="420px"
+        @update:show="handleClearTrashModalUpdate"
+      >
+        <p class="texts-confirm-text">{{ t('texts.confirmClearTrash') }}</p>
+        <template #footer>
+          <Button type="default" :disabled="clearingTrash" @click="showClearTrashModal = false">{{
+            t('common.cancel')
+          }}</Button>
+          <Button type="danger" :loading="clearingTrash" @click="handleClearTrashConfirm">{{
+            t('texts.actions.clearTrash')
+          }}</Button>
+        </template>
+      </Modal>
     </div>
   </AppLayout>
 </template>
@@ -227,6 +321,7 @@
 <script setup>
 import { computed, h, onMounted, ref, watch, defineAsyncComponent } from 'vue'
 import {
+  ArchiveRestore,
   Eye,
   FileText,
   History,
@@ -278,6 +373,25 @@ const loading = ref(false)
 const hasLoadedOnce = ref(false)
 const activeAction = ref('')
 const deletingId = ref('')
+
+// ── 回收站模式（active | trash）──
+const listMode = ref('active')
+const trashActionPending = ref(false)
+const restoringId = ref('')
+const permaDeletingId = ref('')
+const clearingTrash = ref(false)
+const showPermanentModal = ref(false)
+const pendingPermanentId = ref('')
+const showClearTrashModal = ref(false)
+
+const setListMode = (mode) => {
+  const next = mode === 'trash' ? 'trash' : 'active'
+  if (listMode.value === next) return
+  if (loading.value || trashActionPending.value || clearingTrash.value) return
+  listMode.value = next
+  pagination.value.page = 1
+  loadTexts()
+}
 
 const showDeleteModal = ref(false)
 const deleting = ref(false)
@@ -458,6 +572,96 @@ const columns = computed(() => {
   return base
 })
 
+// 回收站表格列：标题 / 长度 / 删除时间 / 操作（恢复 + 彻底删除）
+const trashColumns = computed(() => {
+  const base = [
+    {
+      title: t('texts.columns.title'),
+      key: 'title',
+      align: 'left',
+      width: 200,
+      ellipsis: true,
+      render: (row) => h(TableCellText, { value: row?.title || '-' }),
+    },
+    {
+      title: t('texts.columns.length'),
+      key: 'content_length',
+      width: 100,
+      align: 'center',
+      ellipsis: true,
+      render: (row) => {
+        const length = Number(row?.content_length ?? 0)
+        const text = !Number.isFinite(length) || length < 0 ? '-' : formatBytes(length)
+        return h(TableCellText, { value: text })
+      },
+    },
+    {
+      title: t('texts.trash.deletedAt'),
+      key: 'deleted_at',
+      width: 220,
+      align: 'center',
+      ellipsis: true,
+      render: (row) => h(TableCellText, { value: formatDateTime(row?.deleted_at) }),
+    },
+    {
+      title: t('texts.columns.actions'),
+      key: 'actions',
+      width: 260,
+      align: 'center',
+      ellipsis: false,
+      fixed: 'right',
+      render: (row) => {
+        const id = normalizeId(row?.id)
+        const disabled = loading.value || trashActionPending.value || clearingTrash.value || !id
+
+        return h('div', { class: 'action-buttons' }, [
+          h(
+            Button,
+            {
+              size: 'small',
+              type: 'default',
+              disabled,
+              loading: restoringId.value === id,
+              onClick: () => handleRestore(row),
+            },
+            () => [
+              h(ArchiveRestore, { size: 16, style: 'margin-right: 4px' }),
+              t('texts.actions.restore'),
+            ]
+          ),
+          h(
+            Button,
+            {
+              size: 'small',
+              type: 'danger',
+              disabled,
+              loading: permaDeletingId.value === id,
+              onClick: () => handlePermanent(row),
+            },
+            () => [
+              h(Trash2, { size: 16, style: 'margin-right: 4px' }),
+              t('texts.actions.deletePermanent'),
+            ]
+          ),
+        ])
+      },
+    },
+  ]
+
+  if (authStore.isAdmin) {
+    base.splice(2, 0, {
+      title: t('texts.columns.owner'),
+      key: 'owner',
+      width: 140,
+      align: 'center',
+      ellipsis: true,
+      render: (row) => h(TableCellText, { value: row?.owner_username || row?.owner_id }),
+    })
+  }
+
+  return base
+})
+
 const buildQueryParams = () => {
   const params = {}
   const q = String(filters.value.q ?? '').trim()
@@ -483,7 +687,11 @@ const loadUsers = async () => {
 const loadTexts = async ({ page = pagination.value.page, append = false } = {}) => {
   loading.value = true
   try {
-    const result = await api.getTexts(page, pagination.value.pageSize, buildQueryParams())
+    const request =
+      listMode.value === 'trash'
+        ? api.getTrashTexts(page, pagination.value.pageSize, buildQueryParams())
+        : api.getTexts(page, pagination.value.pageSize, buildQueryParams())
+    const result = await request
     const nextTexts = result.texts || []
     texts.value = append ? [...texts.value, ...nextTexts] : nextTexts
     pagination.value.itemCount = Number(result.total || 0)
@@ -678,6 +886,92 @@ const handleDelete = (row) => {
   openDeleteModal(row)
 }
 
+// ── 回收站操作 ──
+
+const reloadAfterTrashAction = async () => {
+  if (texts.value.length <= 1 && pagination.value.page > 1) {
+    pagination.value.page -= 1
+  }
+  await loadTexts()
+}
+
+const handleRestore = async (row) => {
+  const id = normalizeId(row?.id)
+  if (!id || trashActionPending.value) return
+
+  trashActionPending.value = true
+  restoringId.value = id
+  try {
+    await api.restoreText(id)
+    message.success(t('texts.trash.restoreSuccess'))
+    await reloadAfterTrashAction()
+  } catch (error) {
+    message.error(error.response?.data?.error || t('texts.trash.restoreFailed'))
+  } finally {
+    trashActionPending.value = false
+    restoringId.value = ''
+  }
+}
+
+const handlePermanent = (row) => {
+  const id = normalizeId(row?.id)
+  if (!id || trashActionPending.value) return
+  pendingPermanentId.value = id
+  showPermanentModal.value = true
+}
+
+const closePermanentModal = () => {
+  showPermanentModal.value = false
+  pendingPermanentId.value = ''
+}
+
+const handlePermanentModalUpdate = (nextValue) => {
+  if (trashActionPending.value) return
+  if (!nextValue) closePermanentModal()
+}
+
+const handlePermanentConfirm = async () => {
+  const id = pendingPermanentId.value
+  if (!id || trashActionPending.value) return
+
+  trashActionPending.value = true
+  permaDeletingId.value = id
+  try {
+    await api.permanentlyDeleteText(id)
+    message.success(t('texts.trash.permanentDeleteSuccess'))
+    closePermanentModal()
+    await reloadAfterTrashAction()
+  } catch (error) {
+    message.error(error.response?.data?.error || t('texts.trash.permanentDeleteFailed'))
+  } finally {
+    trashActionPending.value = false
+    permaDeletingId.value = ''
+  }
+}
+
+const handleClearTrashModalUpdate = (nextValue) => {
+  if (clearingTrash.value) return
+  if (!nextValue) showClearTrashModal.value = false
+}
+
+const handleClearTrashConfirm = async () => {
+  if (clearingTrash.value) return
+
+  clearingTrash.value = true
+  try {
+    const result = await api.clearTextsTrash()
+    const deleted = Number(result?.deleted || 0)
+    message.success(t('texts.trash.clearSuccess', { count: deleted }))
+    showClearTrashModal.value = false
+    pagination.value.page = 1
+    await loadTexts()
+  } catch (error) {
+    message.error(error.response?.data?.error || t('texts.trash.clearFailed'))
+  } finally {
+    clearingTrash.value = false
+  }
+}
+
 onMounted(() => {
   loadTexts()
   loadUsers()
@@ -823,6 +1117,12 @@ watch(
 .texts-confirm-text {
   margin: 0;
   color: var(--nb-ink);
+}
+
+.texts-empty {
+  padding: var(--nb-space-lg, 24px);
+  text-align: center;
+  color: var(--nb-muted-foreground, var(--nb-gray-500));
 }
 
 @media (max-width: 768px) {

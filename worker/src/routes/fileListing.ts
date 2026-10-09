@@ -11,17 +11,18 @@ import {
 } from '../utils/routeTiming'
 import { normalizePageParam, normalizeLimitParam } from '../utils/pagination'
 
-const ALLOWED_SORT_FIELDS: Record<string, string> = {
+// 无原型字典：`?sort_by=constructor` 等原型链属性不得命中白名单（真值检查陷阱）
+const ALLOWED_SORT_FIELDS: Record<string, string> = Object.assign(Object.create(null), {
   created_at: 'f.created_at',
   filename: 'f.filename',
   size: 'f.size',
   expires_at: 'f.expires_at',
-}
+})
 
-const TRASH_SORT_FIELDS: Record<string, string> = {
+const TRASH_SORT_FIELDS: Record<string, string> = Object.assign(Object.create(null), {
   ...ALLOWED_SORT_FIELDS,
   deleted_at: 'f.deleted_at',
-}
+})
 
 function parseSortParams(
   url: URL,

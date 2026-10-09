@@ -612,6 +612,24 @@ router.post(
   withAuth((request, env: Env) => createText(request, env))
 )
 router.get(
+  '/api/texts/trash',
+  withAuth(
+    lazyRoute(
+      () => import('./routes/texts'),
+      (module, request, env) => module.listTrashTexts(request, env)
+    )
+  )
+)
+router.delete(
+  '/api/texts/trash/permanent',
+  withAuth(
+    lazyRoute(
+      () => import('./routes/texts'),
+      (module, request, env) => module.permanentlyDeleteTrashTexts(request, env)
+    )
+  )
+)
+router.get(
   '/api/texts/:id',
   withAuth((request, env: Env) => getText(request, env, (request as any).params.id))
 )
@@ -622,6 +640,25 @@ router.patch(
 router.delete(
   '/api/texts/:id',
   withAuth((request, env: Env) => deleteText(request, env, (request as any).params.id))
+)
+router.post(
+  '/api/texts/:id/restore',
+  withAuth(
+    lazyRoute(
+      () => import('./routes/texts'),
+      (module, request, env) => module.restoreText(request, env, (request as any).params.id)
+    )
+  )
+)
+router.delete(
+  '/api/texts/:id/permanent',
+  withAuth(
+    lazyRoute(
+      () => import('./routes/texts'),
+      (module, request, env) =>
+        module.permanentlyDeleteText(request, env, (request as any).params.id)
+    )
+  )
 )
 
 // ── Text shares ──
