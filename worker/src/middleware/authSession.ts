@@ -72,7 +72,17 @@ export function invalidateUserAuthTokens(
   setBoundedInvalidation(invalidatedUserTokens, userId, invalidatedAtMs)
 }
 
-function invalidateSignedSession(sessionId: string, invalidatedAtMs: number = Date.now()): void {
+/**
+ * 按 sessionId 做 isolate 级失效（加速层）。
+ *
+ * 三层失效语义：本 map（本 isolate 即时）→ sessions.revoked_at（跨 isolate
+ * 事实源）→ 会话缓存 TTL 15s（收敛窗口）。判定条件是签名 token 的
+ * issuedAtMs <= 失效时间戳，因此必须在 batch 落库 revoked_at 之后调用。
+ */
+export function invalidateSignedSession(
+  sessionId: string,
+  invalidatedAtMs: number = Date.now()
+): void {
   setBoundedInvalidation(invalidatedSignedSessions, sessionId, invalidatedAtMs)
 }
 

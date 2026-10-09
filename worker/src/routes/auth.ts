@@ -13,6 +13,7 @@ import { logAudit, prepareAuditLogInsert } from '../services/audit'
 import {
   getSessionCookieName,
   invalidateAuthToken,
+  invalidateSignedSession,
   invalidateUserAuthTokens,
   type AuthUser,
 } from '../middleware/authSession'
@@ -389,4 +390,222 @@ export async function status(request: Request): Promise<Response> {
       status: req.user.status,
     },
   })
+}
+
+// ── 会话管理 ──
+
+/** 活跃会话列表 / 撤销分批的批量上限（会话 TTL 8h，正常账号远低于此） */
+const SESSIONS_LIST_LIMIT = 50
+/** revoke-others 单次请求的清理轮数上限（50 × 10 = 500 个会话），防超时 */
+const SESSIONS_REVOKE_MAX_ROUNDS = 10
+
+/** authSessionMiddleware 已把 sessionId 挂到认证请求上（当前会话识别） */
+function getSessionId(request: Request): string | undefined {
+  return (request as Request & { sessionId?: string }).sessionId
+}
+
+/**
+ * 获取本人活跃会话列表
+ *
+ * @route GET /api/auth/sessions
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含活跃会话列表（不含 token_hash）
+ *
+ * @example
+ * // 成功响应 (200)
+ * {
+ *   "sessions": [
+ *     {
+ *       "id": "uuid",
+ *       "ip": "203.0.113.10",
+ *       "user_agent": "Mozilla/5.0 ...",
+ *       "created_at": "2026-10-09T00:00:00.000Z",
+ *       "expires_at": "2026-10-09T08:00:00.000Z",
+ *       "is_current": 1
+ *     }
+ *   ]
+ * }
+ *
+ * // 未授权 (401)
+ * { "error": "未授权" }
+ */
+export async function listSessions(request: Request, env: Env): Promise<Response> {
+  const user = getUser(request)
+  if (!user) return jsonResponse({ error: '未授权' }, 401)
+
+  const currentSessionId = getSessionId(request)
+  const nowIso = new Date().toISOString()
+  const rows = await withD1Retry(env.DB)
+    .prepare(
+      `SELECT id, ip, user_agent, created_at, expires_at
+     FROM sessions
+     WHERE user_id = ? AND revoked_at IS NULL AND expires_at > ?
+     ORDER BY created_at DESC
+     LIMIT ?`
+    )
+    .bind(user.id, nowIso, SESSIONS_LIST_LIMIT)
+    .all<{
+      id: string
+      ip: string | null
+      user_agent: string | null
+      created_at: string
+      expires_at: string
+    }>()
+
+  const sessions = (rows.results || []).map((row) => ({
+    id: String(row.id),
+    ip: row.ip === null ? null : String(row.ip),
+    user_agent: row.user_agent === null ? null : String(row.user_agent),
+    created_at: row.created_at,
+    expires_at: row.expires_at,
+    is_current: String(row.id) === currentSessionId ? 1 : 0,
+  }))
+
+  return jsonResponse({ sessions })
+}
+
+/**
+ * 撤销指定会话（下线该设备）
+ *
+ * 仅允许撤销本人会话（user_id 条件防越权）；撤销当前会话等价登出。
+ *
+ * @route DELETE /api/auth/sessions/:id
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @param sessionId - 会话 ID
+ * @returns JSON 响应
+ *
+ * @example
+ * // 成功响应 (200)
+ * { "success": true }
+ *
+ * // 会话不存在 / 非本人 / 已撤销 (404，同文案不泄露区分)
+ * { "error": "会话不存在" }
+ */
+export async function revokeSession(
+  request: Request,
+  env: Env,
+  sessionId: string
+): Promise<Response> {
+  const user = getUser(request)
+  if (!user) return jsonResponse({ error: '未授权' }, 401)
+  if (!sessionId) return jsonResponse({ error: 'id 不能为空' }, 400)
+
+  const existing = await withD1Retry(env.DB)
+    .prepare('SELECT id FROM sessions WHERE id = ? AND user_id = ? AND revoked_at IS NULL LIMIT 1')
+    .bind(sessionId, user.id)
+    .first()
+
+  if (!existing) {
+    return jsonResponse({ error: '会话不存在' }, 404)
+  }
+
+  // 状态切换与审计同 batch（d1-write-consistency）
+  const nowIso = new Date().toISOString()
+  await withD1Retry(env.DB).batch([
+    withD1Retry(env.DB)
+      .prepare(
+        'UPDATE sessions SET revoked_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL'
+      )
+      .bind(nowIso, sessionId, user.id),
+    prepareAuditLogInsert(
+      env.DB,
+      {
+        actorUserId: user.id,
+        action: 'SESSION_REVOKE',
+        targetType: 'session',
+        targetId: sessionId,
+        ip: getClientIp(request),
+        userAgent: request.headers.get('User-Agent') || undefined,
+      },
+      nowIso
+    ),
+  ])
+
+  // isolate 失效在落库之后（DB 是事实源；见 invalidateSignedSession JSDoc）
+  invalidateSignedSession(sessionId, Date.parse(nowIso) || Date.now())
+
+  return jsonResponse({ success: true })
+}
+
+/**
+ * 撤销除当前会话外的全部本人会话（下线其他设备）
+ *
+ * 分批（50/轮，至多 10 轮）SELECT + UPDATE，批间可重入；当前会话永不被撤。
+ *
+ * @route POST /api/auth/sessions/revoke-others
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含撤销数量
+ *
+ * @example
+ * // 成功响应 (200)
+ * { "success": true, "revoked": 3 }
+ *
+ * // 未授权 (401)
+ * { "error": "未授权" }
+ */
+export async function revokeOtherSessions(request: Request, env: Env): Promise<Response> {
+  const user = getUser(request)
+  if (!user) return jsonResponse({ error: '未授权' }, 401)
+
+  const currentSessionId = getSessionId(request)
+  if (!currentSessionId) {
+    return jsonResponse({ error: '缺少当前会话' }, 400)
+  }
+
+  const nowIso = new Date().toISOString()
+  const revokedIds: string[] = []
+  for (let round = 0; round < SESSIONS_REVOKE_MAX_ROUNDS; round++) {
+    const rows = await withD1Retry(env.DB)
+      .prepare(
+        `SELECT id FROM sessions
+     WHERE user_id = ? AND revoked_at IS NULL AND id != ?
+     ORDER BY created_at DESC
+     LIMIT ?`
+      )
+      .bind(user.id, currentSessionId, SESSIONS_LIST_LIMIT)
+      .all<{ id: string }>()
+    const ids = (rows.results || []).map((row) => String(row.id))
+    if (!ids.length) break
+
+    // 每轮状态切换与该轮审计同 batch（d1-write-consistency）；
+    // 多轮时每轮各带审计，metadata 记录该轮数量，部分失败可重入续跑
+    const placeholders = ids.map(() => '?').join(',')
+    await withD1Retry(env.DB).batch([
+      withD1Retry(env.DB)
+        .prepare(
+          `UPDATE sessions SET revoked_at = ?
+        WHERE user_id = ? AND id IN (${placeholders}) AND revoked_at IS NULL`
+        )
+        .bind(nowIso, user.id, ...ids),
+      prepareAuditLogInsert(
+        env.DB,
+        {
+          actorUserId: user.id,
+          action: 'SESSION_REVOKE_OTHERS',
+          targetType: 'session',
+          targetId: '',
+          ip: getClientIp(request),
+          userAgent: request.headers.get('User-Agent') || undefined,
+          metadata: { revoked: ids.length },
+        },
+        nowIso
+      ),
+    ])
+    revokedIds.push(...ids)
+
+    if (ids.length < SESSIONS_LIST_LIMIT) break
+  }
+
+  if (revokedIds.length) {
+    // isolate 失效在落库之后；逐会话失效（不能用 userId 级——会误伤当前会话）
+    const invalidatedAtMs = Date.parse(nowIso) || Date.now()
+    for (const id of revokedIds) {
+      invalidateSignedSession(id, invalidatedAtMs)
+    }
+  }
+
+  return jsonResponse({ success: true, revoked: revokedIds.length })
 }

@@ -140,7 +140,55 @@
         <Card class="more-card">
           <template #header>{{ t('more.sections.session') }}</template>
 
+          <div v-if="sessionsLoading" class="session-state">{{ t('common.loading') }}</div>
+          <div v-else-if="sessionsError" class="session-state">
+            {{ t('more.sessions.loadFailed') }}
+            <Button type="ghost" size="small" @click="loadSessions">
+              {{ t('more.usage.retry') }}
+            </Button>
+          </div>
+          <div v-else-if="!sessions.length" class="session-state">
+            {{ t('more.sessions.empty') }}
+          </div>
+          <ul v-else class="session-list">
+            <li v-for="item in sessionViews" :key="item.id" class="session-item">
+              <div class="session-main">
+                <div class="session-device">
+                  <span class="session-device-name">{{ item.device }}</span>
+                  <span class="session-browser">{{ item.browser }}</span>
+                  <Tag v-if="item.is_current" type="success" size="small">
+                    {{ t('more.sessions.currentTag') }}
+                  </Tag>
+                </div>
+                <div class="session-meta">
+                  <span>{{ item.ip || '-' }}</span>
+                  <span>{{ t('more.sessions.loginAt', { time: item.createdAtLabel }) }}</span>
+                </div>
+              </div>
+              <Button
+                v-if="!item.is_current"
+                type="ghost"
+                size="small"
+                :loading="revokingId === item.id"
+                :disabled="sessionActionPending"
+                @click="handleRevoke(item.id)"
+              >
+                {{ t('more.sessions.revoke') }}
+              </Button>
+            </li>
+          </ul>
+
           <div class="action-list">
+            <Button
+              type="default"
+              size="small"
+              block
+              :loading="revokingOthers"
+              :disabled="sessionActionPending || !otherSessionCount"
+              @click="showRevokeOthersModal = true"
+            >
+              {{ t('more.sessions.revokeOthers') }}
+            </Button>
             <Button type="danger" size="small" block @click="openLogoutConfirm">
               {{ t('more.actions.logout') }}
             </Button>
@@ -187,6 +235,23 @@
       :loading="logoutSubmitting"
       @confirm="confirmLogout"
     />
+
+    <Modal
+      :show="showRevokeOthersModal"
+      :title="t('more.sessions.revokeOthersTitle')"
+      width="420px"
+      @update:show="handleRevokeOthersModalUpdate"
+    >
+      <p class="session-confirm-text">{{ t('more.sessions.confirmRevokeOthers') }}</p>
+      <template #footer>
+        <Button type="default" :disabled="revokingOthers" @click="showRevokeOthersModal = false">
+          {{ t('common.cancel') }}
+        </Button>
+        <Button type="danger" :loading="revokingOthers" @click="handleRevokeOthers">
+          {{ t('more.sessions.revokeOthers') }}
+        </Button>
+      </template>
+    </Modal>
   </AppLayout>
 </template>
 
@@ -201,7 +266,9 @@ import Button from '../components/ui/button/Button.vue'
 import Card from '../components/ui/card/Card.vue'
 import FormItem from '../components/ui/form-item/FormItem.vue'
 import Input from '../components/ui/input/Input.vue'
+import Modal from '../components/ui/modal/Modal.vue'
 import Progress from '../components/ui/progress/Progress.vue'
+import Tag from '../components/ui/tag/Tag.vue'
 import { useLogoutConfirm } from '../composables/useLogoutConfirm.js'
 import { useMessage } from '../composables/useMessage.js'
 import { toggleLocale } from '../locales'
@@ -209,6 +276,7 @@ import api from '../services/api.js'
 import { useAuthStore } from '../stores/auth'
 import { useThemeStore } from '../stores/theme'
 import { buildMorePageAdminItems } from '../utils/navigation.js'
+import { describeUserAgent } from '../utils/sessionDevice.js'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -366,7 +434,95 @@ const loadUsage = async () => {
 
 onMounted(() => {
   loadUsage()
+  loadSessions()
 })
+
+// ── 活跃会话 ──
+const sessions = ref([])
+const sessionsLoading = ref(false)
+const sessionsError = ref(false)
+const revokingId = ref('')
+const revokingOthers = ref(false)
+const showRevokeOthersModal = ref(false)
+
+const sessionActionPending = computed(() => Boolean(revokingId.value) || revokingOthers.value)
+const otherSessionCount = computed(() => sessions.value.filter((item) => !item.is_current).length)
+
+const formatSessionTime = (value) => {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '-'
+  return new Intl.DateTimeFormat(locale.value, {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date)
+}
+
+const sessionViews = computed(() =>
+  sessions.value.map((item) => {
+    const { device, browser } = describeUserAgent(item.user_agent)
+    return {
+      id: item.id,
+      ip: item.ip,
+      is_current: Number(item.is_current) === 1,
+      device: device || t('more.sessions.deviceUnknown'),
+      browser: browser || t('more.sessions.browserUnknown'),
+      createdAtLabel: formatSessionTime(item.created_at),
+    }
+  })
+)
+
+const loadSessions = async () => {
+  sessionsLoading.value = true
+  try {
+    sessionsError.value = false
+    const result = await api.listSessions()
+    sessions.value = result.sessions || []
+  } catch (error) {
+    // 会话列表失败不阻塞页面其余区块，显示重试入口
+    sessionsError.value = true
+    sessions.value = []
+  } finally {
+    sessionsLoading.value = false
+  }
+}
+
+const handleRevoke = async (sessionId) => {
+  if (!sessionId || sessionActionPending.value) return
+  revokingId.value = sessionId
+  try {
+    await api.revokeSession(sessionId)
+    message.success(t('more.sessions.revokeSuccess'))
+    await loadSessions()
+  } catch (error) {
+    message.error(error.response?.data?.error || t('more.sessions.revokeFailed'))
+  } finally {
+    revokingId.value = ''
+  }
+}
+
+const handleRevokeOthersModalUpdate = (nextValue) => {
+  if (revokingOthers.value) return
+  if (!nextValue) showRevokeOthersModal.value = false
+}
+
+const handleRevokeOthers = async () => {
+  if (revokingOthers.value) return
+  revokingOthers.value = true
+  try {
+    const result = await api.revokeOtherSessions()
+    const revoked = Number(result?.revoked || 0)
+    message.success(t('more.sessions.revokeOthersSuccess', { count: revoked }))
+    showRevokeOthersModal.value = false
+    await loadSessions()
+  } catch (error) {
+    message.error(error.response?.data?.error || t('more.sessions.revokeOthersFailed'))
+  } finally {
+    revokingOthers.value = false
+  }
+}
 
 const { logoutConfirmVisible, logoutSubmitting, openLogoutConfirm, confirmLogout } =
   useLogoutConfirm()
@@ -527,6 +683,68 @@ const { logoutConfirmVisible, logoutSubmitting, openLogoutConfirm, confirmLogout
   display: flex;
   flex-direction: column;
   gap: var(--nb-space-sm);
+}
+
+.session-state {
+  display: flex;
+  align-items: center;
+  gap: var(--nb-space-sm);
+  padding-bottom: var(--nb-space-sm);
+  color: var(--nb-muted-foreground, var(--nb-gray-500));
+  font-size: var(--nb-font-size-sm);
+}
+
+.session-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nb-space-sm);
+  margin: 0 0 var(--nb-space-md);
+  padding: 0;
+  list-style: none;
+}
+
+.session-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--nb-space-sm);
+  min-width: 0;
+}
+
+.session-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.session-device {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--nb-space-xs, 4px);
+  min-width: 0;
+}
+
+.session-device-name {
+  font-weight: 700;
+}
+
+.session-browser,
+.session-meta {
+  color: var(--nb-muted-foreground, var(--nb-gray-500));
+  font-size: var(--nb-font-size-sm);
+}
+
+.session-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--nb-space-sm);
+}
+
+.session-confirm-text {
+  margin: 0;
+  color: var(--nb-ink);
 }
 
 .kv-row {

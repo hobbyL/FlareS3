@@ -1,7 +1,15 @@
 import { Router } from 'itty-router'
 import type { Env } from './config/env'
 import { requireAuth, requireAdmin } from './middleware/roleGuard'
-import { login, logout, status as authStatus, changePassword } from './routes/auth'
+import {
+  login,
+  logout,
+  status as authStatus,
+  changePassword,
+  listSessions,
+  revokeSession,
+  revokeOtherSessions,
+} from './routes/auth'
 import { listUsers, createUser, updateUser, resetPassword, deleteUser } from './routes/users'
 import { shortlink } from './routes/shortlink'
 import { getStats } from './routes/stats'
@@ -71,6 +79,18 @@ router.post(
 router.get(
   '/api/auth/status',
   withAuth((request, _env: Env) => authStatus(request))
+)
+router.get(
+  '/api/auth/sessions',
+  withAuth((request, env: Env) => listSessions(request, env))
+)
+router.post(
+  '/api/auth/sessions/revoke-others',
+  withAuth((request, env: Env) => revokeOtherSessions(request, env))
+)
+router.delete(
+  '/api/auth/sessions/:id',
+  withAuth((request, env: Env) => revokeSession(request, env, (request as any).params.id))
 )
 
 // ── Users ──

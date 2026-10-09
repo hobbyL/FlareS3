@@ -129,6 +129,31 @@ export default {
     return api.post('/auth/change-password', payload)
   },
 
+  /**
+   * 获取本人活跃会话列表（不含 token_hash）
+   * @returns {Promise<{sessions: Array<{id: string, ip: string|null, user_agent: string|null, created_at: string, expires_at: string, is_current: number}>}>}
+   */
+  listSessions() {
+    return api.get('/auth/sessions')
+  },
+
+  /**
+   * 撤销指定会话（下线该设备）
+   * @param {string} sessionId - 会话 ID
+   * @returns {Promise<{success: boolean}>}
+   */
+  revokeSession(sessionId) {
+    return api.delete(`/auth/sessions/${sessionId}`)
+  },
+
+  /**
+   * 撤销除当前会话外的全部本人会话
+   * @returns {Promise<{success: boolean, revoked: number}>}
+   */
+  revokeOtherSessions() {
+    return api.post('/auth/sessions/revoke-others')
+  },
+
   // ========== R2 配置（旧版）==========
 
   /**

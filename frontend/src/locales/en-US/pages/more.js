@@ -52,6 +52,23 @@ export default {
       cycleUiTheme: 'Switch UI theme',
       logout: 'Log out',
     },
+    sessions: {
+      currentTag: 'This device',
+      deviceUnknown: 'Unknown device',
+      browserUnknown: 'Unknown browser',
+      loginAt: 'Signed in {time}',
+      revoke: 'Sign out',
+      revokeOthers: 'Sign out other devices',
+      revokeOthersTitle: 'Confirm signing out other devices',
+      confirmRevokeOthers:
+        'All sessions except this device will end immediately and those devices must sign in again. Continue?',
+      revokeSuccess: 'Device signed out',
+      revokeFailed: 'Failed to sign out device',
+      revokeOthersSuccess: 'Other devices signed out ({count})',
+      revokeOthersFailed: 'Failed to sign out other devices',
+      empty: 'No active sessions',
+      loadFailed: 'Failed to load active sessions',
+    },
     mobileSheet: {
       close: 'Close more menu',
       language: 'Language',
