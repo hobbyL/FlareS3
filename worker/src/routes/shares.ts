@@ -4,6 +4,7 @@ import { listShareItems, type ShareRecordStatus, type ShareRecordType } from '..
 import { listShareAccessLogs, type ShareAccessLogShareType } from '../services/shareAccessLog'
 import { getUser, jsonResponse } from './utils'
 import { withRouteTimingHeaders, type RouteTimingEntry } from '../utils/routeTiming'
+import { MAX_PAGE_VALUE, normalizePositiveInt } from '../utils/pagination'
 
 type ShareListQuery = {
   page: number
@@ -18,16 +19,11 @@ type ShareListQuery = {
   expires_to: string
 }
 
-function normalizePositiveInt(value: string | null, fallback: number, max: number): number {
-  const parsed = Number(value ?? fallback)
-  if (!Number.isFinite(parsed)) return fallback
-  return Math.min(max, Math.max(1, Math.floor(parsed)))
-}
-
 function parseFilters(request: Request): ShareListQuery {
   const url = new URL(request.url)
   return {
-    page: normalizePositiveInt(url.searchParams.get('page'), 1, Number.MAX_SAFE_INTEGER),
+    // page 统一 clamp 到共享的 MAX_PAGE_VALUE，避免极端大数溢出 offset
+    page: normalizePositiveInt(url.searchParams.get('page'), 1, MAX_PAGE_VALUE),
     limit: normalizePositiveInt(url.searchParams.get('limit'), 20, 100),
     type: (url.searchParams.get('type') || '').trim() as ShareRecordType | '',
     status: (url.searchParams.get('status') || '').trim() as ShareRecordStatus | '',

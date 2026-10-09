@@ -6,6 +6,7 @@ import {
   withRouteTimingHeaders,
   type RouteTimingEntry,
 } from '../utils/routeTiming'
+import { normalizePageParam, normalizeLimitParam } from '../utils/pagination'
 
 /**
  * 获取审计日志列表
@@ -48,8 +49,8 @@ import {
 export async function listAudit(request: Request, env: Env): Promise<Response> {
   const timings: RouteTimingEntry[] = []
   const url = new URL(request.url)
-  const page = Math.max(1, Number(url.searchParams.get('page') || 1))
-  const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit') || 20)))
+  const page = normalizePageParam(url.searchParams.get('page'))
+  const limit = normalizeLimitParam(url.searchParams.get('limit'))
   const action = url.searchParams.get('action')
   const actorUserId = url.searchParams.get('actor_user_id')
   const createdFrom = url.searchParams.get('created_from')

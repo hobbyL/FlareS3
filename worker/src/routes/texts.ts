@@ -9,6 +9,7 @@ import {
   withRouteTimingHeaders,
   type RouteTimingEntry,
 } from '../utils/routeTiming'
+import { normalizePageParam, normalizeLimitParam } from '../utils/pagination'
 
 const MAX_TITLE_LENGTH = 200
 const MAX_CONTENT_LENGTH = 100_000
@@ -60,8 +61,8 @@ export async function listTexts(request: Request, env: Env): Promise<Response> {
   const timings: RouteTimingEntry[] = []
 
   const url = new URL(request.url)
-  const page = Math.max(1, Number(url.searchParams.get('page') || 1))
-  const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit') || 20)))
+  const page = normalizePageParam(url.searchParams.get('page'))
+  const limit = normalizeLimitParam(url.searchParams.get('limit'))
   const q = String(url.searchParams.get('q') || '').trim()
   const ownerId = String(url.searchParams.get('owner_id') || '').trim()
   const offset = (page - 1) * limit

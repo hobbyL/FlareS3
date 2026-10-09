@@ -1,3 +1,23 @@
+// CSP nonce 内部约定头定义在 middleware/securityHeaders.ts（生成方），渲染侧只复用该常量
+import { CSP_NONCE_HEADER } from '../middleware/securityHeaders'
+
+/**
+ * 生成 per-request CSP nonce。
+ *
+ * 用 crypto.getRandomValues（16 字节 base64，128 位熵）而非 Math.random，
+ * 保证 nonce 不可预测且每次渲染唯一，浏览器才会放行带该 nonce 的内联脚本。
+ */
+function generateCspNonce(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16))
+  return btoa(String.fromCharCode(...bytes))
+}
+
+/**
+ * HTML 实体转义：防止页面标题、正文中的用户内容注入标记。
+ *
+ * @param value - 待转义的原始字符串
+ * @returns 转义 & < > " ' 后的安全字符串
+ */
 function escapeHtml(value: string): string {
   return String(value)
     .replaceAll('&', '&amp;')
@@ -7,24 +27,47 @@ function escapeHtml(value: string): string {
     .replaceAll("'", '&#39;')
 }
 
+/**
+ * 构造分享页 HTML 响应。
+ *
+ * 当页面内联脚本带 nonce 时，同步通过内部约定头把 nonce 传给
+ * withCommonHeaders，供其生成 script-src 'nonce-...' 指令并在最终响应前移除该头。
+ *
+ * @param html - 完整页面 HTML 字符串
+ * @param status - HTTP 状态码（默认 200）
+ * @returns HTML 响应（Content-Type: text/html，Cache-Control: no-store）
+ */
 function htmlResponse(html: string, status = 200): Response {
+  // 页面内联脚本带 nonce 时同步携带约定头，供 withCommonHeaders 生成 CSP nonce 指令
+  const nonceMatch = html.match(/<script nonce="([^"]+)"/)
   return new Response(html, {
     status,
     headers: {
       'Content-Type': 'text/html; charset=utf-8',
       'Cache-Control': 'no-store',
+      ...(nonceMatch ? { [CSP_NONCE_HEADER]: nonceMatch[1] } : {}),
     },
   })
 }
 
+export { buildPage, escapeHtml, htmlResponse }
+
+/**
+ * 渲染分享页骨架：head 内联主题/口令交互脚本（每次渲染生成新 nonce）+ 公共样式。
+ *
+ * @param title - 页面标题（自动转义）
+ * @param body - 页面主体 HTML（调用方负责对动态内容转义）
+ * @returns 完整 HTML 文档字符串
+ */
 function buildPage({ title, body }: { title: string; body: string }): string {
+  const nonce = generateCspNonce()
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${escapeHtml(title)}</title>
-  <script>
+  <script nonce="${nonce}">
     (() => {
       try {
         const key = 'flares3:theme'
@@ -448,5 +491,3 @@ function buildPage({ title, body }: { title: string; body: string }): string {
 </body>
 </html>`
 }
-
-export { buildPage, escapeHtml, htmlResponse }

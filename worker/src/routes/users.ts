@@ -13,6 +13,7 @@ import {
   withRouteTimingHeaders,
   type RouteTimingEntry,
 } from '../utils/routeTiming'
+import { normalizePageParam, normalizeLimitParam } from '../utils/pagination'
 
 function prepareRevokeUserSessions(
   db: D1Database,
@@ -109,8 +110,8 @@ async function isLastActiveAdmin(db: D1Database, userId: string): Promise<boolea
 export async function listUsers(request: Request, env: Env): Promise<Response> {
   const timings: RouteTimingEntry[] = []
   const url = new URL(request.url)
-  const page = Math.max(1, Number(url.searchParams.get('page') || 1))
-  const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit') || 20)))
+  const page = normalizePageParam(url.searchParams.get('page'))
+  const limit = normalizeLimitParam(url.searchParams.get('limit'))
   const status = url.searchParams.get('status')
   const role = url.searchParams.get('role')
   const q = url.searchParams.get('q')

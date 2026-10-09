@@ -9,6 +9,7 @@ import {
   withRouteTimingHeaders,
   type RouteTimingEntry,
 } from '../utils/routeTiming'
+import { normalizePageParam, normalizeLimitParam } from '../utils/pagination'
 
 const ALLOWED_SORT_FIELDS: Record<string, string> = {
   created_at: 'f.created_at',
@@ -104,8 +105,8 @@ export async function listFiles(request: Request, env: Env): Promise<Response> {
   const timings: RouteTimingEntry[] = []
 
   const url = new URL(request.url)
-  const page = Math.max(1, Number(url.searchParams.get('page') || 1))
-  const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit') || 20)))
+  const page = normalizePageParam(url.searchParams.get('page'))
+  const limit = normalizeLimitParam(url.searchParams.get('limit'))
   const scope = url.searchParams.get('scope')
   const filename = url.searchParams.get('filename')
   const ownerId = url.searchParams.get('owner_id')
@@ -279,8 +280,8 @@ export async function listTrashFiles(request: Request, env: Env): Promise<Respon
   const timings: RouteTimingEntry[] = []
 
   const url = new URL(request.url)
-  const page = Math.max(1, Number(url.searchParams.get('page') || 1))
-  const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit') || 20)))
+  const page = normalizePageParam(url.searchParams.get('page'))
+  const limit = normalizeLimitParam(url.searchParams.get('limit'))
   const scope = url.searchParams.get('scope')
   const filename = url.searchParams.get('filename')
   const ownerId = url.searchParams.get('owner_id')
