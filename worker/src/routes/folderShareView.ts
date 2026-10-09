@@ -9,6 +9,7 @@ import {
   SHARE_VIEW_LIMIT_EXHAUSTED_MESSAGE,
 } from '../services/shareViewGuard'
 import { buildSanitizedSharedDownloadResponse } from '../services/fileShareDownload'
+import { fetchWithUpstreamTimeout } from '../services/upstreamFetch'
 import { recordShareAccess } from '../services/shareAccessLog'
 import {
   clearSharePasswordFailedAttempts,
@@ -95,7 +96,8 @@ async function buildFolderDownloadResponse(
   try {
     const result = await provider.download(fullKey, filename, 3600)
     if (result.kind === 'redirect') {
-      const upstream = await fetch(result.url)
+      // 上游拉取经统一超时封装（GET 只读，超时按配置轻量重试）
+      const upstream = await fetchWithUpstreamTimeout(result.url, { method: 'GET' })
       const sanitized = await buildSanitizedSharedDownloadResponse(upstream, filename)
       if (!sanitized.ok) {
         return renderFolderMessagePage('分享目录', sanitized.error.message, sanitized.error.status)

@@ -35,14 +35,19 @@ import {
   resolvePreviewMode,
 } from '../services/filePreview'
 import { getExplicitProviderConfigId } from '../services/fileStorage'
+import { fetchWithUpstreamTimeout } from '../services/upstreamFetch'
 
 export { listFiles, listTrashFiles } from './fileListing'
 
 /**
  * 下载文件
  *
+ * 登录用户的前台直链下载入口：未登录一律 302 跳转登录页；
+ * require_login=1 仅 owner / admin 可下，require_login=0 任何登录用户可下
+ * （公开访客须走 /s、/f 分享链路，受口令/有效期/次数约束）。
+ *
  * @route GET /api/files/:id/download
- * @param request - HTTP 请求对象
+ * @param request - HTTP 请求对象（未登录时 302 跳转登录页）
  * @param env - Cloudflare Workers 环境变量
  * @param fileId - 文件 ID
  * @returns 重定向到预签名下载 URL 或错误响应
@@ -51,11 +56,29 @@ export { listFiles, listTrashFiles } from './fileListing'
  * // 成功响应 (302)
  * // 重定向到预签名下载 URL
  *
+ * // 未登录 (302)
+ * // 重定向到 /login?next=%2Fapi%2Ffiles%2F<id>%2Fdownload
+ *
  * // 文件不存在 (404)
  * { "error": "文件不存在" }
  *
+ * // 文件未完成上传 (400)
+ * { "error": "文件未完成上传" }
+ *
  * // 文件已过期 (410)
  * { "error": "文件已过期" }
+ *
+ * // 已登录非 owner/admin 下载 require_login=1 文件 (403)
+ * { "error": "无权限" }
+ *
+ * // 存储配置未找到 (503)
+ * { "error": "存储配置未找到" }
+ *
+ * // 文件过期时间无效 (500)
+ * { "error": "文件过期时间无效" }
+ *
+ * // 存储上游下载失败 (502)
+ * { "error": "文件下载失败：上游存储服务暂时不可用" }
  */
 export async function downloadFile(request: Request, env: Env, fileId: string): Promise<Response> {
   const file = await withD1Retry(env.DB)
@@ -88,14 +111,19 @@ export async function downloadFile(request: Request, env: Env, fileId: string): 
   }
 
   const user = getUser(request)
-  const requireLogin = Number(file.require_login) === 1
-  if (requireLogin && !user) {
+  // 登录门槛：未登录访客一律 302 到登录页（含短链 302 过来的 require_login=0 访客），
+  // 避免仅凭文件 UUID 绕过 file_shares 的口令 / 有效期 / 次数限制
+  if (!user) {
     const next = encodeURIComponent(`/api/files/${fileId}/download`)
     return redirect(`/login?next=${next}`, 302)
   }
 
   // require_login=1：仅允许 owner / admin 直接下载；其他用户必须通过分享链接下载
-  if (requireLogin && user && user.role !== 'admin' && String(file.owner_id) !== user.id) {
+  if (
+    Number(file.require_login) === 1 &&
+    user.role !== 'admin' &&
+    String(file.owner_id) !== user.id
+  ) {
     return jsonResponse({ error: '无权限' }, 403)
   }
 
@@ -109,7 +137,7 @@ export async function downloadFile(request: Request, env: Env, fileId: string): 
       const result = await provider.download(r2Key, String(file.filename), 3600)
 
       await logAudit(env.DB, {
-        actorUserId: user?.id,
+        actorUserId: user.id,
         action: 'FILE_DOWNLOAD',
         targetType: 'file',
         targetId: fileId,
@@ -134,7 +162,7 @@ export async function downloadFile(request: Request, env: Env, fileId: string): 
     const downloadUrl = await generateDownloadUrl(loaded.config, r2Key, String(file.filename), ttl)
 
     await logAudit(env.DB, {
-      actorUserId: user?.id,
+      actorUserId: user.id,
       action: 'FILE_DOWNLOAD',
       targetType: 'file',
       targetId: fileId,
@@ -259,7 +287,8 @@ export async function previewFile(request: Request, env: Env, fileId: string): P
 
   let response: Response
   try {
-    response = await fetch(previewUrl, {
+    // 上游预览经统一超时封装（GET 只读，超时按配置轻量重试）
+    response = await fetchWithUpstreamTimeout(previewUrl, {
       headers: {
         Range: `bytes=0-${MAX_PREVIEW_RESPONSE_BYTES - 1}`,
       },
@@ -269,7 +298,8 @@ export async function previewFile(request: Request, env: Env, fileId: string): P
   }
   if (response.status === 416) {
     try {
-      response = await fetch(previewUrl)
+      // 416 回退：上游不支持 Range 语义时整段重取，仍经统一超时封装
+      response = await fetchWithUpstreamTimeout(previewUrl, { method: 'GET' })
     } catch (error) {
       return jsonResponse({ error: `预览内容获取失败：${formatUpstreamFetchError(error)}` }, 502)
     }

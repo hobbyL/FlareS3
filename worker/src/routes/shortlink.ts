@@ -14,8 +14,9 @@ import { withD1Retry } from '../utils/db'
  * @returns 重定向到对应资源或分享页面
  *
  * @example
- * // 文件短链接（无需登录）(302)
- * // 重定向到 /api/files/:id/download
+ * // 文件短链接 (302)
+ * // 短链本身先重定向到 /api/files/:id/download；
+ * // 该直链端点要求登录，未登录访客会被继续 302 到 /login（require_login=0 亦然）
  *
  * // 文件短链接（需要登录）(302)
  * // 未登录用户重定向到 /login?next=/s/:code

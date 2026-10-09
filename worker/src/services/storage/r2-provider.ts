@@ -23,6 +23,7 @@ import type {
 } from './types'
 import { StorageError } from './types'
 import { logWarn } from '../../utils/log'
+import { fetchWithUpstreamTimeout } from '../upstreamFetch'
 
 function wrapS3Error(error: unknown): StorageError {
   const summary = summarizeS3Error(error)
@@ -153,7 +154,8 @@ export class R2Provider implements StorageProvider {
     const folderKey = key.endsWith('/') ? key : `${key}/`
     try {
       const url = await generateUploadUrl(this.config, folderKey, 'application/x-directory', 3600)
-      const response = await fetch(url, {
+      // 写操作仅加超时不重试（幂等性不保证），超时异常沿 wrapS3Error 既有映射上抛
+      const response = await fetchWithUpstreamTimeout(url, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/x-directory' },
         body: new ArrayBuffer(0),

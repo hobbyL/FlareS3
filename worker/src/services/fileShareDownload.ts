@@ -8,6 +8,7 @@ import {
 import { createProvider } from './storage/factory'
 import { MAX_UPSTREAM_ERROR_TEXT_BYTES, readBoundedResponseText } from './upstreamResponsePolicy'
 import { calcPresignedDownloadUrlTtlSeconds } from './presignedUrlTtl'
+import { fetchWithUpstreamTimeout } from './upstreamFetch'
 
 export type SharedDownloadResult =
   | { ok: true; response: Response }
@@ -66,7 +67,8 @@ export async function buildSharedDownloadResponse(
     try {
       const result = await provider.download(file.r2_key, file.filename, 3600)
       if (result.kind === 'redirect') {
-        const upstream = await fetch(result.url)
+        // 上游拉取经统一超时封装（GET 只读，超时按配置轻量重试）
+        const upstream = await fetchWithUpstreamTimeout(result.url, { method: 'GET' })
         return buildSanitizedSharedDownloadResponse(upstream, file.filename)
       }
       return { ok: true, response: result.response }
@@ -93,7 +95,8 @@ export async function buildSharedDownloadResponse(
 
   let upstream: Response
   try {
-    upstream = await fetch(url)
+    // 预签名 URL 拉取经统一超时封装（GET 只读，超时按配置轻量重试）
+    upstream = await fetchWithUpstreamTimeout(url, { method: 'GET' })
   } catch (error) {
     // 预签名 URL 拉取失败同样只落服务端日志，响应体保持固定文案
     console.error('[fileShareDownload] r2 presigned download failed', error)

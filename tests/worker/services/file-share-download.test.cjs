@@ -9,6 +9,16 @@ function compiledPath(relativePath) {
   return path.join(COMPILED_ROOT, relativePath);
 }
 
+function loadModule(relativePath) {
+  const target = compiledPath(relativePath);
+  delete require.cache[target];
+  return require(target);
+}
+
+function clearModule(relativePath) {
+  delete require.cache[compiledPath(relativePath)];
+}
+
 test("buildSanitizedSharedDownloadResponse preserves safe download headers", async () => {
   const { buildSanitizedSharedDownloadResponse } = require(
     compiledPath("services/fileShareDownload.js"),
@@ -58,4 +68,60 @@ test("buildSanitizedSharedDownloadResponse returns bounded upstream error text",
   assert.equal(result.ok, false);
   assert.equal(result.error.status, 503);
   assert.equal(result.error.message.length <= 65_536, true);
+});
+
+// 修复 B：file 分享下载的主路径（预签名 URL 拉取）必须走 fetchWithUpstreamTimeout，
+// 断言上游 fetch 收到 AbortSignal 超时信号
+test("buildSharedDownloadResponse fetches presigned url with AbortSignal timeout", async () => {
+  const { refreshUpstreamTimeoutConfig } = loadModule(
+    "config/upstreamTimeout.js",
+  );
+  refreshUpstreamTimeoutConfig({});
+
+  // 先加载 r2 并打桩，再加载 fileShareDownload，保证后者引用同一模块实例
+  clearModule("services/r2.js");
+  clearModule("services/fileShareDownload.js");
+  const r2 = loadModule("services/r2.js");
+  r2.resolveR2ConfigForKey = async () => ({
+    id: "config-1",
+    config: {},
+  });
+  r2.generateDownloadUrl = async () => "https://download.example.com/demo.txt";
+
+  const { buildSharedDownloadResponse } = loadModule(
+    "services/fileShareDownload.js",
+  );
+
+  const calls = [];
+  const originalFetch = global.fetch;
+  global.fetch = async (url, init) => {
+    calls.push({ url: String(url), init });
+    return new Response("hello", {
+      status: 200,
+      headers: { "Content-Type": "text/plain" },
+    });
+  };
+
+  try {
+    const result = await buildSharedDownloadResponse(
+      {},
+      {
+        r2_key: "flares3/config/demo.txt",
+        filename: "demo.txt",
+        expires_at: "9999-12-31T23:59:59.999Z",
+      },
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(result.response.status, 200);
+  } finally {
+    global.fetch = originalFetch;
+  }
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://download.example.com/demo.txt");
+  assert.ok(
+    calls[0].init.signal instanceof AbortSignal,
+    "预签名 URL 拉取必须带 AbortSignal 超时",
+  );
 });

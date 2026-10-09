@@ -127,6 +127,169 @@ test("downloadFile blocks direct download when owner is not active", async () =>
   assert.equal(state.runs.length, 0);
 });
 
+// 修复 A：未登录访客（require_login=0）不再放行，一律 302 到登录页且不落审计日志
+test("downloadFile redirects anonymous visitor to login page", async () => {
+  const { db, state } = createDb({
+    firstHandlers: [
+      {
+        match:
+          /SELECT[\s\S]*FROM files(?: f)?[\s\S]*WHERE (?:f\.)?id = \?[\s\S]*LIMIT 1/,
+        value: {
+          id: "file-1",
+          owner_id: "user-1",
+          filename: "demo.txt",
+          r2_key: "flares3/config/demo.txt",
+          expires_at: "9999-12-31T23:59:59.999Z",
+          upload_status: "completed",
+          require_login: 0,
+          owner_status: "active",
+        },
+      },
+    ],
+  });
+  const { files } = loadFilesRouteModules();
+
+  const response = await files.downloadFile(
+    createGetRequest("https://example.com/api/files/file-1/download"),
+    { DB: db },
+    "file-1",
+  );
+
+  assert.equal(response.status, 302);
+  assert.equal(
+    response.headers.get("Location"),
+    "/login?next=%2Fapi%2Ffiles%2Ffile-1%2Fdownload",
+  );
+  assert.equal(state.runs.length, 0);
+});
+
+// 修复 A：已登录 owner 正常走下载（302 到预签名 URL）并记录审计日志
+test("downloadFile allows logged-in owner to download directly", async () => {
+  const { db, state } = createDb({
+    firstHandlers: [
+      {
+        match:
+          /SELECT[\s\S]*FROM files(?: f)?[\s\S]*WHERE (?:f\.)?id = \?[\s\S]*LIMIT 1/,
+        value: {
+          id: "file-1",
+          owner_id: "user-1",
+          filename: "demo.txt",
+          r2_key: "flares3/config/demo.txt",
+          expires_at: "9999-12-31T23:59:59.999Z",
+          upload_status: "completed",
+          require_login: 0,
+          owner_status: "active",
+        },
+      },
+    ],
+    runHandlers: [
+      {
+        match: /INSERT INTO audit_logs/,
+        value: { meta: { changes: 1 } },
+      },
+    ],
+  });
+  const { r2, files } = loadFilesRouteModules();
+
+  r2.resolveR2ConfigForKey = async () => ({ id: "config-1", config: {} });
+  r2.generateDownloadUrl = async () => "https://download.example.com/file-1";
+
+  const response = await files.downloadFile(
+    createAuthedGetRequest("https://example.com/api/files/file-1/download"),
+    { DB: db },
+    "file-1",
+  );
+
+  assert.equal(response.status, 302);
+  assert.equal(
+    response.headers.get("Location"),
+    "https://download.example.com/file-1",
+  );
+  assert.equal(state.runs.length, 1);
+  assert.match(state.runs[0].sql, /INSERT INTO audit_logs/);
+});
+
+// 修复 A：require_login=1 时已登录非 owner 访问仍 403（既有行为回归）
+test("downloadFile rejects logged-in non-owner when require_login is 1", async () => {
+  const { db, state } = createDb({
+    firstHandlers: [
+      {
+        match:
+          /SELECT[\s\S]*FROM files(?: f)?[\s\S]*WHERE (?:f\.)?id = \?[\s\S]*LIMIT 1/,
+        value: {
+          id: "file-1",
+          owner_id: "user-1",
+          filename: "demo.txt",
+          r2_key: "flares3/config/demo.txt",
+          expires_at: "9999-12-31T23:59:59.999Z",
+          upload_status: "completed",
+          require_login: 1,
+          owner_status: "active",
+        },
+      },
+    ],
+  });
+  const { files } = loadFilesRouteModules();
+
+  // createAuthedGetRequest 固定 user-1，这里改成 user-2 模拟非 owner
+  const request = createAuthedGetRequest(
+    "https://example.com/api/files/file-1/download",
+  );
+  request.user = { ...request.user, id: "user-2" };
+
+  const response = await files.downloadFile(request, { DB: db }, "file-1");
+
+  assert.equal(response.status, 403);
+  assert.deepEqual(await response.json(), { error: "无权限" });
+  assert.equal(state.runs.length, 0);
+});
+
+// 修复 A：require_login=0 是产品开关，已登录非 owner 仍可直链下载
+test("downloadFile allows logged-in non-owner when require_login is 0", async () => {
+  const { db, state } = createDb({
+    firstHandlers: [
+      {
+        match:
+          /SELECT[\s\S]*FROM files(?: f)?[\s\S]*WHERE (?:f\.)?id = \?[\s\S]*LIMIT 1/,
+        value: {
+          id: "file-1",
+          owner_id: "user-1",
+          filename: "demo.txt",
+          r2_key: "flares3/config/demo.txt",
+          expires_at: "9999-12-31T23:59:59.999Z",
+          upload_status: "completed",
+          require_login: 0,
+          owner_status: "active",
+        },
+      },
+    ],
+    runHandlers: [
+      {
+        match: /INSERT INTO audit_logs/,
+        value: { meta: { changes: 1 } },
+      },
+    ],
+  });
+  const { r2, files } = loadFilesRouteModules();
+
+  r2.resolveR2ConfigForKey = async () => ({ id: "config-1", config: {} });
+  r2.generateDownloadUrl = async () => "https://download.example.com/file-1";
+
+  const request = createAuthedGetRequest(
+    "https://example.com/api/files/file-1/download",
+  );
+  request.user = { ...request.user, id: "user-2" };
+
+  const response = await files.downloadFile(request, { DB: db }, "file-1");
+
+  assert.equal(response.status, 302);
+  assert.equal(
+    response.headers.get("Location"),
+    "https://download.example.com/file-1",
+  );
+  assert.equal(state.runs.length, 1);
+});
+
 test("sanitizeContentDispositionFilename strips path separators, quotes and control characters", () => {
   const r2 = loadModule("services/r2.js");
 
