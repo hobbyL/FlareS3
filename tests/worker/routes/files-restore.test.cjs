@@ -132,6 +132,11 @@ const RESTORE_BATCH_RUN_HANDLERS = [
   },
   {
     match:
+      /UPDATE upload_reservations SET status = \?, updated_at = \? WHERE file_id = \? AND status = 'active'/,
+    value: { meta: { changes: 0 } },
+  },
+  {
+    match:
       /UPDATE delete_queue SET processed_at = \? WHERE file_id = \? AND processed_at IS NULL/,
     value: { meta: { changes: 0 } },
   },

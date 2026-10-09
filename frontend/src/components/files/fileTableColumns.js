@@ -21,6 +21,13 @@ export function buildFilesTableColumns({
   isAdmin = false,
   loading = false,
   deleting = false,
+  selectionEnabled = false,
+  pageRowIds = [],
+  allRowsSelected = false,
+  selectAllIndeterminate = false,
+  selectedIdSet = new Set(),
+  onToggleSelectAll = () => {},
+  onToggleRowSelection = () => {},
   onShowFileInfo = () => {},
   onShowFileShare = () => {},
   onDeleteFile = () => {},
@@ -29,8 +36,9 @@ export function buildFilesTableColumns({
   onRenameFile = () => {},
 } = {}) {
   const translate = typeof t === 'function' ? t : (key) => key
+  const selectedKeys = selectedIdSet instanceof Set ? selectedIdSet : new Set()
 
-  return [
+  const columns = [
     {
       title: translate('files.columns.filename'),
       key: 'filename',
@@ -207,4 +215,35 @@ export function buildFilesTableColumns({
       },
     },
   ]
+
+  if (selectionEnabled) {
+    columns.unshift({
+      title: '',
+      key: 'select',
+      width: 48,
+      align: 'center',
+      ellipsis: false,
+      titleRender: () =>
+        h('input', {
+          class: 'files-checkbox',
+          type: 'checkbox',
+          disabled: loading || deleting || pageRowIds.length === 0,
+          checked: allRowsSelected,
+          indeterminate: selectAllIndeterminate,
+          onChange: (event) => onToggleSelectAll(Boolean(event?.target?.checked)),
+        }),
+      render: (row) => {
+        const id = String(row?.id ?? '').trim()
+        return h('input', {
+          class: 'files-checkbox',
+          type: 'checkbox',
+          disabled: loading || deleting || !id,
+          checked: selectedKeys.has(id),
+          onChange: (event) => onToggleRowSelection(id, Boolean(event?.target?.checked)),
+        })
+      },
+    })
+  }
+
+  return columns
 }

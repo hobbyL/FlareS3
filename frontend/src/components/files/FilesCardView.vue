@@ -13,11 +13,28 @@
           :key="row.id"
           header-bg="var(--nb-surface)"
           header-color="var(--nb-ink)"
-          :class="['file-card', { 'is-disabled': isFileCardDisabled(row) }]"
+          :class="[
+            'file-card',
+            {
+              'is-disabled': isFileCardDisabled(row),
+              'is-selected': selectionEnabled && selectedIdSet.has(String(row.id ?? '')),
+            },
+          ]"
           @click="handleCardClick(row)"
         >
           <template #header>
             <div class="file-card-header">
+              <input
+                v-if="selectionEnabled"
+                class="file-card-checkbox"
+                type="checkbox"
+                :checked="selectedIdSet.has(String(row.id ?? ''))"
+                :disabled="loading"
+                @click.stop
+                @change="
+                  emit('toggle-selection', String(row.id ?? ''), Boolean($event?.target?.checked))
+                "
+              />
               <span class="file-card-icon">
                 <File :size="18" />
               </span>
@@ -182,6 +199,14 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  selectionEnabled: {
+    type: Boolean,
+    default: false,
+  },
+  selectedIdSet: {
+    type: Set,
+    default: () => new Set(),
+  },
 })
 
 const emit = defineEmits([
@@ -191,6 +216,7 @@ const emit = defineEmits([
   'delete',
   'restore',
   'delete-permanent',
+  'toggle-selection',
   'load-more',
 ])
 
@@ -320,6 +346,17 @@ const handleCardClick = (row) => {
 .file-card.is-disabled:hover {
   transform: none;
   box-shadow: none;
+}
+
+.file-card.is-selected {
+  outline: var(--nb-border-width, 2px) solid var(--nb-primary, #2563eb);
+  outline-offset: -2px;
+}
+
+.file-card-checkbox {
+  flex-shrink: 0;
+  margin-right: var(--nb-space-xs, 4px);
+  cursor: pointer;
 }
 
 .file-card-header {

@@ -150,3 +150,42 @@ export function buildFilesQueryParams(filters = {}, { mode = 'normal', isAdmin =
 
   return params
 }
+
+// ── 批量选择纯函数（镜像 utils/shares.js 的选择范式）──
+
+/** 从文件行取选择主键（文件 id）；无 id 返回空串（视图层据此跳过）。 */
+export function toFileSelectionKey(record = {}) {
+  return normalizeText(record?.id)
+}
+
+/** 构造已选 id 的 Set（去空、去重），供 O(1) 命中判断。 */
+export function buildFileSelectedIdSet(selectedIds = []) {
+  return new Set((selectedIds || []).map((id) => normalizeText(id)).filter(Boolean))
+}
+
+/** 按已选 id 集合过滤出当前页中被选中的文件行。 */
+export function collectSelectedFiles(items = [], selectedIds = []) {
+  const selectedKeySet = buildFileSelectedIdSet(selectedIds)
+  if (!selectedKeySet.size) {
+    return []
+  }
+  return (items || []).filter((item) => {
+    const key = toFileSelectionKey(item)
+    return key ? selectedKeySet.has(key) : false
+  })
+}
+
+/** 勾选 / 取消勾选单行，返回新的 id 数组（不可变更新）。 */
+export function updateFileSelection(selectedIds = [], rowId = '', checked = false) {
+  const id = normalizeText(rowId)
+  if (!id) {
+    return selectedIds
+  }
+  const next = buildFileSelectedIdSet(selectedIds)
+  if (checked) {
+    next.add(id)
+  } else {
+    next.delete(id)
+  }
+  return Array.from(next)
+}

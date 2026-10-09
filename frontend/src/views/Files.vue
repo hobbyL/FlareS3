@@ -29,6 +29,17 @@
       />
 
       <section class="files-content">
+        <FilesBatchActionBar
+          :count="selectedFilesCount"
+          :is-trash-mode="isTrashMode"
+          :submitting="batchSubmitting"
+          :pending-action="batchPendingAction"
+          @delete="openBatchModal('delete')"
+          @restore="handleBatchRestore"
+          @permanent-delete="openBatchModal('permanent-delete')"
+          @clear="clearSelection"
+        />
+
         <PageSkeleton
           v-if="tableLoading"
           :variant="viewMode === 'table' ? 'table' : 'cards'"
@@ -59,12 +70,15 @@
             :active-action="activeAction"
             :is-admin="authStore.isAdmin"
             :is-trash-mode="isTrashMode"
+            :selection-enabled="true"
+            :selected-id-set="selectedIdSet"
             @show-info="showFileInfo"
             @share="showFileShare"
             @rename="showFileRename"
             @delete="handleDelete"
             @restore="handleRestore"
             @delete-permanent="handleDeletePermanent"
+            @toggle-selection="toggleRowSelection"
             @load-more="loadMore"
           />
         </template>
@@ -114,6 +128,23 @@
           </Button>
         </template>
       </Modal>
+
+      <Modal
+        :show="showBatchModal"
+        :title="batchModalTitle"
+        width="420px"
+        @update:show="handleBatchModalUpdate"
+      >
+        <p class="files-delete-confirm">{{ batchConfirmText }}</p>
+        <template #footer>
+          <Button type="default" :disabled="batchSubmitting" @click="closeBatchModal">
+            {{ t('common.cancel') }}
+          </Button>
+          <Button type="danger" :loading="batchSubmitting" @click="handleBatchConfirm">
+            {{ batchActionLabel }}
+          </Button>
+        </template>
+      </Modal>
     </div>
   </AppLayout>
 </template>
@@ -127,6 +158,7 @@ import { useThemeStore } from '../stores/theme'
 import { useUserOptionsStore } from '../stores/userOptions'
 import api from '../services/api'
 import AppLayout from '../components/layout/AppLayout.vue'
+import FilesBatchActionBar from '../components/files/FilesBatchActionBar.vue'
 import FilesHeaderToolbar from '../components/files/FilesHeaderToolbar.vue'
 import { buildFilesTableColumns } from '../components/files/fileTableColumns.js'
 import FilesTableView from '../components/files/FilesTableView.vue'
@@ -134,6 +166,7 @@ import Button from '../components/ui/button/Button.vue'
 import Modal from '../components/ui/modal/Modal.vue'
 import PageSkeleton from '../components/ui/skeleton/PageSkeleton.vue'
 import { useMessage } from '../composables/useMessage'
+import { useFileSelection } from '../composables/useFileSelection.js'
 import { useResponsiveViewMode } from '../composables/useResponsiveViewMode.js'
 import { buildFilesQueryParams, canManageFileShare, isFileDeleted } from '../utils/files.js'
 
@@ -323,6 +356,24 @@ const pagination = ref({ page: 1, pageSize: 20 })
 
 const hasMore = computed(() => filesStore.files.length < Number(filesStore.total || 0))
 
+// ── 批量选择 ──
+const filesRef = computed(() => filesStore.files)
+const {
+  pageRowIds,
+  selectedIdSet,
+  selectedFilesCount,
+  allRowsSelected,
+  selectAllIndeterminate,
+  clearSelection,
+  toggleSelectAll,
+  toggleRowSelection,
+  selectedFiles,
+} = useFileSelection(filesRef)
+
+const showBatchModal = ref(false)
+const batchSubmitting = ref(false)
+const batchPendingAction = ref('') // 'delete' | 'permanent-delete'（restore 无弹窗）
+
 const columns = computed(() =>
   buildFilesTableColumns({
     t,
@@ -331,7 +382,14 @@ const columns = computed(() =>
     isTrashMode: isTrashMode.value,
     isAdmin: authStore.isAdmin,
     loading: filesStore.loading,
-    deleting: deleting.value,
+    deleting: deleting.value || batchSubmitting.value,
+    selectionEnabled: true,
+    pageRowIds: pageRowIds.value,
+    allRowsSelected: allRowsSelected.value,
+    selectAllIndeterminate: selectAllIndeterminate.value,
+    selectedIdSet: selectedIdSet.value,
+    onToggleSelectAll: toggleSelectAll,
+    onToggleRowSelection: toggleRowSelection,
     onShowFileInfo: showFileInfo,
     onShowFileShare: showFileShare,
     onDeleteFile: handleDelete,
@@ -390,6 +448,7 @@ const loadFiles = async ({
 
 const handleSearch = () => {
   if (filesStore.loading || deleting.value) return
+  clearSelection()
   activeAction.value = 'search'
   pagination.value.page = 1
   loadFiles()
@@ -406,6 +465,7 @@ const handleRefresh = () => {
 
 const changePage = (page) => {
   if (deleting.value) return
+  clearSelection()
   pagination.value.page = page
   loadFiles()
 }
@@ -414,6 +474,7 @@ const changePageSize = (pageSize) => {
   if (deleting.value) return
   const nextSize = Number(pageSize)
   if (!Number.isFinite(nextSize) || nextSize <= 0) return
+  clearSelection()
   pagination.value.pageSize = nextSize
   pagination.value.page = 1
   loadFiles()
@@ -558,10 +619,139 @@ const handleRestore = async (fileId) => {
   }
 }
 
+// ── 批量操作 ──
+
+const batchModalTitle = computed(() =>
+  batchPendingAction.value === 'permanent-delete'
+    ? t('files.batch.permanentDeleteTitle')
+    : t('files.batch.deleteTitle')
+)
+
+const batchConfirmText = computed(() =>
+  batchPendingAction.value === 'permanent-delete'
+    ? t('files.batch.confirmPermanentDelete', { count: selectedFilesCount.value })
+    : t('files.batch.confirmDelete', { count: selectedFilesCount.value })
+)
+
+const batchActionLabel = computed(() =>
+  batchPendingAction.value === 'permanent-delete'
+    ? t('files.batch.permanentDelete')
+    : t('files.batch.delete')
+)
+
+const openBatchModal = (action) => {
+  if (batchSubmitting.value || !selectedFilesCount.value) return
+  batchPendingAction.value = action
+  showBatchModal.value = true
+}
+
+const closeBatchModal = () => {
+  showBatchModal.value = false
+  batchPendingAction.value = ''
+}
+
+const handleBatchModalUpdate = (nextValue) => {
+  if (batchSubmitting.value) return
+  if (!nextValue) closeBatchModal()
+}
+
+/** skipped 摘要：全部成功 → success；有跳过 → warning + 首个原因翻译。 */
+const reportBatchResult = (done, skipped) => {
+  if (!skipped?.length) {
+    message.success(t('files.batch.deleteSuccess', { count: done }))
+    return
+  }
+  message.warning(
+    t('files.batch.partial', { done, skipped: skipped.length }) +
+      `（${skipped
+        .slice(0, 3)
+        .map((item) => t(`files.batch.reasons.${item.reason}`))
+        .join('、')}）`
+  )
+}
+
+const reloadAfterBatch = async () => {
+  clearSelection()
+  if (viewMode.value === 'card') {
+    pagination.value.page = 1
+    await loadFiles({ page: 1, mode: filesStore.mode })
+  } else {
+    if (filesStore.files.length <= selectedFilesCount.value && pagination.value.page > 1) {
+      pagination.value.page -= 1
+    }
+    await loadFiles()
+  }
+}
+
+const handleBatchConfirm = async () => {
+  if (batchSubmitting.value) return
+  const ids = selectedFiles.value.map((item) => String(item.id ?? '')).filter(Boolean)
+  if (!ids.length) {
+    closeBatchModal()
+    return
+  }
+
+  batchSubmitting.value = true
+  try {
+    if (batchPendingAction.value === 'permanent-delete') {
+      const result = await api.batchPermanentDeleteFiles(ids)
+      const deleted = Number(result?.deleted || 0)
+      const queued = Number(result?.queued || 0)
+      if (result?.skipped?.length) {
+        message.warning(
+          t('files.batch.partial', { done: deleted + queued, skipped: result.skipped.length })
+        )
+      } else {
+        message.success(t('files.batch.permanentDeleteSuccess', { count: deleted + queued }))
+      }
+    } else {
+      const result = await api.batchDeleteFiles(ids)
+      reportBatchResult(Number(result?.deleted || 0), result?.skipped)
+    }
+    closeBatchModal()
+    await reloadAfterBatch()
+  } catch (error) {
+    message.error(error.response?.data?.error || t('files.batch.failed'))
+  } finally {
+    batchSubmitting.value = false
+  }
+}
+
+const handleBatchRestore = async () => {
+  if (batchSubmitting.value || !selectedFilesCount.value) return
+  const ids = selectedFiles.value.map((item) => String(item.id ?? '')).filter(Boolean)
+  if (!ids.length) return
+
+  batchSubmitting.value = true
+  batchPendingAction.value = 'restore'
+  try {
+    const result = await api.batchRestoreFiles(ids)
+    const restored = Number(result?.restored || 0)
+    if (result?.skipped?.length) {
+      message.warning(
+        t('files.batch.partial', { done: restored, skipped: result.skipped.length }) +
+          `（${result.skipped
+            .slice(0, 3)
+            .map((item) => t(`files.batch.reasons.${item.reason}`))
+            .join('、')}）`
+      )
+    } else {
+      message.success(t('files.batch.restoreSuccess', { count: restored }))
+    }
+    await reloadAfterBatch()
+  } catch (error) {
+    message.error(error.response?.data?.error || t('files.batch.failed'))
+  } finally {
+    batchSubmitting.value = false
+    batchPendingAction.value = ''
+  }
+}
+
 const setFilesMode = async (mode) => {
   const nextMode = mode === 'trash' ? 'trash' : 'active'
   if (filesStore.mode === nextMode && pagination.value.page === 1) return
 
+  clearSelection()
   if (nextMode === 'trash') {
     filters.value.upload_status = ''
     filters.value.sort_key = 'deleted_at__desc'

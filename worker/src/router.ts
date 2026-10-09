@@ -396,6 +396,33 @@ router.delete(
     )
   )
 )
+router.post(
+  '/api/files/trash/batch-restore',
+  withAuth(
+    lazyRoute(
+      () => import('./routes/files'),
+      (module, request, env) => module.batchRestoreFiles(request, env)
+    )
+  )
+)
+router.post(
+  '/api/files/trash/batch-permanent-delete',
+  withAuth(
+    lazyRoute(
+      () => import('./routes/files'),
+      (module, request, env) => module.batchPermanentDeleteFiles(request, env)
+    )
+  )
+)
+router.post(
+  '/api/files/batch-delete',
+  withAuth(
+    lazyRoute(
+      () => import('./routes/files'),
+      (module, request, env) => module.batchDeleteFiles(request, env)
+    )
+  )
+)
 router.delete(
   '/api/files/:id',
   withAuth(

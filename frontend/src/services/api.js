@@ -541,6 +541,33 @@ export default {
   },
 
   /**
+   * 批量移入回收站
+   * @param {string[]} ids - 文件 ID 列表（上限 100）
+   * @returns {Promise<{success: boolean, deleted: number, skipped: Array<{id: string, reason: string}>}>}
+   */
+  batchDeleteFiles(ids = []) {
+    return api.post('/files/batch-delete', { ids })
+  },
+
+  /**
+   * 批量恢复回收站文件
+   * @param {string[]} ids - 文件 ID 列表（上限 100）
+   * @returns {Promise<{success: boolean, restored: number, skipped: Array<{id: string, reason: string}>}>}
+   */
+  batchRestoreFiles(ids = []) {
+    return api.post('/files/trash/batch-restore', { ids })
+  },
+
+  /**
+   * 批量永久删除回收站文件
+   * @param {string[]} ids - 文件 ID 列表（上限 100）
+   * @returns {Promise<{success: boolean, deleted: number, queued: number, skipped: Array<{id: string, reason: string}>}>}
+   */
+  batchPermanentDeleteFiles(ids = []) {
+    return api.post('/files/trash/batch-permanent-delete', { ids })
+  },
+
+  /**
    * 重命名文件（同目录更新文件名与存储 key 尾段）
    * @param {string} fileId - 文件 ID
    * @param {object} payload - 重命名载荷

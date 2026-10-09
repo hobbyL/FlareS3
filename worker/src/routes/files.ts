@@ -381,26 +381,9 @@ export async function restoreFile(request: Request, env: Env, fileId: string): P
     }
 
     const now = new Date().toISOString()
-    await withD1Retry(env.DB).batch([
-      withD1Retry(env.DB)
-        .prepare(
-          "UPDATE files SET upload_status = 'completed', deleted_at = NULL, multipart_upload_id = NULL WHERE id = ?"
-        )
-        .bind(fileId),
-      prepareReleaseUploadReservation(env.DB, fileId, now),
-      prepareAuditLogInsert(
-        env.DB,
-        {
-          actorUserId: user.id,
-          action: 'FILE_RESTORE',
-          targetType: 'file',
-          targetId: fileId,
-          ip: getClientIp(request),
-          userAgent: request.headers.get('User-Agent') || undefined,
-        },
-        now
-      ),
-    ])
+    await withD1Retry(env.DB).batch(
+      prepareRestoreFileStatements(env, user, request, fileId, now, { closeQueue: false })
+    )
     return jsonResponse({ success: true })
   }
 
@@ -419,17 +402,82 @@ export async function restoreFile(request: Request, env: Env, fileId: string): P
   }
 
   const now = new Date().toISOString()
-  await withD1Retry(env.DB).batch([
+  await withD1Retry(env.DB).batch(
+    prepareRestoreFileStatements(env, user, request, fileId, now, { closeQueue: true })
+  )
+
+  return jsonResponse({ success: true })
+}
+
+// ── 回收站 / 恢复 / 永久删除的共享语句组装 ──
+//
+// 单条端点与批量端点共用（code-reuse 约束：SQL 不复制粘贴）。
+// 三个 helper 只组装语句，不做守卫——守卫（存在性/权限/状态/对象校验）
+// 由调用方完成后再调用。
+
+/** 组装「移入回收站」batch 语句：状态切换 + reservation 释放 + audit（FILE_DELETE）。 */
+function prepareRecycleFileStatements(
+  env: Env,
+  user: { id: string },
+  request: Request,
+  fileId: string,
+  nowIso: string
+): D1PreparedStatement[] {
+  return [
+    withD1Retry(env.DB)
+      .prepare(
+        "UPDATE files SET upload_status = 'deleted', deleted_at = ?, multipart_upload_id = NULL WHERE id = ?"
+      )
+      .bind(nowIso, fileId),
+    prepareReleaseUploadReservation(env.DB, fileId, nowIso),
+    prepareAuditLogInsert(
+      env.DB,
+      {
+        actorUserId: user.id,
+        action: 'FILE_DELETE',
+        targetType: 'file',
+        targetId: fileId,
+        ip: getClientIp(request),
+        userAgent: request.headers.get('User-Agent') || undefined,
+        metadata: { recycleBin: true },
+      },
+      nowIso
+    ),
+  ]
+}
+
+/**
+ * 组装「恢复」batch 语句：状态回滚 + reservation 释放 + audit（FILE_RESTORE）。
+ *
+ * @param opts.closeQueue R2 路径为 true（恢复需关闭未处理的 delete_queue 行）；
+ *                        explicit-provider 路径为 false（无 delete_queue 行）。
+ */
+function prepareRestoreFileStatements(
+  env: Env,
+  user: { id: string },
+  request: Request,
+  fileId: string,
+  nowIso: string,
+  opts: { closeQueue: boolean }
+): D1PreparedStatement[] {
+  const statements: D1PreparedStatement[] = [
     withD1Retry(env.DB)
       .prepare(
         "UPDATE files SET upload_status = 'completed', deleted_at = NULL, multipart_upload_id = NULL WHERE id = ?"
       )
       .bind(fileId),
-    withD1Retry(env.DB)
-      .prepare(
-        'UPDATE delete_queue SET processed_at = ? WHERE file_id = ? AND processed_at IS NULL'
-      )
-      .bind(now, fileId),
+    prepareReleaseUploadReservation(env.DB, fileId, nowIso),
+  ]
+  if (opts.closeQueue) {
+    statements.push(
+      withD1Retry(env.DB)
+        .prepare(
+          'UPDATE delete_queue SET processed_at = ? WHERE file_id = ? AND processed_at IS NULL'
+        )
+        .bind(nowIso, fileId)
+    )
+  }
+  statements.push(
     prepareAuditLogInsert(
       env.DB,
       {
@@ -440,11 +488,67 @@ export async function restoreFile(request: Request, env: Env, fileId: string): P
         ip: getClientIp(request),
         userAgent: request.headers.get('User-Agent') || undefined,
       },
-      now
-    ),
-  ])
+      nowIso
+    )
+  )
+  return statements
+}
 
-  return jsonResponse({ success: true })
+/**
+ * 组装「永久删除」batch 语句。
+ *
+ * @param opts.explicit true = explicit-provider 直删路径
+ *                      （release + DELETE file_shares + DELETE files + audit，
+ *                       第 3 条的 meta.changes 即 deleted 计数）；
+ *                      false = R2 走 delete_queue 路径
+ *                      （enqueue + audit，第 1 条的 meta.changes 即 queued 计数）。
+ * @param opts.r2Key delete_queue 路径（explicit=false）必需的 R2 对象键。
+ */
+function preparePermanentDeleteFileStatements(
+  env: Env,
+  user: { id: string },
+  request: Request,
+  fileId: string,
+  nowIso: string,
+  opts: { explicit: boolean; r2Key?: string }
+): D1PreparedStatement[] {
+  if (opts.explicit) {
+    return [
+      prepareReleaseUploadReservation(env.DB, fileId, nowIso),
+      withD1Retry(env.DB).prepare('DELETE FROM file_shares WHERE file_id = ?').bind(fileId),
+      withD1Retry(env.DB).prepare('DELETE FROM files WHERE id = ?').bind(fileId),
+      prepareAuditLogInsert(
+        env.DB,
+        {
+          actorUserId: user.id,
+          action: 'FILE_DELETE_PERMANENT',
+          targetType: 'file',
+          targetId: fileId,
+          ip: getClientIp(request),
+          userAgent: request.headers.get('User-Agent') || undefined,
+        },
+        nowIso
+      ),
+    ]
+  }
+  if (!opts.r2Key) {
+    throw new Error('delete_queue 路径缺少 r2Key')
+  }
+  return [
+    prepareEnqueueFileDeletionIfNeeded(env.DB, { id: fileId, r2_key: opts.r2Key }, nowIso),
+    prepareAuditLogInsert(
+      env.DB,
+      {
+        actorUserId: user.id,
+        action: 'FILE_DELETE_PERMANENT',
+        targetType: 'file',
+        targetId: fileId,
+        ip: getClientIp(request),
+        userAgent: request.headers.get('User-Agent') || undefined,
+      },
+      nowIso
+    ),
+  ]
 }
 
 /**
@@ -640,42 +744,19 @@ export async function permanentlyDeleteFile(
       }
     }
 
-    await withD1Retry(env.DB).batch([
-      prepareReleaseUploadReservation(env.DB, fileId, now),
-      withD1Retry(env.DB).prepare('DELETE FROM file_shares WHERE file_id = ?').bind(fileId),
-      withD1Retry(env.DB).prepare('DELETE FROM files WHERE id = ?').bind(fileId),
-      prepareAuditLogInsert(
-        env.DB,
-        {
-          actorUserId: user.id,
-          action: 'FILE_DELETE_PERMANENT',
-          targetType: 'file',
-          targetId: fileId,
-          ip: getClientIp(request),
-          userAgent: request.headers.get('User-Agent') || undefined,
-        },
-        now
-      ),
-    ])
+    await withD1Retry(env.DB).batch(
+      preparePermanentDeleteFileStatements(env, user, request, fileId, now, { explicit: true })
+    )
 
     return jsonResponse({ success: true, queued: false })
   }
 
-  const [queueInsertResult] = await withD1Retry(env.DB).batch([
-    prepareEnqueueFileDeletionIfNeeded(env.DB, { id: fileId, r2_key: r2Key }, now),
-    prepareAuditLogInsert(
-      env.DB,
-      {
-        actorUserId: user.id,
-        action: 'FILE_DELETE_PERMANENT',
-        targetType: 'file',
-        targetId: fileId,
-        ip: getClientIp(request),
-        userAgent: request.headers.get('User-Agent') || undefined,
-      },
-      now
-    ),
-  ])
+  const [queueInsertResult] = await withD1Retry(env.DB).batch(
+    preparePermanentDeleteFileStatements(env, user, request, fileId, now, {
+      explicit: false,
+      r2Key,
+    })
+  )
   const queued = Number(queueInsertResult?.meta?.changes || 0) > 0
 
   return jsonResponse({ success: true, queued })
@@ -943,27 +1024,348 @@ export async function deleteFile(request: Request, env: Env, fileId: string): Pr
   }
 
   const now = new Date().toISOString()
-  await withD1Retry(env.DB).batch([
-    withD1Retry(env.DB)
-      .prepare(
-        "UPDATE files SET upload_status = 'deleted', deleted_at = ?, multipart_upload_id = NULL WHERE id = ?"
-      )
-      .bind(now, fileId),
-    prepareReleaseUploadReservation(env.DB, fileId, now),
-    prepareAuditLogInsert(
-      env.DB,
-      {
-        actorUserId: user.id,
-        action: 'FILE_DELETE',
-        targetType: 'file',
-        targetId: fileId,
-        ip: getClientIp(request),
-        userAgent: request.headers.get('User-Agent') || undefined,
-        metadata: { recycleBin: true },
-      },
-      now
-    ),
-  ])
+  await withD1Retry(env.DB).batch(prepareRecycleFileStatements(env, user, request, fileId, now))
 
   return jsonResponse({ success: true, queued: false, recycled: true })
+}
+
+// ── 文件批量操作 ──
+
+/** 单次批量请求的 ids 上限（每文件一个 batch，与清空回收站单页 100 同量级） */
+const FILES_BATCH_MAX_IDS = 100
+
+type SkippedReason =
+  | 'not_found'
+  | 'forbidden'
+  | 'already_trashed'
+  | 'not_in_trash'
+  | 'expired'
+  | 'object_missing'
+  | 'config_missing'
+  | 'check_failed'
+
+/**
+ * 解析批量请求 body 的 ids 契约（对齐 batchDeleteAudit）：
+ * trim → 去空 → Set 去重；空 → 400；超上限 → 400。
+ */
+async function parseBatchFileIds(request: Request): Promise<string[] | Response> {
+  let body: { ids?: unknown }
+  try {
+    body = await parseJson<{ ids?: unknown }>(request)
+  } catch (error) {
+    return invalidJsonBodyResponse(error)
+  }
+
+  const rawIds = Array.isArray(body.ids) ? body.ids : []
+  const ids = Array.from(new Set(rawIds.map((value) => String(value ?? '').trim()).filter(Boolean)))
+  if (!ids.length) {
+    return jsonResponse({ error: 'ids 不能为空' }, 400)
+  }
+  if (ids.length > FILES_BATCH_MAX_IDS) {
+    return jsonResponse({ error: '一次最多处理 100 个文件' }, 400)
+  }
+  return ids
+}
+
+function buildSkipped(id: string, reason: SkippedReason) {
+  return { id, reason }
+}
+
+/** 批量操作共用的权限守卫：admin 放行，其余仅限本人文件。 */
+function isBatchFileForbidden(user: { id: string; role: string }, ownerId: unknown): boolean {
+  return user.role !== 'admin' && String(ownerId) !== user.id
+}
+
+/**
+ * 批量移入回收站
+ *
+ * 逐文件复用单条删除版守卫（存在性 / 权限 / 回收站状态）与 batch
+ * 结构（状态切换 + reservation 释放 + audit FILE_DELETE 逐文件）；
+ * 未通过守卫的项计入 skipped，不中断其余文件。
+ *
+ * @route POST /api/files/batch-delete
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含删除统计与跳过明细
+ *
+ * @example
+ * // 请求体
+ * { "ids": ["uuid-1", "uuid-2"] }
+ *
+ * // 成功响应 (200)
+ * {
+ *   "success": true,
+ *   "deleted": 2,
+ *   "skipped": [
+ *     { "id": "uuid-3", "reason": "forbidden" }
+ *   ]
+ * }
+ *
+ * // ids 为空 (400)
+ * { "error": "ids 不能为空" }
+ *
+ * // 超上限 (400)
+ * { "error": "一次最多处理 100 个文件" }
+ */
+export async function batchDeleteFiles(request: Request, env: Env): Promise<Response> {
+  const user = getUser(request)
+  if (!user) return jsonResponse({ error: '未授权' }, 401)
+
+  const parsed = await parseBatchFileIds(request)
+  if (parsed instanceof Response) return parsed
+  const ids = parsed
+
+  const placeholders = ids.map(() => '?').join(',')
+  const { results } = await withD1Retry(env.DB)
+    .prepare(
+      `SELECT id, owner_id, upload_status, deleted_at FROM files WHERE id IN (${placeholders})`
+    )
+    .bind(...ids)
+    .all<Record<string, unknown>>()
+
+  const rowsById = new Map((results || []).map((row) => [String(row.id), row]))
+  const now = new Date().toISOString()
+  const skipped: Array<{ id: string; reason: SkippedReason }> = []
+  let deleted = 0
+
+  for (const fileId of ids) {
+    const row = rowsById.get(fileId)
+    if (!row) {
+      skipped.push(buildSkipped(fileId, 'not_found'))
+      continue
+    }
+    if (isBatchFileForbidden(user, row.owner_id)) {
+      skipped.push(buildSkipped(fileId, 'forbidden'))
+      continue
+    }
+    if (row.upload_status === 'deleted' || row.deleted_at) {
+      skipped.push(buildSkipped(fileId, 'already_trashed'))
+      continue
+    }
+
+    // 逐文件 batch：与单条版结构一致，任一失败中断抛出（已处理文件已落库，可重试续跑）
+    const batchResults = await withD1Retry(env.DB).batch(
+      prepareRecycleFileStatements(env, user, request, fileId, now)
+    )
+    deleted += Number(batchResults?.[0]?.meta?.changes || 0)
+  }
+
+  return jsonResponse({ success: true, deleted, skipped })
+}
+
+/**
+ * 批量恢复回收站文件
+ *
+ * 逐文件保留单条恢复版守卫序（存在性 / 权限 / 回收站状态 / 过期 /
+ * 远端对象存在性——explicit-provider 与 R2 两路径均不因批量放宽）；
+ * 未通过守卫的项计入 skipped（机器码 reason），不中断其余文件。
+ *
+ * @route POST /api/files/trash/batch-restore
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含恢复统计与跳过明细
+ *
+ * @example
+ * // 请求体
+ * { "ids": ["uuid-1", "uuid-2"] }
+ *
+ * // 成功响应 (200)
+ * {
+ *   "success": true,
+ *   "restored": 1,
+ *   "skipped": [
+ *     { "id": "uuid-2", "reason": "object_missing" }
+ *   ]
+ * }
+ */
+export async function batchRestoreFiles(request: Request, env: Env): Promise<Response> {
+  const user = getUser(request)
+  if (!user) return jsonResponse({ error: '未授权' }, 401)
+
+  const parsed = await parseBatchFileIds(request)
+  if (parsed instanceof Response) return parsed
+  const ids = parsed
+
+  const placeholders = ids.map(() => '?').join(',')
+  const { results } = await withD1Retry(env.DB)
+    .prepare(
+      `SELECT id, owner_id, r2_key, expires_at, upload_status, deleted_at, config_id
+     FROM files WHERE id IN (${placeholders})`
+    )
+    .bind(...ids)
+    .all<Record<string, unknown>>()
+
+  const rowsById = new Map((results || []).map((row) => [String(row.id), row]))
+  const now = new Date().toISOString()
+  const skipped: Array<{ id: string; reason: SkippedReason }> = []
+  let restored = 0
+
+  for (const fileId of ids) {
+    const row = rowsById.get(fileId)
+    if (!row) {
+      skipped.push(buildSkipped(fileId, 'not_found'))
+      continue
+    }
+    if (isBatchFileForbidden(user, row.owner_id)) {
+      skipped.push(buildSkipped(fileId, 'forbidden'))
+      continue
+    }
+    if (row.upload_status !== 'deleted' || !row.deleted_at) {
+      skipped.push(buildSkipped(fileId, 'not_in_trash'))
+      continue
+    }
+
+    const expiresAt = new Date(String(row.expires_at)).getTime()
+    if (!Number.isFinite(expiresAt) || Date.now() > expiresAt) {
+      skipped.push(buildSkipped(fileId, 'expired'))
+      continue
+    }
+
+    const r2Key = String(row.r2_key)
+    const explicitProviderConfigId = getExplicitProviderConfigId(row)
+    let closeQueue = false
+
+    if (explicitProviderConfigId) {
+      const provider = await createProvider(env, explicitProviderConfigId)
+      if (!provider) {
+        skipped.push(buildSkipped(fileId, 'config_missing'))
+        continue
+      }
+      try {
+        const exists = await provider.checkExists(r2Key)
+        if (!exists) {
+          skipped.push(buildSkipped(fileId, 'object_missing'))
+          continue
+        }
+      } catch {
+        skipped.push(buildSkipped(fileId, 'check_failed'))
+        continue
+      }
+    } else {
+      const loaded = await resolveR2ConfigForKey(env, r2Key)
+      if (!loaded) {
+        skipped.push(buildSkipped(fileId, 'config_missing'))
+        continue
+      }
+      try {
+        const exists = await checkObjectExists(loaded.config, r2Key)
+        if (!exists) {
+          skipped.push(buildSkipped(fileId, 'object_missing'))
+          continue
+        }
+      } catch {
+        skipped.push(buildSkipped(fileId, 'check_failed'))
+        continue
+      }
+      closeQueue = true
+    }
+
+    await withD1Retry(env.DB).batch(
+      prepareRestoreFileStatements(env, user, request, fileId, now, { closeQueue })
+    )
+    restored += 1
+  }
+
+  return jsonResponse({ success: true, restored, skipped })
+}
+
+/**
+ * 批量永久删除回收站文件
+ *
+ * 逐文件复用单条永久删除版守卫与两条路径：explicit-provider 直删
+ * （provider.delete 后 release + 删 shares + 删行 + audit，deleted 计数取
+ * DELETE files 的 meta.changes）；R2 走 delete_queue（queued 计数取
+ * enqueue 的 meta.changes）。任一文件真实失败中断抛出，已处理文件
+ * 已落库，未处理文件可重试续跑（与清空回收站一致）。
+ *
+ * @route POST /api/files/trash/batch-permanent-delete
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应，包含删除/入队统计与跳过明细
+ *
+ * @example
+ * // 请求体
+ * { "ids": ["uuid-1", "uuid-2"] }
+ *
+ * // 成功响应 (200)
+ * {
+ *   "success": true,
+ *   "deleted": 1,
+ *   "queued": 1,
+ *   "skipped": []
+ * }
+ */
+export async function batchPermanentDeleteFiles(request: Request, env: Env): Promise<Response> {
+  const user = getUser(request)
+  if (!user) return jsonResponse({ error: '未授权' }, 401)
+
+  const parsed = await parseBatchFileIds(request)
+  if (parsed instanceof Response) return parsed
+  const ids = parsed
+
+  const placeholders = ids.map(() => '?').join(',')
+  const { results } = await withD1Retry(env.DB)
+    .prepare(
+      `SELECT id, owner_id, r2_key, upload_status, deleted_at, config_id
+     FROM files WHERE id IN (${placeholders})`
+    )
+    .bind(...ids)
+    .all<Record<string, unknown>>()
+
+  const rowsById = new Map((results || []).map((row) => [String(row.id), row]))
+  const now = new Date().toISOString()
+  const skipped: Array<{ id: string; reason: SkippedReason }> = []
+  let deleted = 0
+  let queued = 0
+
+  for (const fileId of ids) {
+    const row = rowsById.get(fileId)
+    if (!row) {
+      skipped.push(buildSkipped(fileId, 'not_found'))
+      continue
+    }
+    if (isBatchFileForbidden(user, row.owner_id)) {
+      skipped.push(buildSkipped(fileId, 'forbidden'))
+      continue
+    }
+    if (row.upload_status !== 'deleted' || !row.deleted_at) {
+      skipped.push(buildSkipped(fileId, 'not_in_trash'))
+      continue
+    }
+
+    const r2Key = String(row.r2_key)
+    const explicitProviderConfigId = getExplicitProviderConfigId(row)
+
+    if (explicitProviderConfigId) {
+      const provider = await createProvider(env, explicitProviderConfigId)
+      if (!provider) {
+        skipped.push(buildSkipped(fileId, 'config_missing'))
+        continue
+      }
+
+      try {
+        await provider.delete(r2Key)
+      } catch (error) {
+        if (!isRemoteObjectMissingError(error)) {
+          console.warn('[files] provider delete failed', { fileId, key: r2Key, error })
+        }
+      }
+
+      const batchResults = await withD1Retry(env.DB).batch(
+        preparePermanentDeleteFileStatements(env, user, request, fileId, now, { explicit: true })
+      )
+      deleted += Number(batchResults?.[2]?.meta?.changes || 0)
+      continue
+    }
+
+    const [queueInsertResult] = await withD1Retry(env.DB).batch(
+      preparePermanentDeleteFileStatements(env, user, request, fileId, now, {
+        explicit: false,
+        r2Key,
+      })
+    )
+    queued += Number(queueInsertResult?.meta?.changes || 0)
+  }
+
+  return jsonResponse({ success: true, deleted, queued, skipped })
 }
