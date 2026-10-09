@@ -3,6 +3,13 @@ export default {
     title: 'Files',
     subtitle: 'View and manage all uploaded files',
     uploadFile: 'Upload',
+    dir: {
+      root: 'Root',
+      upFolder: 'Up',
+      folderLabel: 'Folder',
+      currentPath: 'Current path',
+      emptyFolder: 'This folder is empty',
+    },
     filters: {
       filename: 'Filename',
       allOwners: 'All users',

@@ -3,6 +3,13 @@ export default {
     title: '文件',
     subtitle: '查看和管理所有上传的文件',
     uploadFile: '上传文件',
+    dir: {
+      root: '根目录',
+      upFolder: '上一级',
+      folderLabel: '目录',
+      currentPath: '当前目录',
+      emptyFolder: '该目录暂无文件',
+    },
     filters: {
       filename: '文件名称',
       allOwners: '全部用户',

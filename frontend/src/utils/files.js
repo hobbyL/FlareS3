@@ -138,6 +138,12 @@ export function buildFilesQueryParams(filters = {}, { mode = 'normal', isAdmin =
   const filename = normalizeText(filters.filename)
   if (filename) params.filename = filename
 
+  // 目录过滤仅在活动模式生效（回收站不按目录浏览）
+  if (!isTrash) {
+    const dir = normalizeText(filters.dir)
+    if (dir) params.dir = dir
+  }
+
   if (isAdmin && filters.owner_id) {
     params.owner_id = filters.owner_id
   }
@@ -188,4 +194,59 @@ export function updateFileSelection(selectedIds = [], rowId = '', checked = fals
     next.delete(id)
   }
   return Array.from(next)
+}
+
+// ── 目录导航纯函数（文件页目录化视图；镜像 r2Dir 的目录口径）──
+
+/** 归一目录字符串：转正斜杠、折叠/去首尾 `/`。空/畸形返回 ''（根）。 */
+export function normalizeDir(dir) {
+  const clean = String(dir ?? '')
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/\/+/g, '/')
+    .replace(/^\/+|\/+$/g, '')
+  return clean
+}
+
+/** 当前目录的面包屑：'a/b' → [{label:'a',prefix:'a'},{label:'b',prefix:'a/b'}]。根返回 []。 */
+export function buildDirBreadcrumb(dir) {
+  const segments = normalizeDir(dir).split('/').filter(Boolean)
+  const items = []
+  let prefix = ''
+  for (const segment of segments) {
+    prefix = prefix ? `${prefix}/${segment}` : segment
+    items.push({ label: segment, prefix })
+  }
+  return items
+}
+
+/** 父目录路径；根（无父）返回 ''。 */
+export function getParentDir(dir) {
+  const normalized = normalizeDir(dir)
+  if (!normalized) return ''
+  const lastSlash = normalized.lastIndexOf('/')
+  return lastSlash === -1 ? '' : normalized.slice(0, lastSlash)
+}
+
+/**
+ * 从全部目录列表中取 `dir` 的直接子目录（去重、升序）。
+ * 'a' 的子目录 = 恰比 'a' 多一段且前缀为 'a/' 的路径；根（dir='')取顶层单段目录。
+ */
+export function collectChildDirs(dir, allDirs = []) {
+  const parent = normalizeDir(dir)
+  const depth = parent ? parent.split('/').length : 0
+  const children = new Set()
+  for (const raw of allDirs || []) {
+    const path = normalizeDir(raw)
+    if (!path) continue
+    const segments = path.split('/')
+    if (segments.length !== depth + 1) continue
+    if (parent) {
+      if (!path.startsWith(`${parent}/`)) continue
+    }
+    children.add(path)
+  }
+  return Array.from(children)
+    .sort((a, b) => a.localeCompare(b))
+    .map((prefix) => ({ label: prefix.split('/').pop(), prefix }))
 }

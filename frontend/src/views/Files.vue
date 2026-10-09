@@ -29,6 +29,17 @@
       />
 
       <section class="files-content">
+        <FilesDirBreadcrumb
+          v-if="!isTrashMode"
+          class="files-dir-breadcrumb"
+          :dir="filters.dir"
+          :dirs="fileDirs"
+          :loading="filesStore.loading || deleting"
+          @go-root="goRootDir"
+          @go-up="goUpDir"
+          @navigate="navigateDir"
+        />
+
         <FilesBatchActionBar
           :count="selectedFilesCount"
           :is-trash-mode="isTrashMode"
@@ -160,6 +171,7 @@ import api from '../services/api'
 import AppLayout from '../components/layout/AppLayout.vue'
 import FilesBatchActionBar from '../components/files/FilesBatchActionBar.vue'
 import FilesHeaderToolbar from '../components/files/FilesHeaderToolbar.vue'
+import FilesDirBreadcrumb from '../components/files/FilesDirBreadcrumb.vue'
 import { buildFilesTableColumns } from '../components/files/fileTableColumns.js'
 import FilesTableView from '../components/files/FilesTableView.vue'
 import Button from '../components/ui/button/Button.vue'
@@ -168,7 +180,12 @@ import PageSkeleton from '../components/ui/skeleton/PageSkeleton.vue'
 import { useMessage } from '../composables/useMessage'
 import { useFileSelection } from '../composables/useFileSelection.js'
 import { useResponsiveViewMode } from '../composables/useResponsiveViewMode.js'
-import { buildFilesQueryParams, canManageFileShare, isFileDeleted } from '../utils/files.js'
+import {
+  buildFilesQueryParams,
+  canManageFileShare,
+  isFileDeleted,
+  getParentDir,
+} from '../utils/files.js'
 
 const FilesCardView = defineAsyncComponent(() => import('../components/files/FilesCardView.vue'))
 const FileInfoModal = defineAsyncComponent(() => import('../components/files/FileInfoModal.vue'))
@@ -263,7 +280,11 @@ const filters = ref({
   created_from_date: '',
   created_to_date: '',
   sort_key: 'created_at__desc',
+  dir: '',
 })
+
+// 当前文件集中出现的全部目录（含祖先），供面包屑子目录导航
+const fileDirs = ref([])
 
 const isTrashMode = computed(() => filesStore.mode === 'trash')
 const showAdvancedFilters = ref(false)
@@ -446,12 +467,46 @@ const loadFiles = async ({
   }
 }
 
+// 目录列表仅活动模式有意义（回收站不按目录浏览）
+const loadFileDirs = async () => {
+  if (filesStore.mode === 'trash') {
+    fileDirs.value = []
+    return
+  }
+  try {
+    const params = {}
+    if (authStore.isAdmin && filters.value.owner_id) {
+      params.owner_id = filters.value.owner_id
+    }
+    const { data } = await api.getFileDirs(params)
+    fileDirs.value = Array.isArray(data?.dirs) ? data.dirs : []
+  } catch (error) {
+    fileDirs.value = []
+  }
+}
+
+// 切换目录：仅改 dir + 重置页码，保持视图模式(table/card)与排序不变
+const navigateDir = (prefix) => {
+  if (deleting.value) return
+  const next = String(prefix || '')
+  if (filters.value.dir === next) return
+  clearSelection()
+  filters.value.dir = next
+  pagination.value.page = 1
+  loadFiles()
+}
+
+const goRootDir = () => navigateDir('')
+const goUpDir = () => navigateDir(getParentDir(filters.value.dir))
+
 const handleSearch = () => {
   if (filesStore.loading || deleting.value) return
   clearSelection()
   activeAction.value = 'search'
   pagination.value.page = 1
   loadFiles()
+  // owner 维度可能变化 → 刷新目录列表
+  loadFileDirs()
 }
 
 const handleRefresh = () => {
@@ -461,6 +516,7 @@ const handleRefresh = () => {
     pagination.value.page = 1
   }
   loadFiles()
+  loadFileDirs()
 }
 
 const changePage = (page) => {
@@ -755,6 +811,9 @@ const setFilesMode = async (mode) => {
   if (nextMode === 'trash') {
     filters.value.upload_status = ''
     filters.value.sort_key = 'deleted_at__desc'
+    // 回收站不按目录浏览：清空目录过滤与目录列表
+    filters.value.dir = ''
+    fileDirs.value = []
   } else {
     if (filters.value.upload_status === 'deleted') {
       filters.value.upload_status = ''
@@ -767,6 +826,9 @@ const setFilesMode = async (mode) => {
 
   pagination.value.page = 1
   await loadFiles({ page: 1, mode: nextMode })
+  if (nextMode === 'active') {
+    loadFileDirs()
+  }
 }
 
 const handleUploaded = () => {
@@ -777,10 +839,13 @@ const handleUploaded = () => {
     pagination.value.page = 1
   }
   loadFiles({ mode: 'active' })
+  // 新上传可能引入新目录，刷新目录列表
+  loadFileDirs()
 }
 
 onMounted(() => {
   loadFiles({ mode: 'active' })
+  loadFileDirs()
   loadUsers()
 })
 

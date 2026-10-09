@@ -10,6 +10,48 @@ import {
   type RouteTimingEntry,
 } from '../utils/routeTiming'
 import { normalizePageParam, normalizeLimitParam } from '../utils/pagination'
+import { extractDirFromR2Key, collectDirAncestors, normalizeDirParam } from '../utils/r2Dir'
+
+// config_id 前缀锚定 + LIKE 转义：映射 `/`→`_`（镜像 buildR2Key），
+// 再转义 `\ % _` 使 config_id 作字面匹配，避免其内含通配符导致误配/注入。
+// 顺序：先转义 `\`，再 `%`，再 `/`→`_`，最后统一转义 `_`（含上一步新产生的）。
+const CONFIG_ID_LIKE_EXPR =
+  "REPLACE(REPLACE(REPLACE(REPLACE(f.config_id, '\\', '\\\\'), '%', '\\%'), '/', '_'), '_', '\\_')"
+
+// 已知存储前缀：目录信息藏于 `<prefix>/<configId>/<dir...>/<filename>`。
+const DIR_FILTER_PREFIXES = ['flares3', 'storage'] as const
+
+// `/api/files/dirs` 内存聚合的扫描上限；大目录集（>此值）非 P0，可能截断。
+const DIRS_SCAN_MAX_ROWS = 5000
+
+/**
+ * 构造精确目录过滤的 SQL 片段与绑定值。
+ *
+ * include `.../dir/%` + 深度守卫 `NOT LIKE .../dir/%/%` = 「dir 下一段恰为文件名」
+ * = 精确目录（不含子目录、不 over-match）。dir 经 escapeLike + ESCAPE '\\' 防注入。
+ */
+function buildDirFilter(dir: string): { clause: string; params: string[] } {
+  const likeDir = escapeLike(dir)
+  const includeParts: string[] = []
+  const excludeParts: string[] = []
+  const params: string[] = []
+  for (const prefix of DIR_FILTER_PREFIXES) {
+    includeParts.push(
+      `f.r2_key LIKE '${prefix}/' || ${CONFIG_ID_LIKE_EXPR} || '/' || ? || '/%' ESCAPE '\\'`
+    )
+    params.push(likeDir)
+  }
+  for (const prefix of DIR_FILTER_PREFIXES) {
+    excludeParts.push(
+      `f.r2_key NOT LIKE '${prefix}/' || ${CONFIG_ID_LIKE_EXPR} || '/' || ? || '/%/%' ESCAPE '\\'`
+    )
+    params.push(likeDir)
+  }
+  const clause = `f.config_id IS NOT NULL AND (${includeParts.join(' OR ')}) AND ${excludeParts.join(
+    ' AND '
+  )}`
+  return { clause, params }
+}
 
 // 无原型字典：`?sort_by=constructor` 等原型链属性不得命中白名单（真值检查陷阱）
 const ALLOWED_SORT_FIELDS: Record<string, string> = Object.assign(Object.create(null), {
@@ -66,6 +108,7 @@ function formatDuration(ms: number): string {
  * // upload_status: 上传状态过滤（completed | deleted）
  * // created_from: 创建时间起始
  * // created_to: 创建时间结束
+ * // dir: 精确目录过滤（r2_key 目录部分恰等于 dir；空/缺省=全量，向后兼容）
  * // sort_by: 排序字段（created_at | filename | size | expires_at）
  * // sort_order: 排序方向（asc | desc）
  *
@@ -114,6 +157,7 @@ export async function listFiles(request: Request, env: Env): Promise<Response> {
   const uploadStatus = url.searchParams.get('upload_status')
   const createdFrom = url.searchParams.get('created_from')
   const createdTo = url.searchParams.get('created_to')
+  const dir = normalizeDirParam(url.searchParams.get('dir'))
   const offset = (page - 1) * limit
 
   const conditions: string[] = [
@@ -143,6 +187,11 @@ export async function listFiles(request: Request, env: Env): Promise<Response> {
   if (createdTo) {
     conditions.push('f.created_at < ?')
     params.push(createdTo)
+  }
+  if (dir) {
+    const dirFilter = buildDirFilter(dir)
+    conditions.push(dirFilter.clause)
+    params.push(...dirFilter.params)
   }
   const whereClause = `WHERE ${conditions.join(' AND ')}`
   const { sortColumn, sortDir } = parseSortParams(url, ALLOWED_SORT_FIELDS, 'created_at')
@@ -359,4 +408,64 @@ export async function listTrashFiles(request: Request, env: Env): Promise<Respon
     }),
     timings
   )
+}
+
+/**
+ * 获取当前文件集中出现的全部目录（含祖先、去重、升序）。
+ *
+ * 目录信息来自 r2_key + config_id（见 utils/r2Dir 口径）；轻量实现：
+ * 单查询取 r2_key/config_id，内存聚合，不触碰 presigned 签名路径。
+ * 大目录集（> DIRS_SCAN_MAX_ROWS）非 P0，可能截断。
+ *
+ * @route GET /api/files/dirs
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应 `{ dirs: string[] }`
+ *
+ * @example
+ * // 查询参数
+ * // scope: 范围过滤（mine: 仅我的文件，仅管理员可用）
+ * // owner_id: 所有者 ID 过滤（仅管理员可用）
+ * //
+ * // 响应：
+ * // { "dirs": ["a", "a/b", "backup"] }
+ */
+export async function listFileDirs(request: Request, env: Env): Promise<Response> {
+  const user = getUser(request)
+  if (!user) return jsonResponse({ error: '未授权' }, 401)
+
+  const url = new URL(request.url)
+  const scope = url.searchParams.get('scope')
+  const ownerId = url.searchParams.get('owner_id')
+
+  const conditions: string[] = ["f.upload_status = 'completed'", 'f.deleted_at IS NULL']
+  const params: unknown[] = []
+  if (user.role !== 'admin' || scope === 'mine') {
+    conditions.push('f.owner_id = ?')
+    params.push(user.id)
+  } else if (ownerId) {
+    conditions.push('f.owner_id = ?')
+    params.push(ownerId)
+  }
+  const whereClause = `WHERE ${conditions.join(' AND ')}`
+
+  const rows = await withD1Retry(env.DB)
+    .prepare(`SELECT f.r2_key, f.config_id FROM files f ${whereClause} LIMIT ?`)
+    .bind(...params, DIRS_SCAN_MAX_ROWS)
+    .all()
+
+  const dirSet = new Set<string>()
+  for (const row of rows.results || []) {
+    const dir = extractDirFromR2Key(
+      (row as { r2_key?: unknown }).r2_key,
+      (row as { config_id?: unknown }).config_id
+    )
+    if (!dir) continue
+    for (const ancestor of collectDirAncestors(dir)) {
+      dirSet.add(ancestor)
+    }
+  }
+
+  const dirs = Array.from(dirSet).sort((a, b) => a.localeCompare(b))
+  return jsonResponse({ dirs })
 }

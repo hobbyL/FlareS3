@@ -506,6 +506,15 @@ export default {
   },
 
   /**
+   * 获取当前文件集中出现的全部目录（含祖先、去重）
+   * @param {object} filters - owner/scope 等过滤条件（镜像 getFiles）
+   * @returns {Promise<{dirs: string[]}>}
+   */
+  getFileDirs(filters = {}) {
+    return api.get('/files/dirs', { params: { ...(filters || {}) } })
+  },
+
+  /**
    * 恢复文件
    * @param {string} fileId - 文件 ID
    * @returns {Promise<{success: boolean}>}

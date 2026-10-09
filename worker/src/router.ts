@@ -378,6 +378,16 @@ router.get(
     )
   )
 )
+// 具体子路径 /dirs 必须在 /api/files/:id 等通配前注册（itty-router 顺序匹配）
+router.get(
+  '/api/files/dirs',
+  withAuth(
+    lazyRoute(
+      () => import('./routes/fileListing'),
+      (module, request, env) => module.listFileDirs(request, env)
+    )
+  )
+)
 router.get(
   '/api/files/trash',
   withAuth(
