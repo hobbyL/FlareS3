@@ -22,6 +22,11 @@ function shouldUsePublicRateLimit(request: Request): boolean {
   if (/^\/api\/files\/[^/]+\/download$/.test(pathname)) {
     return true
   }
+  // health 探针会触发 D1 探测（SELECT 1），不限流时存在读放大/计费放大面，
+  // 因此与公开入口一样受 per-IP 全局限流约束
+  if (pathname === '/health' || pathname === '/api/health') {
+    return true
+  }
   return false
 }
 
@@ -37,6 +42,8 @@ function categorizePublicPath(pathname: string): 's' | 't' | 'f' | 'dl' | null {
   if (pathname.startsWith('/t/')) return 't'
   if (pathname.startsWith('/f/')) return 'f'
   if (/^\/api\/files\/[^/]+\/download$/.test(pathname)) return 'dl'
+  // health 刻意不设专属类别、只走全局桶：探针频率天然很低，无需独立配额；
+  // 恶意高频探测本就该被全局桶约束，也少一次类别计数的 D1 写入
   return null
 }
 

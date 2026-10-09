@@ -289,6 +289,9 @@ export async function createUser(request: Request, env: Env): Promise<Response> 
  * // 用户不存在 (404)
  * { "error": "用户不存在" }
  *
+ * // 修改自己的角色或状态 (400)
+ * { "error": "不能修改自己的角色或状态" }
+ *
  * // 最后一个管理员 (400)
  * { "error": "必须保留至少一个启用中的管理员" }
  */
@@ -309,6 +312,14 @@ export async function updateUser(request: Request, env: Env, userId: string): Pr
     }
     if (body.role !== undefined && !['admin', 'user'].includes(String(body.role))) {
       return jsonResponse({ error: 'role 必须为 admin 或 user' }, 400)
+    }
+
+    // 自我保护：admin 修改自己的 role/status 会自锁——降权后失去管理入口、
+    // 禁用后自身会话即被撤销，且该操作绕过了「他人操作」的审计语义，直接拒绝；
+    // 仅改自己的 quota 不影响登录与管理能力，保持放行
+    const actor = getUser(request)
+    if (actor && actor.id === userId && (body.role !== undefined || body.status !== undefined)) {
+      return jsonResponse({ error: '不能修改自己的角色或状态' }, 400)
     }
 
     const target = await withD1Retry(env.DB)
@@ -372,7 +383,6 @@ export async function updateUser(request: Request, env: Env, userId: string): Pr
       await revokeUserSessions(env.DB, userId)
     }
 
-    const actor = getUser(request)
     const auditAction =
       body.status === 'disabled'
         ? 'USER_DISABLE'

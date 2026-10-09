@@ -34,8 +34,19 @@ function isBackendPath(pathname: string): boolean {
     pathname.startsWith('/api/') ||
     pathname.startsWith('/s/') ||
     pathname.startsWith('/t/') ||
-    pathname.startsWith('/f/')
+    pathname.startsWith('/f/') ||
+    isHealthPath(pathname)
   )
+}
+
+/**
+ * health 探针路径归一判断：`/health` 与 `/api/health` 语义等价。
+ *
+ * 独立成函数而非内联两处比较：守卫与限流需要按同一口径识别探针，
+ * 避免后续新增探针路径时出现中间件与路由分支不一致。
+ */
+function isHealthPath(pathname: string): boolean {
+  return pathname === '/health' || pathname === '/api/health'
 }
 
 function shouldRunBootstrapAdmin(request: Request, pathname: string): boolean {
@@ -180,8 +191,19 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
       logRequestStart(request)
     }
 
-    if (pathname === '/health' || pathname === '/api/health') {
-      response = await measure(timings, 'health', () => healthResponse(env))
+    if (isHealthPath(pathname)) {
+      // health 探针归位到安全中间件之后：先过 originGuard 与 rateLimit 再做 D1 探测，
+      // 消除无限速的 D1 读放大/计费放大面；探针返回语义（200/503 JSON）保持不变。
+      // 有意跳过 bootstrap/auth/route：探针无需会话，也不应触碰登录与用户表
+      response = await measure(timings, 'origin', () =>
+        Promise.resolve(originGuardMiddleware(request))
+      )
+      if (!response) {
+        response = await measure(timings, 'rateLimit', () => rateLimitMiddleware(request, env))
+      }
+      if (!response) {
+        response = await measure(timings, 'health', () => healthResponse(env))
+      }
     } else if (!isBackend) {
       response = await measure(timings, 'assets', () => handleFrontendRequest(request, env))
     } else {

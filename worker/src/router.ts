@@ -31,13 +31,29 @@ function withAdmin(handler: RouteHandler): RouteHandler {
   }
 }
 
-function lazyRoute<TModule>(
+/**
+ * 惰性加载路由模块：首次请求才 dynamic import，成功后缓存复用。
+ *
+ * 导出仅供注入式单元测试验证失败自愈行为。
+ */
+export function lazyRoute<TModule>(
   loadModule: () => Promise<TModule>,
   handler: (module: TModule, request: Request, env: Env) => Response | Promise<Response>
 ): RouteHandler {
   let modulePromise: Promise<TModule> | undefined
   return async (request, env) => {
-    modulePromise ||= loadModule()
+    if (!modulePromise) {
+      const pending = loadModule()
+      modulePromise = pending
+      // 失败自愈：rejected promise 若被永久缓存，一次瞬时 import 失败会让该路由
+      // 在 isolate 生命周期内持续 500。失败时清空缓存让下次请求重试加载；
+      // 这里只清理不吞异常，当前请求仍按失败处理（由上层兜底为 500）
+      pending.catch(() => {
+        if (modulePromise === pending) {
+          modulePromise = undefined
+        }
+      })
+    }
     const module = await modulePromise
     return handler(module, request, env)
   }
