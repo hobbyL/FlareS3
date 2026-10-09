@@ -29,6 +29,7 @@
             {{ t('upload.copy') }}
           </Button>
         </div>
+        <p class="link-hint">{{ t('upload.directLinkHint') }}</p>
       </div>
     </Alert>
   </div>
@@ -95,5 +96,11 @@ const { t } = useI18n({ useScope: 'global' })
 
 .link-row > :first-child {
   flex: 1;
+}
+
+.link-hint {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--nb-gray-500);
 }
 </style>

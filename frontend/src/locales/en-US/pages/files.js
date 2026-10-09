@@ -101,6 +101,10 @@ export default {
       saveAndClose: 'Save & close',
       disable: 'Disable share',
       regenerate: 'Regenerate link',
+      qrShow: 'QR code',
+      qrTitle: 'Share QR code',
+      qrFailed: 'Failed to generate QR code',
+      qrTooLarge: 'Content is too long for a QR code',
     },
     info: {
       fileInfo: 'File info',

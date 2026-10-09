@@ -101,6 +101,7 @@
             {{ t('upload.copy') }}
           </Button>
         </div>
+        <p class="link-hint">{{ t('upload.directLinkHint') }}</p>
       </div>
     </template>
 
@@ -539,6 +540,12 @@ const handleUpdateShow = (value) => {
 .link-row {
   display: flex;
   gap: var(--nb-space-sm);
+}
+
+.link-hint {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--nb-gray-500);
 }
 
 @media (max-width: 768px) {

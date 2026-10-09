@@ -13,7 +13,9 @@ export default {
     fileExpire: 'File will be deleted after {days} day(s)',
     fileNeverExpire: 'File never expires',
     shortLink: 'Short link',
-    directLink: 'Direct link',
+    directLink: 'Direct link (login required)',
+    directLinkHint:
+      'Direct links only work for signed-in users; share the short link or share link instead',
     copy: 'Copy',
     calculating: 'Calculating...',
     preparing: 'Preparing...',

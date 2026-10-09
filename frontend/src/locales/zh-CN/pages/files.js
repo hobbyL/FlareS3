@@ -101,6 +101,10 @@ export default {
       saveAndClose: '保存并关闭',
       disable: '关闭分享',
       regenerate: '重置链接',
+      qrShow: '二维码',
+      qrTitle: '分享二维码',
+      qrFailed: '生成二维码失败',
+      qrTooLarge: '内容过长，无法生成二维码',
     },
     info: {
       fileInfo: '文件信息',
