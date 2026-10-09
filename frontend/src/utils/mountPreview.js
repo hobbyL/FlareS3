@@ -20,6 +20,8 @@ export function getMountedPreviewKind(objectKey) {
   if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'].includes(extension)) return 'image'
   if (extension === 'md' || extension === 'markdown') return 'markdown'
   if (['txt', 'log', 'csv', 'json', 'yml', 'yaml', 'ini', 'conf'].includes(extension)) return 'text'
+  if (['mp4', 'm4v', 'webm', 'ogg', 'ogv', 'mov', 'mkv'].includes(extension)) return 'video'
+  if (['mp3', 'm4a', 'wav', 'flac', 'aac', 'opus'].includes(extension)) return 'audio'
 
   return null
 }

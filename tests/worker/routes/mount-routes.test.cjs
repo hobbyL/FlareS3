@@ -242,6 +242,53 @@ test("previewMountedObject limits proxied text preview from storage providers", 
   );
 });
 
+test("previewMountedObject redirects mp4 video preview to presigned url", async () => {
+  const { storageFactory, mount } = loadMountRouteModules();
+  storageFactory.createProvider = async () => ({
+    async checkExists() {
+      return true;
+    },
+    async preview() {
+      return { kind: "redirect", url: "https://preview.example.com/video" };
+    },
+  });
+
+  const response = await mount.previewMountedObject(
+    createGetRequest(
+      "https://example.com/api/mount/preview?config_id=config-1&key=video.mp4",
+    ),
+    { DB: {} },
+  );
+
+  assert.equal(response.status, 302);
+  assert.equal(
+    response.headers.get("Location"),
+    "https://preview.example.com/video",
+  );
+});
+
+test("previewMountedObject returns 415 for non-whitelisted media extension", async () => {
+  const { storageFactory, mount } = loadMountRouteModules();
+  storageFactory.createProvider = async () => ({
+    async checkExists() {
+      return true;
+    },
+    async preview() {
+      return { kind: "redirect", url: "https://preview.example.com/object" };
+    },
+  });
+
+  const response = await mount.previewMountedObject(
+    createGetRequest(
+      "https://example.com/api/mount/preview?config_id=config-1&key=video.avi",
+    ),
+    { DB: {} },
+  );
+
+  assert.equal(response.status, 415);
+  assert.deepEqual(await response.json(), { error: "不支持预览该文件类型" });
+});
+
 test("deleteMountedObject returns 404 when the mounted object does not exist", async () => {
   const { db, state } = createDb({
     runHandlers: [

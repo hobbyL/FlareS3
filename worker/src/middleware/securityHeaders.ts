@@ -21,6 +21,8 @@ function buildHtmlCsp(nonce: string | null): string {
     "form-action 'self'",
     "frame-ancestors 'none'",
     "img-src 'self' data: blob: https:",
+    // video/audio 原生控件加载预览资源（含 302 到 R2 presigned URL 的同源入口）
+    "media-src 'self' blob: https:",
     "font-src 'self' data: https:",
     scriptSrc,
     "style-src 'self' 'unsafe-inline'",

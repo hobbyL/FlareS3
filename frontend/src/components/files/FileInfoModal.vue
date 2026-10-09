@@ -42,6 +42,20 @@
               :src="previewUrl"
               title="pdf-preview"
             />
+            <video
+              v-else-if="previewKind === 'video'"
+              class="file-preview-media"
+              :src="previewUrl"
+              controls
+              preload="metadata"
+            />
+            <audio
+              v-else-if="previewKind === 'audio'"
+              class="file-preview-audio"
+              :src="previewUrl"
+              controls
+              preload="metadata"
+            />
             <div v-else-if="previewKind === 'markdown'" class="file-preview-pane">
               <div v-if="previewLoading" class="file-preview-placeholder">
                 {{ t('files.state.loading') }}
@@ -183,6 +197,10 @@ const previewKind = computed(() => {
   if (contentType === 'application/pdf' || extension === 'pdf') return 'pdf'
   if (contentType.startsWith('image/')) return 'image'
   if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'].includes(extension)) return 'image'
+  if (contentType.startsWith('video/')) return 'video'
+  if (['mp4', 'm4v', 'webm', 'ogg', 'ogv', 'mov', 'mkv'].includes(extension)) return 'video'
+  if (contentType.startsWith('audio/')) return 'audio'
+  if (['mp3', 'm4a', 'wav', 'flac', 'aac', 'opus'].includes(extension)) return 'audio'
 
   if (
     contentType === 'text/markdown' ||
@@ -444,6 +462,12 @@ const handleUpdateShow = (value) => {
   border: 0;
   object-fit: contain;
   background: var(--muted, rgba(0, 0, 0, 0.04));
+}
+
+.file-preview-audio {
+  width: 100%;
+  display: block;
+  margin: auto;
 }
 
 .file-preview-pane {

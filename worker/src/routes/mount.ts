@@ -105,6 +105,33 @@ function resolvePreviewModeByExtension(extension: string): PreviewMode | null {
     return { kind: 'proxy', responseContentType: 'text/plain; charset=utf-8' }
   }
 
+  // 媒体类型走 redirect：R2 presigned URL 支持 Range，video/audio 控件
+  // 依赖 Range 拖动进度（与 services/filePreview.ts resolvePreviewMode 口径一致）
+  if (['mp4', 'm4v', 'webm', 'ogg', 'ogv', 'mov', 'mkv'].includes(extension)) {
+    const videoMime: Record<string, string> = {
+      mp4: 'video/mp4',
+      m4v: 'video/mp4',
+      webm: 'video/webm',
+      ogg: 'video/ogg',
+      ogv: 'video/ogg',
+      mov: 'video/quicktime',
+      mkv: 'video/x-matroska',
+    }
+    return { kind: 'redirect', responseContentType: videoMime[extension] }
+  }
+
+  if (['mp3', 'm4a', 'wav', 'flac', 'aac', 'opus'].includes(extension)) {
+    const audioMime: Record<string, string> = {
+      mp3: 'audio/mpeg',
+      m4a: 'audio/mp4',
+      wav: 'audio/wav',
+      flac: 'audio/flac',
+      aac: 'audio/aac',
+      opus: 'audio/ogg',
+    }
+    return { kind: 'redirect', responseContentType: audioMime[extension] }
+  }
+
   return null
 }
 

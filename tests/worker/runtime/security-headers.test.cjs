@@ -101,6 +101,8 @@ test("worker applies strict CSP for HTML and emits HSTS on secure requests", asy
   const csp = response.headers.get("Content-Security-Policy") || "";
   assert.match(csp, /script-src 'self'/);
   assert.ok(!csp.includes("script-src 'self' 'unsafe-inline'"));
+  // 媒体预览（video/audio 控件）依赖 media-src 放行同源预览入口
+  assert.match(csp, /media-src 'self' blob: https:/);
 
   assert.match(response.headers.get("Server-Timing") || "", /assets;dur=/);
   assert.match(response.headers.get("Server-Timing") || "", /total;dur=/);

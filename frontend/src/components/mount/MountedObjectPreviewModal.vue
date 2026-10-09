@@ -34,6 +34,20 @@
             :src="previewUrl"
             title="pdf-preview"
           />
+          <video
+            v-else-if="previewKind === 'video'"
+            class="preview-media"
+            :src="previewUrl"
+            controls
+            preload="metadata"
+          />
+          <audio
+            v-else-if="previewKind === 'audio'"
+            class="preview-audio"
+            :src="previewUrl"
+            controls
+            preload="metadata"
+          />
           <div v-else-if="previewKind === 'markdown'" class="preview-pane">
             <div class="preview-markdown markdown-content" v-html="markdownHtml" />
           </div>
@@ -281,6 +295,12 @@ const handleUpdateShow = (value) => {
   border: 0;
   object-fit: contain;
   background: var(--muted, rgba(0, 0, 0, 0.04));
+}
+
+.preview-audio {
+  width: 100%;
+  display: block;
+  margin: auto;
 }
 
 .preview-pane {

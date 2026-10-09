@@ -37,7 +37,13 @@ test("getMountedPreviewKind 识别挂载对象支持的预览类型", () => {
   assert.equal(getMountedPreviewKind("manual.pdf"), "pdf");
   assert.equal(getMountedPreviewKind("notes.md"), "markdown");
   assert.equal(getMountedPreviewKind("server.log"), "text");
+  assert.equal(getMountedPreviewKind("clip.mp4"), "video");
+  assert.equal(getMountedPreviewKind("intro.webm"), "video");
+  assert.equal(getMountedPreviewKind("episode.mkv"), "video");
+  assert.equal(getMountedPreviewKind("track.mp3"), "audio");
+  assert.equal(getMountedPreviewKind("voice.flac"), "audio");
   assert.equal(getMountedPreviewKind("archive.zip"), null);
+  assert.equal(getMountedPreviewKind("movie.avi"), null);
 });
 
 test("shouldProbeMountedPreviewAvailability 仅对媒体预览做可用性探测", () => {
