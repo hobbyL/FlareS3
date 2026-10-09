@@ -53,6 +53,25 @@ for (const filename of ["wrangler.toml", "wrangler.full.toml"]) {
   });
 }
 
+test("wrangler.full.toml configures SPA fallback so client routes survive refresh", () => {
+  const content = fs.readFileSync(
+    path.join(process.cwd(), "wrangler.full.toml"),
+    "utf8",
+  );
+
+  const assetsBlock = content.match(
+    /^\s*\[assets\]\s*\n((?:[^\[]|\[(?!\s*\n))*?)(?=^\s*\[|\Z)/m,
+  )?.[1];
+
+  assert.ok(assetsBlock, "expected [assets] block in wrangler.full.toml");
+  assert.match(
+    assetsBlock,
+    /^\s*not_found_handling\s*=\s*"single-page-application"\s*$/m,
+    "SPA fallback not_found_handling is required: without it Workers Assets " +
+      "answers HTML navigations like /setup with 307 → / and refresh boots the app at the files page",
+  );
+});
+
 test("root package deploy and preview scripts target the worker package configs", () => {
   const rootPackageJson = JSON.parse(
     fs.readFileSync(path.join(REPO_ROOT, "package.json"), "utf8"),

@@ -12,6 +12,10 @@ enabled = true
 [assets]
 directory = "../frontend/dist"
 binding = "ASSETS"
+# SPA 回退：未匹配静态资源的请求返回 200 + index.html，由前端路由接管。
+# 缺省时 Workers Assets 内置 html_handling 会对 /setup 等客户端路由的 HTML
+# 导航请求返回 307 → /，浏览器刷新管理页即被重定向到文件页。
+not_found_handling = "single-page-application"
 
 [vars]
 MAX_FILE_SIZE = "5368709120"
