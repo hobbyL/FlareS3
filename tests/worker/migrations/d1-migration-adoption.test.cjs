@@ -154,3 +154,36 @@ test("folder shares and share access logs are managed by migrations", () => {
     /CREATE INDEX IF NOT EXISTS idx_share_access_logs_share ON share_access_logs\(share_type, share_id, id DESC\)/,
   );
 });
+
+test("library-mode empty directory registry is managed by migrations", () => {
+  const migration = fs.readFileSync(
+    path.join(workerRoot, "migrations", "0008_file_dirs.sql"),
+    "utf8",
+  );
+
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS file_dirs \(/);
+
+  // owner+dir 唯一：同一 owner 的同一归一化目录只允许一条登记
+  assert.match(
+    migration,
+    /CREATE UNIQUE INDEX IF NOT EXISTS idx_file_dirs_owner_dir ON file_dirs\(owner_id, dir\)/,
+  );
+  assert.match(
+    migration,
+    /CREATE INDEX IF NOT EXISTS idx_file_dirs_owner_id ON file_dirs\(owner_id\)/,
+  );
+
+  for (const triggerName of [
+    "trg_file_dirs_owner_exists_insert",
+    "trg_file_dirs_owner_exists_update",
+  ]) {
+    assert.match(
+      migration,
+      new RegExp(`CREATE TRIGGER IF NOT EXISTS ${triggerName}\\b`),
+    );
+  }
+
+  // owner 存在性护栏：owner_id 必须引用 users.id
+  assert.match(migration, /SELECT RAISE\(ABORT,/);
+  assert.match(migration, /FROM users WHERE id = NEW\.owner_id/);
+});

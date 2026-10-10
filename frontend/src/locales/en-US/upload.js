@@ -43,6 +43,7 @@ export default {
     hoursOnly: '{value}h',
     queue: {
       title: 'Upload queue',
+      paused: 'Paused',
       status: {
         queued: 'Queued',
         uploading: 'Uploading',
@@ -54,6 +55,8 @@ export default {
         cancel: 'Cancel',
         retry: 'Retry',
         remove: 'Remove',
+        pause: 'Pause',
+        resume: 'Resume',
       },
     },
     resume: {

@@ -466,6 +466,31 @@ export async function listFileDirs(request: Request, env: Env): Promise<Response
     }
   }
 
+  // 并入「空目录登记」（file_dirs）：无文件派生不出的目录由此补齐，使其在
+  // 目录视图可见。owner 过滤口径与上方 files 扫描一致；dir 已归一存储，仍过
+  // normalizeDirParam 作幂等防御，并补齐祖先前缀。
+  const dirConditions: string[] = []
+  const dirParams: unknown[] = []
+  if (user.role !== 'admin' || scope === 'mine') {
+    dirConditions.push('owner_id = ?')
+    dirParams.push(user.id)
+  } else if (ownerId) {
+    dirConditions.push('owner_id = ?')
+    dirParams.push(ownerId)
+  }
+  const dirWhere = dirConditions.length ? `WHERE ${dirConditions.join(' AND ')}` : ''
+  const emptyDirRows = await withD1Retry(env.DB)
+    .prepare(`SELECT dir FROM file_dirs ${dirWhere} LIMIT ?`)
+    .bind(...dirParams, DIRS_SCAN_MAX_ROWS)
+    .all()
+  for (const row of emptyDirRows.results || []) {
+    const dir = normalizeDirParam((row as { dir?: unknown }).dir)
+    if (!dir) continue
+    for (const ancestor of collectDirAncestors(dir)) {
+      dirSet.add(ancestor)
+    }
+  }
+
   const dirs = Array.from(dirSet).sort((a, b) => a.localeCompare(b))
   return jsonResponse({ dirs })
 }

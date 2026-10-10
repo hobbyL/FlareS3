@@ -1,5 +1,7 @@
 import { computed, ref } from 'vue'
 
+const DEFAULT_UPLOAD_CONCURRENCY = 2
+
 let uploadQueueItemSeed = 0
 
 function createUploadQueueItem(file) {
@@ -24,14 +26,27 @@ function createCancellationError() {
   return new Error('UPLOAD_CANCELLED')
 }
 
-export function useUploadQueue({ runTask }) {
+function normalizeConcurrency(value) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed < 1) return DEFAULT_UPLOAD_CONCURRENCY
+  return Math.floor(parsed)
+}
+
+export function useUploadQueue({ runTask, concurrency = DEFAULT_UPLOAD_CONCURRENCY } = {}) {
   const items = ref([])
   const activeItemId = ref('')
   const latestSuccessItem = ref(null)
-  const isProcessing = ref(false)
+  const runningCount = ref(0)
+  const paused = ref(false)
+
+  const concurrencyLimit = normalizeConcurrency(concurrency)
 
   let disposed = false
   let drainPromise = null
+  let drainResolve = null
+  // 暂停闸门：进行中的分片任务在相邻分片之间 await waitWhilePaused()，暂停时挂起
+  // （不中止已发出的分片请求），恢复 / 取消 / 销毁时放行。
+  const pauseGate = new Set()
 
   const activeItem = computed(
     () => items.value.find((item) => item.id === activeItemId.value) || null
@@ -43,9 +58,30 @@ export function useUploadQueue({ runTask }) {
     Object.assign(target, patch)
   }
 
+  const flushPauseGate = () => {
+    const waiters = [...pauseGate]
+    pauseGate.clear()
+    waiters.forEach((check) => check())
+  }
+
+  // shouldStop 命中（任务被取消 / 队列销毁）时即使仍是暂停态也立即放行，否则被取消的
+  // 在飞任务会一直卡在闸门里，无法进入 abort 补偿路径。
+  const waitWhilePaused = (shouldStop) =>
+    new Promise((resolve) => {
+      const check = () => {
+        if (disposed || !paused.value || (typeof shouldStop === 'function' && shouldStop())) {
+          pauseGate.delete(check)
+          resolve()
+          return
+        }
+        pauseGate.add(check)
+      }
+      check()
+    })
+
   const runSingleItem = async (item) => {
+    runningCount.value += 1
     activeItemId.value = item.id
-    isProcessing.value = true
     item.status = 'uploading'
     item.error = ''
     item.result = null
@@ -60,6 +96,7 @@ export function useUploadQueue({ runTask }) {
           item.cancel = cancelHandler
         },
         isCancelled: () => item.status === 'cancelled' || disposed,
+        waitWhilePaused: () => waitWhilePaused(() => item.status === 'cancelled' || disposed),
       })
 
       if (item.status !== 'cancelled') {
@@ -82,31 +119,56 @@ export function useUploadQueue({ runTask }) {
       if (item.cancel === cancelHandler) {
         item.cancel = null
       }
-      activeItemId.value = ''
-      isProcessing.value = false
+      runningCount.value -= 1
+      // activeItemId 是续传列表刷新的触发源，必须在任务 settle（含 runner 内部
+      // deleteUploadProgress）之后复位。并发下它指向“当前代表的在跑任务”：代表结束时
+      // 移交给另一个仍在上传的任务，全部结束时复位为 ''，保证最后一次 settle 之后必然
+      // 触发一次刷新（见 state-management.md R4）。
+      if (activeItemId.value === item.id) {
+        const nextActive = items.value.find((entry) => entry.status === 'uploading')
+        activeItemId.value = nextActive ? nextActive.id : ''
+      }
     }
   }
 
-  const drainQueue = async () => {
-    if (drainPromise) {
-      return drainPromise
-    }
+  const canStartMore = () => !disposed && !paused.value && runningCount.value < concurrencyLimit
 
-    drainPromise = (async () => {
-      while (!disposed) {
-        const nextItem = items.value.find((item) => item.status === 'queued')
-        if (!nextItem) {
-          break
-        }
-        await runSingleItem(nextItem)
-      }
-    })()
+  const nextQueuedItem = () => items.value.find((item) => item.status === 'queued') || null
 
-    try {
-      await drainPromise
-    } finally {
+  const settleDrainIfIdle = () => {
+    if (runningCount.value === 0 && drainResolve) {
+      const resolve = drainResolve
+      drainResolve = null
       drainPromise = null
+      resolve()
     }
+  }
+
+  // 工作池：每轮尽量填满空闲并发槽。runSingleItem 同步置 uploading 并自增 runningCount，
+  // 故同一轮 while 不会重复取到同一项；任务 settle 后再次 pump 补位。
+  const pump = () => {
+    if (disposed) {
+      settleDrainIfIdle()
+      return
+    }
+    let nextItem = canStartMore() ? nextQueuedItem() : null
+    while (nextItem) {
+      runSingleItem(nextItem).then(pump)
+      nextItem = canStartMore() ? nextQueuedItem() : null
+    }
+    settleDrainIfIdle()
+  }
+
+  const drainQueue = () => {
+    if (!drainPromise) {
+      drainPromise = new Promise((resolve) => {
+        drainResolve = resolve
+      })
+    }
+    // pump 在空闲时会同步 resolve 并把 drainPromise 置空，先捕获当前引用再返回。
+    const current = drainPromise
+    pump()
+    return current
   }
 
   const enqueueFiles = (files = []) => {
@@ -114,6 +176,18 @@ export function useUploadQueue({ runTask }) {
     if (!normalizedFiles.length) return
 
     items.value.push(...normalizedFiles.map((file) => createUploadQueueItem(file)))
+    void drainQueue()
+  }
+
+  const pause = () => {
+    if (paused.value) return
+    paused.value = true
+  }
+
+  const resume = () => {
+    if (!paused.value) return
+    paused.value = false
+    flushPauseGate()
     void drainQueue()
   }
 
@@ -127,8 +201,10 @@ export function useUploadQueue({ runTask }) {
 
     if (typeof item.cancel === 'function') {
       item.cancel()
-      return
     }
+
+    // 若任务此刻卡在暂停闸门，唤醒它重新判定 shouldStop → 立即放行进入取消补偿。
+    flushPauseGate()
   }
 
   const retryItem = (itemId) => {
@@ -176,10 +252,12 @@ export function useUploadQueue({ runTask }) {
 
   const dispose = () => {
     disposed = true
-    const current = activeItem.value
-    if (current && current.status === 'uploading') {
-      current.status = 'cancelled'
-      current.cancel?.()
+    flushPauseGate()
+    for (const item of items.value) {
+      if (item.status === 'uploading') {
+        item.status = 'cancelled'
+        item.cancel?.()
+      }
     }
   }
 
@@ -188,8 +266,11 @@ export function useUploadQueue({ runTask }) {
     activeItemId,
     activeItem,
     latestSuccessItem,
-    isUploading: computed(() => isProcessing.value),
+    paused: computed(() => paused.value),
+    isUploading: computed(() => runningCount.value > 0),
     enqueueFiles,
+    pause,
+    resume,
     cancelItem,
     retryItem,
     removeItem,

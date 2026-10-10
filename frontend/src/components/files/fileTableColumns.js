@@ -1,5 +1,5 @@
 import { h } from 'vue'
-import { Info, Pencil, RotateCcw, Share2, Trash, Trash2 } from 'lucide-vue-next'
+import { FolderInput, Info, Pencil, RotateCcw, Share2, Trash, Trash2 } from 'lucide-vue-next'
 import Button from '../ui/button/Button.vue'
 import Tag from '../ui/tag/Tag.vue'
 import TableCellText from '../ui/table/TableCellText.vue'
@@ -34,6 +34,7 @@ export function buildFilesTableColumns({
   onRestoreFile = () => {},
   onDeletePermanent = () => {},
   onRenameFile = () => {},
+  onMoveFile = () => {},
 } = {}) {
   const translate = typeof t === 'function' ? t : (key) => key
   const selectedKeys = selectedIdSet instanceof Set ? selectedIdSet : new Set()
@@ -183,6 +184,19 @@ export function buildFilesTableColumns({
             () => [
               h(Pencil, { size: 16, style: 'margin-right: 4px' }),
               translate('files.rename.action'),
+            ]
+          ),
+          h(
+            Button,
+            {
+              size: 'small',
+              type: 'default',
+              disabled: renameDisabled,
+              onClick: () => onMoveFile(row),
+            },
+            () => [
+              h(FolderInput, { size: 16, style: 'margin-right: 4px' }),
+              translate('files.move.action'),
             ]
           ),
           h(

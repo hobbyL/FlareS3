@@ -41,6 +41,7 @@ export default {
     hoursOnly: '{value} 小时',
     queue: {
       title: '上传队列',
+      paused: '已暂停',
       status: {
         queued: '队列中',
         uploading: '上传中',
@@ -52,6 +53,8 @@ export default {
         cancel: '取消',
         retry: '重试',
         remove: '移除',
+        pause: '暂停',
+        resume: '恢复',
       },
     },
     resume: {

@@ -159,7 +159,7 @@ export function createUploadTaskRunner({ api, t, onUploaded }) {
     return resolveTaskResult(taskFile, response, confirmResult, taskState)
   }
 
-  const uploadLargeFile = async (taskFile, taskState, updateItem, isCancelled) => {
+  const uploadLargeFile = async (taskFile, taskState, updateItem, isCancelled, waitWhilePaused) => {
     const fileId = generateFileId(taskFile.rawFile)
     let serverFileId = ''
     let resumeProgress = null
@@ -240,6 +240,12 @@ export function createUploadTaskRunner({ api, t, onUploaded }) {
 
       for (let partIndex = 0; partIndex < total_parts; partIndex += 1) {
         ensureTaskActive(taskState, isCancelled)
+        // 暂停闸门：跑完当前分片后、取下一分片前挂起（分片级暂停）。
+        // 暂停期间不中止已发出的分片请求；恢复 / 取消 / 销毁时放行。
+        if (typeof waitWhilePaused === 'function') {
+          await waitWhilePaused()
+          ensureTaskActive(taskState, isCancelled)
+        }
         const partNumber = partIndex + 1
 
         // 跳过已上传的分片
@@ -379,7 +385,10 @@ export function createUploadTaskRunner({ api, t, onUploaded }) {
     return resolveTaskResult(taskFile, result, result, taskState)
   }
 
-  return async (item, { updateItem, setCancel, isCancelled }) => {
+  return async (
+    item,
+    { updateItem, setCancel, isCancelled, waitWhilePaused = () => Promise.resolve() }
+  ) => {
     const taskFile = item.file
     const taskState = createTaskState()
     updateItem({
@@ -397,7 +406,7 @@ export function createUploadTaskRunner({ api, t, onUploaded }) {
           ? await uploadServerFile(taskFile, taskState, updateItem)
           : taskFile.size < MULTIPART_THRESHOLD
             ? await uploadSmallFile(taskFile, taskState, updateItem, isCancelled)
-            : await uploadLargeFile(taskFile, taskState, updateItem, isCancelled)
+            : await uploadLargeFile(taskFile, taskState, updateItem, isCancelled, waitWhilePaused)
       onUploaded(taskFile)
       return result
     } catch (error) {

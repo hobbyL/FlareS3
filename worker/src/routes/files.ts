@@ -18,7 +18,8 @@ import { logAudit, prepareAuditLogInsert } from '../services/audit'
 import { createProvider } from '../services/storage/factory'
 import { StorageError, type StorageProvider } from '../services/storage/types'
 import { R2Provider } from '../services/storage/r2-provider'
-import { normalizeStorageFilename } from '../services/storage/pathPolicy'
+import { normalizeStorageFilename, normalizeStoragePath } from '../services/storage/pathPolicy'
+import { extractDirFromR2Key } from '../utils/r2Dir'
 import { prepareEnqueueFileDeletionIfNeeded } from '../services/deleteQueue'
 import { getClientIp } from '../middleware/rateLimit'
 import { prepareReleaseUploadReservation } from '../services/uploadReservations'
@@ -786,6 +787,31 @@ function buildRenamedR2Key(r2Key: string, newFilename: string): string {
   return `${prefix}${newFilename}`
 }
 
+// 仅结构化前缀（`<prefix>/<configId>/...`）支持目录移动；legacy / 未知前缀的
+// key 没有稳定的 configId 段与目录位，移动语义不成立。
+const MOVE_SUPPORTED_PREFIXES = new Set(['flares3', 'storage'])
+
+/**
+ * 从既有 r2_key 推导「移动到目标目录」后的 key：保留 `<prefix>/<configId>` 两段
+ * 与尾段文件名，替换中间的目录部分为 targetDir（空=根）。
+ *
+ * targetDir 必须是已校验、无首尾斜杠的目录（见 normalizeStoragePath）。
+ * 对 `flares3/<configId>/<dir?>/<name>` 与 `storage/<configId>/<dir?>/<name>` 成立；
+ * 结构不符（段数不足 / 未知前缀）返回 null，由调用方拒绝。
+ */
+function buildMovedR2Key(r2Key: string, targetDir: string): string | null {
+  const parts = String(r2Key ?? '')
+    .split('/')
+    .filter(Boolean)
+  if (parts.length < 3) return null
+  if (!MOVE_SUPPORTED_PREFIXES.has(parts[0])) return null
+  const prefix = parts[0]
+  const configSeg = parts[1]
+  const filename = parts[parts.length - 1]
+  const dirPart = targetDir ? `${targetDir}/` : ''
+  return `${prefix}/${configSeg}/${dirPart}${filename}`
+}
+
 /**
  * 重命名文件（更新 D1 登记记录与存储 key 尾段）
  *
@@ -975,6 +1001,373 @@ export async function renameFile(request: Request, env: Env, fileId: string): Pr
   }
 
   return jsonResponse({ success: true, filename: nameResult.key, r2_key: newKey })
+}
+
+/**
+ * 移动文件到目标目录（库模式目录化视图）
+ *
+ * 复用 rename 的「先远端后 DB + 状态守卫 batch」模式：保留 r2_key 的
+ * `<prefix>/<configId>` 两段与文件名，仅替换中间目录段为目标目录（空=根）。
+ * 仅支持同 config 内移动（key 结构化前缀 flares3 / storage）；legacy / 未知
+ * 前缀的 key 无稳定目录位，返回 409 拒绝。
+ *
+ * @route POST /api/files/:id/move
+ * @param request - HTTP 请求对象（需要认证；body `{ dir: string }`，dir 空=根）
+ * @param env - Cloudflare Workers 环境变量
+ * @param fileId - 文件 ID
+ * @returns JSON 响应，包含操作结果
+ *
+ * @example
+ * // 成功响应 (200)
+ * { "success": true, "r2_key": "flares3/cfg/images/a.png", "dir": "images" }
+ *
+ * // 请求体非法 JSON (400)
+ * { "error": "请求格式错误" }
+ *
+ * // 目标目录非法（含穿越、反斜杠、控制字符等）(400)
+ * { "error": "路径不能包含 . 或 .." }
+ *
+ * // 文件不存在 (404)
+ * { "error": "文件不存在" }
+ *
+ * // 无权限 (403)
+ * { "error": "无权限" }
+ *
+ * // 文件未完成上传 / 状态不符 (409)
+ * { "error": "仅完成上传的文件可移动" }
+ *
+ * // 目标目录与当前目录相同 (400)
+ * { "error": "目标目录与当前目录相同" }
+ *
+ * // 文件存储结构不支持目录移动（legacy / 未知前缀）(409)
+ * { "error": "该文件的存储结构不支持移动到目录" }
+ *
+ * // 同名文件已存在（D1 记录或远端对象占用）(409)
+ * { "error": "同名文件已存在" }
+ *
+ * // 文件对象在远端不存在 (409)
+ * { "error": "文件对象不存在，无法移动" }
+ *
+ * // 并发状态下守卫 UPDATE 未命中 (409)
+ * { "error": "文件状态已变化，请刷新后重试" }
+ *
+ * // 对象超过 R2 复制上限 (413)
+ * { "error": "文件过大，超过 R2 复制上限（5GiB），请删除后重新上传到目标目录" }
+ *
+ * // 存储配置未找到 (503)
+ * { "error": "存储配置未找到" }
+ *
+ * // 上游存储失败 (502)
+ * { "error": "文件移动失败：上游存储服务暂时不可用" }
+ */
+export async function moveFile(request: Request, env: Env, fileId: string): Promise<Response> {
+  const user = getUser(request)
+  if (!user) return jsonResponse({ error: '未授权' }, 401)
+
+  let rawDir = ''
+  try {
+    const body = await parseJson<{ dir?: string }>(request)
+    rawDir = String(body.dir ?? '')
+  } catch (error) {
+    return invalidJsonBodyResponse(error, '请求格式错误')
+  }
+
+  // 目标目录校验：显式拒绝穿越 / 非法段（不用 normalizeDirParam 的静默归根）
+  const dirResult = normalizeStoragePath(rawDir, { allowEmpty: true, allowTrailingSlash: true })
+  if (!dirResult.ok) {
+    return jsonResponse({ error: dirResult.message }, 400)
+  }
+  const targetDir = dirResult.key.replace(/\/+$/, '')
+
+  const file = await withD1Retry(env.DB)
+    .prepare(
+      'SELECT id, owner_id, filename, r2_key, size, upload_status, deleted_at, config_id FROM files WHERE id = ? LIMIT 1'
+    )
+    .bind(fileId)
+    .first()
+
+  if (!file) {
+    return jsonResponse({ error: '文件不存在' }, 404)
+  }
+  if (user.role !== 'admin' && file.owner_id !== user.id) {
+    return jsonResponse({ error: '无权限' }, 403)
+  }
+  if (file.upload_status !== 'completed' || file.deleted_at) {
+    return jsonResponse({ error: '仅完成上传的文件可移动' }, 409)
+  }
+
+  const oldKey = String(file.r2_key)
+  const newKey = buildMovedR2Key(oldKey, targetDir)
+  if (!newKey) {
+    return jsonResponse({ error: '该文件的存储结构不支持移动到目录' }, 409)
+  }
+  if (newKey === oldKey) {
+    return jsonResponse({ error: '目标目录与当前目录相同' }, 400)
+  }
+
+  // D1 占用检查（files.r2_key UNIQUE，对齐 rename 的 occupied 检查；排除自身）
+  const occupied = await withD1Retry(env.DB)
+    .prepare('SELECT id FROM files WHERE r2_key = ? AND id != ? LIMIT 1')
+    .bind(newKey, fileId)
+    .first('id')
+  if (occupied) {
+    return jsonResponse({ error: '同名文件已存在' }, 409)
+  }
+
+  // 解析存储 provider：显式 provider 配置（storage/<configId>/...）或 legacy R2 key
+  let provider: StorageProvider | null = null
+  const explicitProviderConfigId = getExplicitProviderConfigId(file)
+  if (explicitProviderConfigId) {
+    provider = await createProvider(env, explicitProviderConfigId)
+    if (!provider) return jsonResponse({ error: '存储配置未找到' }, 503)
+  } else {
+    const loaded = await resolveR2ConfigForKey(env, oldKey)
+    if (!loaded) return jsonResponse({ error: '存储配置未找到' }, 503)
+    provider = new R2Provider(loaded.config)
+  }
+
+  // 远端占用检查
+  try {
+    const destExists = await provider.checkExists(newKey)
+    if (destExists) {
+      return jsonResponse({ error: '同名文件已存在' }, 409)
+    }
+  } catch (error) {
+    return jsonResponse({ error: `文件移动校验失败：${formatUpstreamFetchError(error)}` }, 502)
+  }
+
+  // 先远端后 DB：move 成功才落库
+  try {
+    await provider.move(oldKey, newKey, { size: Number(file.size) })
+  } catch (error) {
+    if (isRenameEntityTooLargeError(error)) {
+      return jsonResponse(
+        { error: '文件过大，超过 R2 复制上限（5GiB），请删除后重新上传到目标目录' },
+        413
+      )
+    }
+    if (isRenameObjectMissingError(error)) {
+      return jsonResponse({ error: '文件对象不存在，无法移动' }, 409)
+    }
+    return jsonResponse({ error: `文件移动失败：${formatUpstreamFetchError(error)}` }, 502)
+  }
+
+  // 带守卫的单 batch：状态被并发变更（删除/回收站）时 0 行命中。
+  // 移动仅改 r2_key，filename 不变。
+  const now = new Date().toISOString()
+  const oldDir = extractDirFromR2Key(oldKey, file.config_id)
+  const [updateResult] = await withD1Retry(env.DB).batch([
+    withD1Retry(env.DB)
+      .prepare(
+        "UPDATE files SET r2_key = ? WHERE id = ? AND upload_status = 'completed' AND deleted_at IS NULL"
+      )
+      .bind(newKey, fileId),
+    prepareAuditLogInsert(
+      env.DB,
+      {
+        actorUserId: user.id,
+        action: 'FILE_MOVE',
+        targetType: 'file',
+        targetId: fileId,
+        ip: getClientIp(request),
+        userAgent: request.headers.get('User-Agent') || undefined,
+        metadata: {
+          oldKey,
+          newKey,
+          oldDir,
+          newDir: targetDir,
+        },
+      },
+      now
+    ),
+  ])
+
+  if (!updateResult?.meta?.changes) {
+    // 远端已 move 但 DB 未推进：warn 记录残留，与 rename 守卫失败语义一致
+    console.warn('[files] move: remote object moved but guarded update missed', {
+      fileId,
+      oldKey,
+      newKey,
+    })
+    return jsonResponse({ error: '文件状态已变化，请刷新后重试' }, 409)
+  }
+
+  return jsonResponse({ success: true, r2_key: newKey, dir: targetDir })
+}
+
+/**
+ * 新建空目录（库模式）
+ *
+ * 目录视图默认完全派生自 files.r2_key；无文件的目录派生不出来。此接口向
+ * file_dirs 登记一条「空目录」，使其在目录视图可见、可作为上传目标。首个文件
+ * 上传进该目录后由前缀聚合接管，登记行成为冗余（可经「删除空目录」清理）。
+ *
+ * 幂等：重复登记（owner_id+dir 唯一）命中 OR IGNORE，changes=0 仍返回成功。
+ * 目录经 normalizeStoragePath 清洗（拒绝反斜杠/控制字符/`.`/`..`/前导斜杠/空段），
+ * 去尾斜杠后不得为空（根目录不入表）。owner 恒为当前登录用户。
+ *
+ * @route POST /api/files/dirs
+ * @param request - HTTP 请求对象（body: { dir: string }）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns 登记结果或错误响应
+ *
+ * @example
+ * // 成功响应 (200)
+ * { "success": true, "dir": "docs/2024" }
+ *
+ * // 目录为空或非法 (400)
+ * { "error": "目录不能为空" }
+ *
+ * // 未登录 (401)
+ * { "error": "未授权" }
+ */
+export async function createFileDir(request: Request, env: Env): Promise<Response> {
+  const user = getUser(request)
+  if (!user) return jsonResponse({ error: '未授权' }, 401)
+
+  let rawDir = ''
+  try {
+    const body = await parseJson<{ dir?: string }>(request)
+    rawDir = String(body.dir ?? '')
+  } catch (error) {
+    return invalidJsonBodyResponse(error, '请求格式错误')
+  }
+
+  // 复用 move 的清洗口径：显式拒绝穿越/非法段，不静默归根
+  const dirResult = normalizeStoragePath(rawDir, { allowEmpty: true, allowTrailingSlash: true })
+  if (!dirResult.ok) {
+    return jsonResponse({ error: dirResult.message }, 400)
+  }
+  const dir = dirResult.key.replace(/\/+$/, '')
+  if (!dir) {
+    return jsonResponse({ error: '目录不能为空' }, 400)
+  }
+
+  // INSERT OR IGNORE 幂等；登记 + 审计作单 batch 语义写入（对齐 move 口径）。
+  // owner 恒为当前用户，满足 file_dirs owner 存在性 trigger 护栏。
+  const now = new Date().toISOString()
+  await withD1Retry(env.DB).batch([
+    withD1Retry(env.DB)
+      .prepare(
+        'INSERT OR IGNORE INTO file_dirs (id, owner_id, dir, created_at) VALUES (?, ?, ?, ?)'
+      )
+      .bind(crypto.randomUUID(), user.id, dir, now),
+    prepareAuditLogInsert(
+      env.DB,
+      {
+        actorUserId: user.id,
+        action: 'FILE_DIR_CREATE',
+        targetType: 'file_dir',
+        targetId: dir,
+        ip: getClientIp(request),
+        userAgent: request.headers.get('User-Agent') || undefined,
+        metadata: { dir },
+      },
+      now
+    ),
+  ])
+
+  return jsonResponse({ success: true, dir })
+}
+
+/**
+ * 删除空目录登记（库模式）
+ *
+ * 仅删除 file_dirs 中的「空目录」登记行，不触碰任何文件对象。删除前校验目录
+ * 「真空」：扫描当前用户已完成、未删除的文件（口径同 /api/files/dirs 的内存聚合，
+ * 用 extractDirFromR2Key 派生目录），若存在落在该目录或其子目录下的文件 → 409。
+ *
+ * 删除 + 审计作单 batch；登记不存在（changes=0）→ 404。owner 恒为当前登录用户。
+ *
+ * @route DELETE /api/files/dirs
+ * @param request - HTTP 请求对象（body: { dir: string }）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns 删除结果或错误响应
+ *
+ * @example
+ * // 成功响应 (200)
+ * { "success": true, "dir": "docs/2024" }
+ *
+ * // 目录为空或非法 (400)
+ * { "error": "目录不能为空" }
+ *
+ * // 未登录 (401)
+ * { "error": "未授权" }
+ *
+ * // 目录登记不存在 (404)
+ * { "error": "目录不存在" }
+ *
+ * // 目录非空 (409)
+ * { "error": "目录非空" }
+ */
+export async function deleteFileDir(request: Request, env: Env): Promise<Response> {
+  const user = getUser(request)
+  if (!user) return jsonResponse({ error: '未授权' }, 401)
+
+  let rawDir = ''
+  try {
+    const body = await parseJson<{ dir?: string }>(request)
+    rawDir = String(body.dir ?? '')
+  } catch (error) {
+    return invalidJsonBodyResponse(error, '请求格式错误')
+  }
+
+  const dirResult = normalizeStoragePath(rawDir, { allowEmpty: true, allowTrailingSlash: true })
+  if (!dirResult.ok) {
+    return jsonResponse({ error: dirResult.message }, 400)
+  }
+  const dir = dirResult.key.replace(/\/+$/, '')
+  if (!dir) {
+    return jsonResponse({ error: '目录不能为空' }, 400)
+  }
+
+  // 真空校验：扫描 owner 的完成态在册文件并派生目录（口径同 listFileDirs 内存聚合）。
+  // 命中该目录或其子目录即视为非空。扫描上限与 listFileDirs 一致（超限截断属非 P0；
+  // 对删除而言误判为空只会删掉冗余登记行，目录仍由文件派生可见，无数据损坏）。
+  const EMPTINESS_SCAN_MAX_ROWS = 5000
+  const rows = await withD1Retry(env.DB)
+    .prepare(
+      "SELECT r2_key, config_id FROM files WHERE owner_id = ? AND upload_status = 'completed' AND deleted_at IS NULL LIMIT ?"
+    )
+    .bind(user.id, EMPTINESS_SCAN_MAX_ROWS)
+    .all()
+  const prefix = `${dir}/`
+  for (const row of rows.results || []) {
+    const fileDir = extractDirFromR2Key(
+      (row as { r2_key?: unknown }).r2_key,
+      (row as { config_id?: unknown }).config_id
+    )
+    if (fileDir === dir || fileDir.startsWith(prefix)) {
+      return jsonResponse({ error: '目录非空' }, 409)
+    }
+  }
+
+  // 删除 + 审计单 batch（对齐 move：batch 内审计即使 guard 未命中亦落库）
+  const now = new Date().toISOString()
+  const [deleteResult] = await withD1Retry(env.DB).batch([
+    withD1Retry(env.DB)
+      .prepare('DELETE FROM file_dirs WHERE owner_id = ? AND dir = ?')
+      .bind(user.id, dir),
+    prepareAuditLogInsert(
+      env.DB,
+      {
+        actorUserId: user.id,
+        action: 'FILE_DIR_DELETE',
+        targetType: 'file_dir',
+        targetId: dir,
+        ip: getClientIp(request),
+        userAgent: request.headers.get('User-Agent') || undefined,
+        metadata: { dir },
+      },
+      now
+    ),
+  ])
+
+  if (!deleteResult?.meta?.changes) {
+    return jsonResponse({ error: '目录不存在' }, 404)
+  }
+
+  return jsonResponse({ success: true, dir })
 }
 
 /**

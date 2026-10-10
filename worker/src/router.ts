@@ -388,6 +388,24 @@ router.get(
     )
   )
 )
+router.post(
+  '/api/files/dirs',
+  withAuth(
+    lazyRoute(
+      () => import('./routes/files'),
+      (module, request, env) => module.createFileDir(request, env)
+    )
+  )
+)
+router.delete(
+  '/api/files/dirs',
+  withAuth(
+    lazyRoute(
+      () => import('./routes/files'),
+      (module, request, env) => module.deleteFileDir(request, env)
+    )
+  )
+)
 router.get(
   '/api/files/trash',
   withAuth(
@@ -457,6 +475,15 @@ router.post(
     lazyRoute(
       () => import('./routes/files'),
       (module, request, env) => module.renameFile(request, env, (request as any).params.id)
+    )
+  )
+)
+router.post(
+  '/api/files/:id/move',
+  withAuth(
+    lazyRoute(
+      () => import('./routes/files'),
+      (module, request, env) => module.moveFile(request, env, (request as any).params.id)
     )
   )
 )

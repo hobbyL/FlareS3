@@ -40,6 +40,29 @@
           @navigate="navigateDir"
         />
 
+        <div v-if="!isTrashMode" class="files-dir-actions">
+          <Button
+            type="default"
+            size="small"
+            :disabled="filesStore.loading || deleting || deletingDir"
+            @click="openNewFolderModal"
+          >
+            <FolderPlus :size="16" />
+            <span class="files-dir-actions-label">{{ t('files.newFolder') }}</span>
+          </Button>
+          <Button
+            v-if="canDeleteCurrentDir"
+            type="default"
+            size="small"
+            :loading="deletingDir"
+            :disabled="filesStore.loading || deleting"
+            @click="openDeleteDirModal"
+          >
+            <Trash2 :size="16" />
+            <span class="files-dir-actions-label">{{ t('files.deleteDir') }}</span>
+          </Button>
+        </div>
+
         <FilesBatchActionBar
           :count="selectedFilesCount"
           :is-trash-mode="isTrashMode"
@@ -86,6 +109,7 @@
             @show-info="showFileInfo"
             @share="showFileShare"
             @rename="showFileRename"
+            @move="showFileMove"
             @delete="handleDelete"
             @restore="handleRestore"
             @delete-permanent="handleDeletePermanent"
@@ -100,6 +124,7 @@
       <FileUploadModal
         v-if="showUploadModal"
         v-model:show="showUploadModal"
+        :initial-dir="filters.dir"
         @uploaded="handleUploaded"
       />
 
@@ -119,6 +144,72 @@
         @cancel="closeRenameModal"
         @confirm="handleRenameConfirm"
       />
+
+      <FileMoveModal
+        v-if="showMoveModal"
+        :show="showMoveModal"
+        :source-name="movingFilename"
+        :source-dir="movingDir"
+        :dirs="fileDirs"
+        :loading="moving"
+        @update:show="handleMoveModalUpdate"
+        @cancel="closeMoveModal"
+        @confirm="handleMoveConfirm"
+      />
+
+      <Modal
+        :show="showNewFolderModal"
+        :title="t('files.newFolderTitle')"
+        width="420px"
+        @update:show="handleNewFolderModalUpdate"
+      >
+        <div class="files-new-folder-form">
+          <label class="files-new-folder-label" for="files-new-folder-name">
+            {{ t('files.newFolderLabel') }}
+          </label>
+          <Input
+            id="files-new-folder-name"
+            :model-value="newFolderName"
+            :placeholder="t('files.newFolderPlaceholder')"
+            size="small"
+            @update:model-value="newFolderName = String($event || '')"
+            @keyup.enter="handleNewFolderConfirm"
+          />
+          <p class="files-new-folder-hint">{{ newFolderParentText }}</p>
+        </div>
+        <template #footer>
+          <Button type="default" :disabled="creatingFolder" @click="closeNewFolderModal">
+            {{ t('common.cancel') }}
+          </Button>
+          <Button
+            type="primary"
+            :loading="creatingFolder"
+            :disabled="!newFolderName.trim()"
+            @click="handleNewFolderConfirm"
+          >
+            {{ t('files.newFolder') }}
+          </Button>
+        </template>
+      </Modal>
+
+      <Modal
+        :show="showDeleteDirModal"
+        :title="t('files.deleteDirTitle')"
+        width="420px"
+        @update:show="handleDeleteDirModalUpdate"
+      >
+        <p class="files-delete-confirm">
+          {{ t('files.deleteDirConfirm', { dir: filters.dir }) }}
+        </p>
+        <template #footer>
+          <Button type="default" :disabled="deletingDir" @click="closeDeleteDirModal">
+            {{ t('common.cancel') }}
+          </Button>
+          <Button type="danger" :loading="deletingDir" @click="handleDeleteDirConfirm">
+            {{ t('files.deleteDir') }}
+          </Button>
+        </template>
+      </Modal>
 
       <Modal
         :show="showDeleteModal"
@@ -163,6 +254,7 @@
 <script setup>
 import { ref, onMounted, computed, watch, defineAsyncComponent } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { FolderPlus, Trash2 } from 'lucide-vue-next'
 import { useAuthStore } from '../stores/auth'
 import { useFilesStore } from '../stores/files'
 import { useThemeStore } from '../stores/theme'
@@ -175,6 +267,7 @@ import FilesDirBreadcrumb from '../components/files/FilesDirBreadcrumb.vue'
 import { buildFilesTableColumns } from '../components/files/fileTableColumns.js'
 import FilesTableView from '../components/files/FilesTableView.vue'
 import Button from '../components/ui/button/Button.vue'
+import Input from '../components/ui/input/Input.vue'
 import Modal from '../components/ui/modal/Modal.vue'
 import PageSkeleton from '../components/ui/skeleton/PageSkeleton.vue'
 import { useMessage } from '../composables/useMessage'
@@ -185,6 +278,8 @@ import {
   canManageFileShare,
   isFileDeleted,
   getParentDir,
+  extractFileDir,
+  collectChildDirs,
 } from '../utils/files.js'
 
 const FilesCardView = defineAsyncComponent(() => import('../components/files/FilesCardView.vue'))
@@ -196,6 +291,7 @@ const FileShareModal = defineAsyncComponent(() => import('../components/files/Fi
 const FileRenameModal = defineAsyncComponent(
   () => import('../components/files/FileRenameModal.vue')
 )
+const FileMoveModal = defineAsyncComponent(() => import('../components/files/FileMoveModal.vue'))
 
 const authStore = useAuthStore()
 const filesStore = useFilesStore()
@@ -270,6 +366,185 @@ const handleRenameConfirm = async () => {
     message.error(error.response?.data?.error || t('files.messages.renameFailed'))
   } finally {
     renaming.value = false
+  }
+}
+
+// ── 移动到目录 ──
+
+const showMoveModal = ref(false)
+const moving = ref(false)
+const movingFileId = ref('')
+const movingFilename = ref('')
+const movingDir = ref('')
+
+const canMoveFile = (row) =>
+  Boolean(row) && row.upload_status === 'completed' && !isFileDeleted(row)
+
+const showFileMove = (row) => {
+  if (!canMoveFile(row)) return
+  if (deleting.value || moving.value) return
+
+  movingFileId.value = String(row.id ?? '')
+  movingFilename.value = String(row.filename ?? '')
+  // 文件当前目录来自自身 r2_key（根视图下同列表可含不同目录的文件）
+  movingDir.value = extractFileDir(row.r2_key)
+  showMoveModal.value = true
+}
+
+const closeMoveModal = () => {
+  if (moving.value) return
+  showMoveModal.value = false
+  movingFileId.value = ''
+  movingFilename.value = ''
+  movingDir.value = ''
+}
+
+const handleMoveModalUpdate = (nextValue) => {
+  if (moving.value) return
+  if (!nextValue) {
+    closeMoveModal()
+    return
+  }
+  showMoveModal.value = true
+}
+
+const handleMoveConfirm = async ({ toDir } = {}) => {
+  if (moving.value) return
+  const fileId = String(movingFileId.value || '').trim()
+  if (!fileId) return
+  const targetDir = String(toDir || '')
+
+  moving.value = true
+  try {
+    await api.moveFile(fileId, targetDir)
+    message.success(
+      targetDir
+        ? t('files.messages.moveSuccess', { dir: targetDir })
+        : t('files.messages.moveSuccessRoot')
+    )
+    showMoveModal.value = false
+    movingFileId.value = ''
+    movingFilename.value = ''
+    movingDir.value = ''
+    await loadFiles()
+    // 目录集合可能因此变化（目标目录可能是新目录）
+    loadFileDirs()
+  } catch (error) {
+    message.error(error.response?.data?.error || t('files.messages.moveFailed'))
+  } finally {
+    moving.value = false
+  }
+}
+
+// ── 新建 / 删除空目录（库模式） ──
+
+const showNewFolderModal = ref(false)
+const creatingFolder = ref(false)
+const newFolderName = ref('')
+const showDeleteDirModal = ref(false)
+const deletingDir = ref(false)
+
+const newFolderParentText = computed(() =>
+  filters.value.dir
+    ? t('files.newFolderHint', { dir: filters.value.dir })
+    : t('files.newFolderHintRoot')
+)
+
+// 当前目录「真空」才提供删除：无文件（total=0）且无子目录
+const currentChildDirs = computed(() => collectChildDirs(filters.value.dir, fileDirs.value))
+const canDeleteCurrentDir = computed(
+  () =>
+    !isTrashMode.value &&
+    Boolean(filters.value.dir) &&
+    Number(filesStore.total || 0) === 0 &&
+    currentChildDirs.value.length === 0
+)
+
+const openNewFolderModal = () => {
+  if (filesStore.loading || deleting.value || deletingDir.value) return
+  newFolderName.value = ''
+  showNewFolderModal.value = true
+}
+
+const closeNewFolderModal = () => {
+  if (creatingFolder.value) return
+  showNewFolderModal.value = false
+  newFolderName.value = ''
+}
+
+const handleNewFolderModalUpdate = (nextValue) => {
+  if (creatingFolder.value) return
+  if (!nextValue) {
+    closeNewFolderModal()
+    return
+  }
+  showNewFolderModal.value = true
+}
+
+const handleNewFolderConfirm = async () => {
+  if (creatingFolder.value) return
+  const name = String(newFolderName.value || '').trim()
+  if (!name) return
+  // 在当前目录下创建；完整路径交后端归一化（拒绝穿越/非法字符）
+  const fullDir = filters.value.dir ? `${filters.value.dir}/${name}` : name
+
+  creatingFolder.value = true
+  try {
+    const result = await api.createFileDir(fullDir)
+    message.success(t('files.messages.folderCreated'))
+    showNewFolderModal.value = false
+    newFolderName.value = ''
+    // 刷新目录树后进入新目录（展示空目录视图）
+    await loadFileDirs()
+    navigateDir(String(result?.dir || fullDir))
+  } catch (error) {
+    message.error(error.response?.data?.error || t('files.messages.folderCreateFailed'))
+  } finally {
+    creatingFolder.value = false
+  }
+}
+
+const openDeleteDirModal = () => {
+  if (!canDeleteCurrentDir.value) return
+  if (filesStore.loading || deleting.value || deletingDir.value) return
+  showDeleteDirModal.value = true
+}
+
+const closeDeleteDirModal = () => {
+  if (deletingDir.value) return
+  showDeleteDirModal.value = false
+}
+
+const handleDeleteDirModalUpdate = (nextValue) => {
+  if (deletingDir.value) return
+  if (!nextValue) {
+    closeDeleteDirModal()
+    return
+  }
+  showDeleteDirModal.value = true
+}
+
+const handleDeleteDirConfirm = async () => {
+  if (deletingDir.value) return
+  const dir = String(filters.value.dir || '')
+  if (!dir) return
+
+  deletingDir.value = true
+  try {
+    await api.deleteFileDir(dir)
+    message.success(t('files.messages.deleteDirSuccess'))
+    showDeleteDirModal.value = false
+    // 删除后回到上级目录并刷新目录树
+    const parent = getParentDir(dir)
+    await loadFileDirs()
+    navigateDir(parent)
+  } catch (error) {
+    const status = error.response?.status
+    const fallback =
+      status === 409 ? t('files.messages.dirNotEmpty') : t('files.messages.deleteDirFailed')
+    message.error(error.response?.data?.error || fallback)
+  } finally {
+    deletingDir.value = false
   }
 }
 
@@ -417,6 +692,7 @@ const columns = computed(() =>
     onRestoreFile: handleRestore,
     onDeletePermanent: handleDeletePermanent,
     onRenameFile: showFileRename,
+    onMoveFile: showFileMove,
   })
 )
 
@@ -478,7 +754,7 @@ const loadFileDirs = async () => {
     if (authStore.isAdmin && filters.value.owner_id) {
       params.owner_id = filters.value.owner_id
     }
-    const { data } = await api.getFileDirs(params)
+    const data = await api.getFileDirs(params)
     fileDirs.value = Array.isArray(data?.dirs) ? data.dirs : []
   } catch (error) {
     fileDirs.value = []
@@ -886,6 +1162,35 @@ watch(
 .files-delete-confirm {
   margin: 0;
   color: var(--nb-muted-foreground, var(--nb-gray-600));
+}
+
+.files-dir-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--nb-space-sm);
+}
+
+.files-dir-actions-label {
+  margin-left: 6px;
+}
+
+.files-new-folder-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nb-space-xs);
+}
+
+.files-new-folder-label {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--nb-ink);
+}
+
+.files-new-folder-hint {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--nb-muted-foreground, var(--nb-gray-600));
+  word-break: break-all;
 }
 
 @media (max-width: 768px) {

@@ -111,9 +111,12 @@
       v-if="queueItems.length > 0"
       class="upload-queue-block"
       :items="queueItems"
+      :paused="isPaused"
       @cancel="cancelQueueItem"
       @retry="retryQueueItem"
       @remove="removeQueueItem"
+      @pause="pauseQueue"
+      @resume="resumeQueue"
     />
 
     <UploadResultPanel
@@ -151,6 +154,15 @@ import { generateFileId } from '../../utils/uploadResume.js'
 
 const emit = defineEmits(['uploaded'])
 
+const props = defineProps({
+  // 从 Files 页面当前目录预填上传目录；用户可改可清空（清空=根目录）。
+  // Mount 页面不走此面板，保持不预填。
+  initialDir: {
+    type: String,
+    default: '',
+  },
+})
+
 const message = useMessage()
 const { t, locale } = useI18n({ useScope: 'global' })
 
@@ -160,7 +172,7 @@ const resumeInputRef = ref(null)
 const pendingResumeFileId = ref('')
 const expiresIn = ref(7)
 const requireLogin = ref(true)
-const uploadDir = ref('')
+const uploadDir = ref(String(props.initialDir || ''))
 const customShortCode = ref('')
 
 const {
@@ -220,6 +232,7 @@ const uploadQueue = useUploadQueue({
 
 const queueItems = computed(() => uploadQueue.items.value)
 const latestSuccessResult = computed(() => uploadQueue.latestSuccessItem.value?.result || null)
+const isPaused = uploadQueue.paused
 
 // 已在队列里排队/上传中的文件不重复出现在续传列表
 const activeQueueFileIds = computed(() => {
@@ -359,6 +372,14 @@ const retryQueueItem = (itemId) => {
 
 const removeQueueItem = (itemId) => {
   uploadQueue.removeItem(itemId)
+}
+
+const pauseQueue = () => {
+  uploadQueue.pause()
+}
+
+const resumeQueue = () => {
+  uploadQueue.resume()
 }
 
 const copyShortUrl = () => {

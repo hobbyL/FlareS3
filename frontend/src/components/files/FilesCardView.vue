@@ -82,6 +82,17 @@
                     <Pencil :size="18" />
                   </Button>
                 </Tooltip>
+                <Tooltip :content="t('files.move.action')">
+                  <Button
+                    type="ghost"
+                    size="small"
+                    class="icon-btn"
+                    :disabled="loading || isFileDeleted(row) || row.upload_status !== 'completed'"
+                    @click.stop="emit('move', row)"
+                  >
+                    <FolderInput :size="18" />
+                  </Button>
+                </Tooltip>
                 <Tooltip :content="t('files.actions.share')">
                   <Button
                     type="ghost"
@@ -163,7 +174,7 @@
 
 <script setup>
 import { useI18n } from 'vue-i18n'
-import { Trash2, Trash, File, Pencil, Share2, RotateCcw } from 'lucide-vue-next'
+import { Trash2, Trash, File, Pencil, Share2, RotateCcw, FolderInput } from 'lucide-vue-next'
 import Card from '../ui/card/Card.vue'
 import Button from '../ui/button/Button.vue'
 import Tooltip from '../ui/tooltip/Tooltip.vue'
@@ -213,6 +224,7 @@ const emit = defineEmits([
   'show-info',
   'share',
   'rename',
+  'move',
   'delete',
   'restore',
   'delete-permanent',

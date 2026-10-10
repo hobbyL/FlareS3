@@ -536,6 +536,24 @@ export default {
   },
 
   /**
+   * 新建空目录（库模式登记，使无文件的目录在目录视图可见）
+   * @param {string} dir - 目录路径（如 docs/2024；不可为空/根）
+   * @returns {Promise<{success: boolean, dir: string}>}
+   */
+  createFileDir(dir) {
+    return api.post('/files/dirs', { dir: dir || '' })
+  },
+
+  /**
+   * 删除空目录登记（仅当目录真空时成功；非空返回 409）
+   * @param {string} dir - 目录路径（如 docs/2024；不可为空/根）
+   * @returns {Promise<{success: boolean, dir: string}>}
+   */
+  deleteFileDir(dir) {
+    return api.delete('/files/dirs', { data: { dir: dir || '' } })
+  },
+
+  /**
    * 恢复文件
    * @param {string} fileId - 文件 ID
    * @returns {Promise<{success: boolean}>}
@@ -606,6 +624,16 @@ export default {
    */
   renameFile(fileId, payload) {
     return api.post(`/files/${fileId}/rename`, payload)
+  },
+
+  /**
+   * 移动文件到目标目录（同 config 内，保留文件名）
+   * @param {string} fileId - 文件 ID
+   * @param {string} dir - 目标目录（空字符串=根目录）
+   * @returns {Promise<{success: boolean, r2_key: string, dir: string}>}
+   */
+  moveFile(fileId, dir) {
+    return api.post(`/files/${fileId}/move`, { dir: dir || '' })
   },
 
   /**

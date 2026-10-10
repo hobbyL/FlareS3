@@ -208,6 +208,25 @@ export function normalizeDir(dir) {
   return clean
 }
 
+// 已知存储前缀：目录藏于 `<prefix>/<configId>/<dir...>/<filename>`（镜像 worker/utils/r2Dir）
+const FILE_DIR_KNOWN_PREFIXES = new Set(['flares3', 'storage'])
+
+/**
+ * 从 r2_key 推导文件所在目录（根返回 ''）。
+ * 与后端 extractDirFromR2Key 同口径：剥 `<prefix>/<configId>/` 两段后去掉末段文件名。
+ * legacy / 未知前缀 → 根。
+ */
+export function extractFileDir(r2Key) {
+  const parts = String(r2Key ?? '')
+    .split('/')
+    .filter(Boolean)
+  if (parts.length < 3) return ''
+  if (!FILE_DIR_KNOWN_PREFIXES.has(parts[0])) return ''
+  const rest = parts.slice(2)
+  if (rest.length <= 1) return ''
+  return rest.slice(0, -1).join('/')
+}
+
 /** 当前目录的面包屑：'a/b' → [{label:'a',prefix:'a'},{label:'b',prefix:'a/b'}]。根返回 []。 */
 export function buildDirBreadcrumb(dir) {
   const segments = normalizeDir(dir).split('/').filter(Boolean)
