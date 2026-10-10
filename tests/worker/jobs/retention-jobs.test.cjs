@@ -226,6 +226,7 @@ test("cleanupRetention deletes stale sessions, rate limits and audit logs using 
     auditLogs: 4,
     shareAccessLogs: 5,
     textsTrash: 0,
+    filesTrash: 0,
   });
 
   const sessionRun = state.runs.find((entry) =>

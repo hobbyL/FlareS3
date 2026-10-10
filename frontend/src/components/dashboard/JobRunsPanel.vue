@@ -1,8 +1,10 @@
 <script setup>
 import { useI18n } from 'vue-i18n'
+import { Play } from 'lucide-vue-next'
 import Card from '../ui/card/Card.vue'
 import Alert from '../ui/alert/Alert.vue'
 import Tag from '../ui/tag/Tag.vue'
+import Button from '../ui/button/Button.vue'
 import {
   formatJobRunDuration,
   getJobRunStatusTagType,
@@ -13,7 +15,10 @@ const props = defineProps({
   items: { type: Array, default: () => [] },
   total: { type: Number, default: 0 },
   loading: Boolean,
+  runningJob: { type: String, default: '' },
 })
+
+const emit = defineEmits(['run'])
 
 const { t, te, locale } = useI18n({ useScope: 'global' })
 
@@ -76,9 +81,25 @@ const formatDateTime = (value) => {
               <h3 class="job-run-title">{{ getJobNameLabel(run.jobName) }}</h3>
               <p class="job-run-created">{{ formatDateTime(run.createdAt) }}</p>
             </div>
-            <Tag :type="getJobRunStatusTagType(run.status)" size="small">
-              {{ getStatusLabel(run.status) }}
-            </Tag>
+            <div class="job-run-heading-actions">
+              <Tag :type="getJobRunStatusTagType(run.status)" size="small">
+                {{ getStatusLabel(run.status) }}
+              </Tag>
+              <Button
+                type="default"
+                size="small"
+                class="job-run-run-btn"
+                :loading="runningJob === run.jobName"
+                :disabled="Boolean(runningJob)"
+                :aria-label="t('dashboard.jobs.runAria', { name: getJobNameLabel(run.jobName) })"
+                @click="emit('run', run.jobName)"
+              >
+                <Play :size="14" style="margin-right: 6px" />
+                {{
+                  runningJob === run.jobName ? t('dashboard.jobs.running') : t('dashboard.jobs.run')
+                }}
+              </Button>
+            </div>
           </div>
 
           <dl class="job-run-meta">
@@ -182,6 +203,18 @@ const formatDateTime = (value) => {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+}
+
+.job-run-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--nb-space-sm);
+  flex-shrink: 0;
+}
+
+.job-run-run-btn {
+  display: inline-flex;
+  align-items: center;
 }
 
 .job-run-title-group {

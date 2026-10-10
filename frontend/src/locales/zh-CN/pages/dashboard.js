@@ -117,6 +117,12 @@ export default {
       emptyTitle: '暂无任务记录',
       emptyContent: '等待下一次定时任务执行后，这里会显示运行结果。',
       summaryEmpty: '无摘要信息',
+      run: '运行',
+      running: '运行中...',
+      runAria: '立即运行任务 {name}',
+      runSuccess: '任务「{name}」执行成功',
+      runPartial: '任务「{name}」部分成功',
+      runFailed: '任务「{name}」执行失败',
       labels: {
         startedAt: '开始时间',
         finishedAt: '结束时间',

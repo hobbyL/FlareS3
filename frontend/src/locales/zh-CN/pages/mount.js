@@ -127,6 +127,10 @@ export default {
       loadFailed: '加载文件夹分享失败',
       expiresRequired: '请选择过期时间',
       maxViewsInvalid: '访问次数请输入大于等于 0 的数字',
+      qrShow: '二维码',
+      qrTitle: '分享二维码',
+      qrFailed: '生成二维码失败',
+      qrTooLarge: '内容过长，无法生成二维码',
     },
     messages: {
       loadConfigsFailed: '加载存储配置失败',

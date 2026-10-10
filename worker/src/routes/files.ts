@@ -381,9 +381,7 @@ export async function restoreFile(request: Request, env: Env, fileId: string): P
     }
 
     const now = new Date().toISOString()
-    await withD1Retry(env.DB).batch(
-      prepareRestoreFileStatements(env, user, request, fileId, now, { closeQueue: false })
-    )
+    await withD1Retry(env.DB).batch(prepareRestoreFileStatements(env, user, request, fileId, now))
     return jsonResponse({ success: true })
   }
 
@@ -402,9 +400,7 @@ export async function restoreFile(request: Request, env: Env, fileId: string): P
   }
 
   const now = new Date().toISOString()
-  await withD1Retry(env.DB).batch(
-    prepareRestoreFileStatements(env, user, request, fileId, now, { closeQueue: true })
-  )
+  await withD1Retry(env.DB).batch(prepareRestoreFileStatements(env, user, request, fileId, now))
 
   return jsonResponse({ success: true })
 }
@@ -447,37 +443,34 @@ function prepareRecycleFileStatements(
 }
 
 /**
- * 组装「恢复」batch 语句：状态回滚 + reservation 释放 + audit（FILE_RESTORE）。
+ * 组装「恢复」batch 语句：状态回滚 + reservation 释放 + 关闭未处理入队 + audit（FILE_RESTORE）。
  *
- * @param opts.closeQueue R2 路径为 true（恢复需关闭未处理的 delete_queue 行）；
- *                        explicit-provider 路径为 false（无 delete_queue 行）。
+ * 恢复必须**无条件**关闭该文件所有未处理的 delete_queue 行。回收站保留期清理
+ * （cleanupRetention）会为任意 provider（含 WebDAV/Koofr explicit-provider）的
+ * 超期软删除行入队物理删除，入队与 cleanupDeleteQueue 实删之间存在时间窗；若恢复
+ * 不关闭入队，cleanupDeleteQueue 随后会把刚恢复的对象与 files 行一并删除，造成
+ * 「恢复成功随后被删」的数据丢失。该 UPDATE 幂等（无未处理行时命中 0 行），故对
+ * 历史上不产生入队行的 explicit-provider 路径亦为无副作用的 no-op。
  */
 function prepareRestoreFileStatements(
   env: Env,
   user: { id: string },
   request: Request,
   fileId: string,
-  nowIso: string,
-  opts: { closeQueue: boolean }
+  nowIso: string
 ): D1PreparedStatement[] {
-  const statements: D1PreparedStatement[] = [
+  return [
     withD1Retry(env.DB)
       .prepare(
         "UPDATE files SET upload_status = 'completed', deleted_at = NULL, multipart_upload_id = NULL WHERE id = ?"
       )
       .bind(fileId),
     prepareReleaseUploadReservation(env.DB, fileId, nowIso),
-  ]
-  if (opts.closeQueue) {
-    statements.push(
-      withD1Retry(env.DB)
-        .prepare(
-          'UPDATE delete_queue SET processed_at = ? WHERE file_id = ? AND processed_at IS NULL'
-        )
-        .bind(nowIso, fileId)
-    )
-  }
-  statements.push(
+    withD1Retry(env.DB)
+      .prepare(
+        'UPDATE delete_queue SET processed_at = ? WHERE file_id = ? AND processed_at IS NULL'
+      )
+      .bind(nowIso, fileId),
     prepareAuditLogInsert(
       env.DB,
       {
@@ -489,9 +482,8 @@ function prepareRestoreFileStatements(
         userAgent: request.headers.get('User-Agent') || undefined,
       },
       nowIso
-    )
-  )
-  return statements
+    ),
+  ]
 }
 
 /**
@@ -1223,7 +1215,6 @@ export async function batchRestoreFiles(request: Request, env: Env): Promise<Res
 
     const r2Key = String(row.r2_key)
     const explicitProviderConfigId = getExplicitProviderConfigId(row)
-    let closeQueue = false
 
     if (explicitProviderConfigId) {
       const provider = await createProvider(env, explicitProviderConfigId)
@@ -1257,12 +1248,9 @@ export async function batchRestoreFiles(request: Request, env: Env): Promise<Res
         skipped.push(buildSkipped(fileId, 'check_failed'))
         continue
       }
-      closeQueue = true
     }
 
-    await withD1Retry(env.DB).batch(
-      prepareRestoreFileStatements(env, user, request, fileId, now, { closeQueue })
-    )
+    await withD1Retry(env.DB).batch(prepareRestoreFileStatements(env, user, request, fileId, now))
     restored += 1
   }
 

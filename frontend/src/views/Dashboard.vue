@@ -40,6 +40,15 @@
         <OverviewCards :metrics="overview.metrics" :setup="overview.setup" />
 
         <DashboardInsights :metrics="overview.metrics" :setup="overview.setup" />
+
+        <JobRunsPanel
+          v-if="!isMobile"
+          :items="jobRuns"
+          :total="jobRunsTotal"
+          :loading="jobRunsLoading"
+          :running-job="runningJob"
+          @run="handleRunJob"
+        />
       </template>
     </div>
   </AppLayout>
@@ -55,10 +64,13 @@ import Button from '../components/ui/button/Button.vue'
 import PageSkeleton from '../components/ui/skeleton/PageSkeleton.vue'
 import DashboardInsights from '../components/dashboard/DashboardInsights.vue'
 import OverviewCards from '../components/dashboard/OverviewCards.vue'
+import JobRunsPanel from '../components/dashboard/JobRunsPanel.vue'
 import { useMessage } from '../composables/useMessage'
+import { useIsMobile } from '../composables/useViewport.js'
 
 const message = useMessage()
-const { t } = useI18n({ useScope: 'global' })
+const { t, te } = useI18n({ useScope: 'global' })
+const isMobile = useIsMobile()
 
 const defaultOverview = () => ({
   metrics: {
@@ -92,6 +104,11 @@ const loadedOnce = ref(false)
 const activeAction = ref('')
 const initialPageLoading = computed(() => loading.value && !loadedOnce.value)
 
+const jobRuns = ref([])
+const jobRunsTotal = ref(0)
+const jobRunsLoading = ref(false)
+const runningJob = ref('')
+
 const normalizeOverview = (payload) => ({
   metrics: {
     ...defaultOverview().metrics,
@@ -103,6 +120,25 @@ const normalizeOverview = (payload) => ({
   },
 })
 
+const getJobNameLabel = (jobName) => {
+  const key = `dashboard.jobs.names.${jobName}`
+  return te(key) ? t(key) : String(jobName || '-')
+}
+
+const loadJobRuns = async () => {
+  jobRunsLoading.value = true
+
+  try {
+    const result = await api.getAdminJobRuns({ page: 1, limit: 20 })
+    jobRuns.value = Array.isArray(result?.items) ? result.items : []
+    jobRunsTotal.value = Number(result?.total || 0)
+  } catch (error) {
+    message.error(error.response?.data?.error || t('dashboard.messages.loadFailed'))
+  } finally {
+    jobRunsLoading.value = false
+  }
+}
+
 const loadDashboard = async ({ source = 'init' } = {}) => {
   if (loading.value) return
 
@@ -110,7 +146,11 @@ const loadDashboard = async ({ source = 'init' } = {}) => {
   activeAction.value = source
 
   try {
-    const overviewResult = await api.getAdminOverview()
+    // 任务面板仅桌面端渲染（移动端保持精简），移动端跳过任务列表请求；
+    // getAdminOverview 始终只请求一次，loadJobRuns 仅桌面端追加
+    const pending = [api.getAdminOverview()]
+    if (!isMobile.value) pending.push(loadJobRuns())
+    const [overviewResult] = await Promise.all(pending)
     overview.value = normalizeOverview(overviewResult)
     loadedOnce.value = true
   } catch (error) {
@@ -122,6 +162,32 @@ const loadDashboard = async ({ source = 'init' } = {}) => {
 }
 
 const handleRefresh = () => loadDashboard({ source: 'refresh' })
+
+const handleRunJob = async (jobName) => {
+  if (!jobName || runningJob.value) return
+
+  runningJob.value = jobName
+  const name = getJobNameLabel(jobName)
+
+  try {
+    const result = await api.runAdminJob(jobName)
+    const status = result?.status
+
+    if (status === 'failed') {
+      message.error(t('dashboard.jobs.runFailed', { name }))
+    } else if (status === 'partial') {
+      message.warning(t('dashboard.jobs.runPartial', { name }))
+    } else {
+      message.success(t('dashboard.jobs.runSuccess', { name }))
+    }
+
+    await loadDashboard({ source: 'refresh' })
+  } catch (error) {
+    message.error(error.response?.data?.error || t('dashboard.jobs.runFailed', { name }))
+  } finally {
+    runningJob.value = ''
+  }
+}
 
 onMounted(() => {
   loadDashboard()

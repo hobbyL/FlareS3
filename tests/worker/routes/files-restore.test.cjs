@@ -112,8 +112,9 @@ function loadFilesRouteModules() {
   clearModule("routes/files.js");
   clearModule("services/storage/factory.js");
   const r2 = loadModule("services/r2.js");
+  const storageFactory = loadModule("services/storage/factory.js");
   const files = loadModule("routes/files.js");
-  return { r2, files };
+  return { r2, storageFactory, files };
 }
 
 function firstHandlerFor(file) {
@@ -225,4 +226,76 @@ test("restoreFile restores R2 files when the object still exists", async () => {
   assert.deepEqual(await response.json(), { success: true });
   assert.deepEqual(headKeys, ["flares3/config-1/demo.bin"]);
   assert.equal(state.batches.length, 1);
+});
+
+test("restoreFile closes pending delete_queue rows for explicit-provider restores (retention rescue window)", async () => {
+  // cleanupRetention 现在也会为 WebDAV/Koofr explicit-provider 的超期回收站行入队
+  // 物理删除；入队与 cleanupDeleteQueue 实删之间存在时间窗。若恢复不关闭 pending
+  // 入队，恢复后的对象会被 cleanupDeleteQueue 连同 files 行一并误删（数据丢失）。
+  const { files, storageFactory } = loadFilesRouteModules();
+  let checkKey = "";
+  storageFactory.createProvider = async (_env, configId) => {
+    assert.equal(configId, "webdav-1");
+    return {
+      async checkExists(key) {
+        checkKey = key;
+        return true;
+      },
+    };
+  };
+
+  const { db, state } = createLifecycleDb({
+    firstHandlers: [
+      firstHandlerFor(
+        trashFileRow({
+          r2_key: "storage/webdav-1/demo.bin",
+          config_id: "webdav-1",
+        }),
+      ),
+    ],
+    // 独立的一次性 handler 数组：consume 会 splice 消费，不能复用被其它用例
+    // 清空的共享 RESTORE_BATCH_RUN_HANDLERS
+    runHandlers: [
+      {
+        match:
+          /UPDATE files SET upload_status = 'completed', deleted_at = NULL, multipart_upload_id = NULL WHERE id = \?/,
+        value: { meta: { changes: 1 } },
+      },
+      {
+        match:
+          /UPDATE upload_reservations SET status = \?, updated_at = \? WHERE file_id = \? AND status = 'active'/,
+        value: { meta: { changes: 0 } },
+      },
+      {
+        match:
+          /UPDATE delete_queue SET processed_at = \? WHERE file_id = \? AND processed_at IS NULL/,
+        value: { meta: { changes: 1 } },
+      },
+      { match: /INSERT INTO audit_logs/, value: { meta: { changes: 1 } } },
+    ],
+  });
+
+  const response = await files.restoreFile(
+    createAuthedPostRequest("https://example.com/api/files/file-1/restore"),
+    { DB: db },
+    "file-1",
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { success: true });
+  assert.equal(checkKey, "storage/webdav-1/demo.bin");
+  assert.equal(state.batches.length, 1);
+  const batchSql = state.batches[0].map((statement) => statement.sql);
+  assert.ok(
+    batchSql.some((sql) =>
+      /UPDATE delete_queue SET processed_at = \? WHERE file_id = \? AND processed_at IS NULL/.test(
+        sql,
+      ),
+    ),
+    "explicit-provider 恢复必须关闭 pending delete_queue 行（保留期清理救援窗口）",
+  );
+  const closeQueue = state.batches[0].find((statement) =>
+    /UPDATE delete_queue SET processed_at/.test(statement.sql),
+  );
+  assert.equal(closeQueue.args[1], "file-1");
 });

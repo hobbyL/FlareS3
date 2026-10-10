@@ -201,6 +201,15 @@ export default {
     return api.get('/admin/job-runs', { params })
   },
 
+  /**
+   * 手动触发一个定时清理任务（admin-only）
+   * @param {string} name - 任务名：cleanupExpired / cleanupDeleteQueue / cleanupRetention
+   * @returns {Promise<{job_name: string, status: string, duration_ms: number, processed: number, succeeded: number, failed: number, details: object}>}
+   */
+  runAdminJob(name) {
+    return api.post(`/admin/jobs/${encodeURIComponent(name)}/run`)
+  },
+
   // ========== 存储统计 ==========
 
   /**

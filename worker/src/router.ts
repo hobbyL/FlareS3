@@ -653,6 +653,15 @@ router.get(
   '/api/admin/job-runs',
   withAdmin((request, env: Env) => listAdminJobRuns(request, env))
 )
+router.post(
+  '/api/admin/jobs/:name/run',
+  withAdmin(
+    lazyRoute(
+      () => import('./routes/adminJobs'),
+      (module, request, env) => module.runAdminJob(request, env, (request as any).params.name)
+    )
+  )
+)
 
 // ── Audit ──
 router.get(

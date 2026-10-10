@@ -15,7 +15,7 @@ test("仪表盘页面不向 AppLayout 传固定宽度上限", () => {
   );
 });
 
-test("仪表盘页面只保留概览卡片，不再渲染风险与任务面板", () => {
+test("仪表盘页面桌面端接入任务面板并支持手动运行，移动端隐藏，不渲染风险面板", () => {
   const source = readSource("../../../frontend/src/views/Dashboard.vue");
   const overviewRequests = source.match(/getAdminOverview\(/g) || [];
 
@@ -26,18 +26,34 @@ test("仪表盘页面只保留概览卡片，不再渲染风险与任务面板",
   );
   assert.doesNotMatch(
     source,
-    /RiskAlertsPanel|JobRunsPanel/,
-    "Dashboard 不应继续引入风险面板和任务面板",
+    /RiskAlertsPanel/,
+    "Dashboard 不应继续引入风险面板",
   );
-  assert.doesNotMatch(
+  assert.match(
     source,
-    /getAdminJobRuns|jobRunsTotal|const jobRuns = ref\(/,
-    "Dashboard 不应继续请求和维护任务执行列表数据",
+    /import JobRunsPanel from '\.\.\/components\/dashboard\/JobRunsPanel\.vue'/,
+    "Dashboard 应重新引入任务执行面板",
   );
+  assert.match(
+    source,
+    /<JobRunsPanel\s+v-if="!isMobile"/,
+    "Dashboard 的任务执行面板应仅在桌面端渲染（移动端保持精简）",
+  );
+  assert.match(
+    source,
+    /import \{ useIsMobile \} from '\.\.\/composables\/useViewport\.js'/,
+    "Dashboard 应使用 useIsMobile 判定视口以门控任务面板",
+  );
+  assert.match(
+    source,
+    /getAdminJobRuns/,
+    "Dashboard 应请求任务执行列表以驱动面板",
+  );
+  assert.match(source, /runAdminJob/, "Dashboard 应提供手动触发任务的能力");
   assert.equal(
     overviewRequests.length,
     1,
-    "Dashboard 应继续只使用一次 getAdminOverview 作为唯一数据入口",
+    "Dashboard 应继续只使用一次 getAdminOverview 作为概览数据入口",
   );
 });
 

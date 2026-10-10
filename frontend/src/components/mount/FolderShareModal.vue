@@ -80,6 +80,15 @@
           <Button type="primary" size="small" :disabled="!shareUrl || saving" @click="copyShareUrl">
             {{ t('upload.copy') }}
           </Button>
+          <Button
+            type="default"
+            size="small"
+            :disabled="!shareUrl || saving"
+            :aria-label="t('mount.shareFolder.qrShow')"
+            @click="showQr"
+          >
+            {{ t('mount.shareFolder.qrShow') }}
+          </Button>
         </div>
       </div>
     </template>
@@ -107,11 +116,29 @@
       </div>
     </template>
   </Modal>
+
+  <Modal :show="qrVisible" :title="qrTitle" width="360px" @update:show="handleQrVisibility">
+    <div v-if="qrLoading" class="modal-state">{{ t('mount.shareFolder.loading') }}</div>
+    <div v-else-if="qrError" class="modal-state">{{ qrError }}</div>
+    <template v-else>
+      <div class="qr-image-wrap">
+        <img v-if="qrDataUrl" class="qr-image" :src="qrDataUrl" alt="" />
+      </div>
+      <p v-if="share" class="qr-hint">
+        {{ t('mount.shareFolder.statsValidity') }}：{{ statsValidity }} ·
+        {{ t('mount.shareFolder.statsVisits') }}：{{ statsVisits }}
+      </p>
+    </template>
+    <template #footer>
+      <Button type="default" @click="handleQrVisibility(false)">{{ t('common.close') }}</Button>
+    </template>
+  </Modal>
 </template>
 
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import QRCode from 'qrcode'
 import Modal from '../ui/modal/Modal.vue'
 import Input from '../ui/input/Input.vue'
 import Select from '../ui/select/Select.vue'
@@ -346,6 +373,57 @@ const handleUpdateShow = (value) => {
   emit('update:show', value)
 }
 
+// ── 分享链接二维码 ──
+// 复用 FileShareModal 的 QRCode.toDataURL 参数风格（errorCorrectionLevel: 'M',
+// margin: 1, width: 280），对常规 /f/:code 文件夹分享链接出码。
+const qrVisible = ref(false)
+const qrLoading = ref(false)
+const qrError = ref('')
+const qrDataUrl = ref('')
+
+const qrTitle = computed(() => {
+  const base = t('mount.shareFolder.qrTitle')
+  const scope = displayPrefix.value
+  return scope ? `${base} - ${scope}` : base
+})
+
+const showQr = async () => {
+  const url = shareUrl.value
+  if (!url) return
+
+  qrVisible.value = true
+  qrLoading.value = true
+  qrError.value = ''
+  qrDataUrl.value = ''
+
+  try {
+    qrDataUrl.value = await QRCode.toDataURL(url, {
+      errorCorrectionLevel: 'M',
+      margin: 1,
+      width: 280,
+    })
+  } catch (error) {
+    const rawMessage = error?.message ? String(error.message) : ''
+    const looksLikeTooLarge = /too (big|large|long)|data.*(too (big|large|long))/i.test(rawMessage)
+    qrError.value = looksLikeTooLarge
+      ? t('mount.shareFolder.qrTooLarge')
+      : t('mount.shareFolder.qrFailed')
+  } finally {
+    qrLoading.value = false
+  }
+}
+
+const handleQrVisibility = (value) => {
+  qrVisible.value = value
+}
+
+const resetQrState = () => {
+  qrVisible.value = false
+  qrLoading.value = false
+  qrError.value = ''
+  qrDataUrl.value = ''
+}
+
 watch(
   () => props.show,
   (visible) => {
@@ -356,6 +434,7 @@ watch(
       resetForm()
       loading.value = false
       saving.value = false
+      resetQrState()
     }
   },
   { immediate: true }
@@ -376,6 +455,25 @@ watch(
   padding: var(--nb-space-md);
   text-align: center;
   color: var(--nb-muted-foreground, var(--nb-gray-500));
+}
+
+.qr-image-wrap {
+  display: flex;
+  justify-content: center;
+  padding: var(--nb-space-md);
+}
+
+.qr-image {
+  width: 280px;
+  height: 280px;
+  image-rendering: pixelated;
+}
+
+.qr-hint {
+  margin: 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--nb-muted-foreground, var(--muted-foreground, var(--nb-gray-500)));
 }
 
 .folder-share-scope {

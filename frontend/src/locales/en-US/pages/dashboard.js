@@ -121,6 +121,12 @@ export default {
       emptyTitle: 'No job runs yet',
       emptyContent: 'Results will appear here after the next scheduled cleanup run.',
       summaryEmpty: 'No summary details',
+      run: 'Run',
+      running: 'Running...',
+      runAria: 'Run job {name} now',
+      runSuccess: 'Job "{name}" completed',
+      runPartial: 'Job "{name}" completed with partial results',
+      runFailed: 'Job "{name}" failed',
       labels: {
         startedAt: 'Started at',
         finishedAt: 'Finished at',

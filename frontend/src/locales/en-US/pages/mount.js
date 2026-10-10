@@ -129,6 +129,10 @@ export default {
       loadFailed: 'Failed to load folder share',
       expiresRequired: 'Please select an expiration time',
       maxViewsInvalid: 'Max views must be a number >= 0',
+      qrShow: 'QR code',
+      qrTitle: 'Share QR code',
+      qrFailed: 'Failed to generate QR code',
+      qrTooLarge: 'Content is too long for a QR code',
     },
     messages: {
       loadConfigsFailed: 'Failed to load storage configs',
