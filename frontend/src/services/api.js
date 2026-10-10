@@ -409,6 +409,7 @@ export default {
         data.require_login,
         data.config_id,
         data.dir,
+        data.custom_short_code,
       ].join(':')
   ),
 
@@ -469,10 +470,20 @@ export default {
    * @param {number} options.expiresIn - 过期时间（天）
    * @param {boolean} options.requireLogin - 是否需要登录
    * @param {string} options.dir - 目录
+   * @param {string} [options.customShortCode] - 自定义短码（留空则由服务端随机生成）
    * @param {Function} options.onProgress - 进度回调
    * @returns {Promise<object>}
    */
-  serverUpload({ configId, file, filename, expiresIn, requireLogin, dir, onProgress }) {
+  serverUpload({
+    configId,
+    file,
+    filename,
+    expiresIn,
+    requireLogin,
+    dir,
+    customShortCode,
+    onProgress,
+  }) {
     const formData = new FormData()
     formData.append('config_id', configId)
     formData.append('file', file)
@@ -480,6 +491,7 @@ export default {
     formData.append('expires_in', String(expiresIn ?? 7))
     formData.append('require_login', String(requireLogin !== false))
     if (dir) formData.append('dir', dir)
+    if (customShortCode) formData.append('custom_short_code', customShortCode)
     return axios
       .post('/api/upload/server', formData, {
         withCredentials: true,

@@ -21,7 +21,12 @@ import {
 import { logAudit, prepareAuditLogInsert } from '../../services/audit'
 import { getClientIp } from '../../middleware/rateLimit'
 import { generateRandomCode } from '../../utils/random'
-import { FILE_SHORT_CODE_LENGTH } from '../../utils/codePolicy'
+import {
+  FILE_SHORT_CODE_LENGTH,
+  CUSTOM_SHORT_CODE_MIN_LENGTH,
+  CUSTOM_SHORT_CODE_MAX_LENGTH,
+  CUSTOM_SHORT_CODE_PATTERN,
+} from '../../utils/codePolicy'
 import {
   isUploadConfigPolicyError,
   resolveUploadConfigForUser,
@@ -107,6 +112,68 @@ export function calcDownloadTtlSeconds(expiresAt: unknown): number {
 
 export const SHORT_CODE_MAX_ATTEMPTS = 10
 export const FILENAME_RENAME_MAX_ATTEMPTS = 100
+
+/**
+ * 自定义短码（vanity）规范化结果：
+ * - `absent`：请求未提供（走随机码，行为不变）
+ * - `ok`：合法，`code` 为去除首尾空白后的短码
+ * - `invalid`：非法，`message` 为对外文案（HTTP 400）
+ */
+export type CustomShortCodeResult =
+  | { kind: 'absent' }
+  | { kind: 'ok'; code: string }
+  | { kind: 'invalid'; message: string }
+
+/**
+ * 规范化并校验用户自定义短码。
+ *
+ * 空值 / 空白串视为未提供（随机码回退）。合法字符集 `[A-Za-z0-9_-]`，
+ * 长度区间 {@link CUSTOM_SHORT_CODE_MIN_LENGTH}-{@link CUSTOM_SHORT_CODE_MAX_LENGTH}。
+ *
+ * @param value - 原始输入（通常来自请求体 / 表单字段）
+ * @returns 判别式结果，交由调用方决定 400 / 409 / 放行
+ */
+export function normalizeCustomShortCode(value: unknown): CustomShortCodeResult {
+  if (value === undefined || value === null) return { kind: 'absent' }
+  const raw = String(value).trim()
+  if (!raw) return { kind: 'absent' }
+  if (raw.length < CUSTOM_SHORT_CODE_MIN_LENGTH || raw.length > CUSTOM_SHORT_CODE_MAX_LENGTH) {
+    return {
+      kind: 'invalid',
+      message: `自定义短码长度需为 ${CUSTOM_SHORT_CODE_MIN_LENGTH}-${CUSTOM_SHORT_CODE_MAX_LENGTH} 个字符`,
+    }
+  }
+  if (!CUSTOM_SHORT_CODE_PATTERN.test(raw)) {
+    return { kind: 'invalid', message: '自定义短码仅支持字母、数字、下划线和连字符' }
+  }
+  return { kind: 'ok', code: raw }
+}
+
+/**
+ * 判定短码是否已被 `/s/:code` 命名空间占用。
+ *
+ * 命名空间 = `files.short_code` ∪ `text_shares.share_code` ∪
+ * `text_one_time_shares.share_code`（三表都查）。`file_shares` / `folder_shares`
+ * 的 `share_code` 属 `/f/:code` 命名空间，不参与去重。
+ *
+ * @param env - Workers 环境（取 D1）
+ * @param code - 待检测短码
+ * @returns 命中任一表即 `true`
+ */
+export async function isShortCodeTaken(env: Env, code: string): Promise<boolean> {
+  const row = await withD1Retry(env.DB)
+    .prepare(
+      `SELECT 1 AS taken FROM files WHERE short_code = ?
+       UNION ALL
+       SELECT 1 AS taken FROM text_shares WHERE share_code = ?
+       UNION ALL
+       SELECT 1 AS taken FROM text_one_time_shares WHERE share_code = ?
+       LIMIT 1`
+    )
+    .bind(code, code, code)
+    .first('taken')
+  return Boolean(row)
+}
 
 export function createUploadConfigPolicyErrorResponse(error: unknown): Response | null {
   if (!isUploadConfigPolicyError(error)) {
@@ -274,7 +341,8 @@ export async function allocateUploadFileIdentity(
   filename: string,
   expiresIn: number,
   r2ConfigId: string,
-  dir?: string
+  dir?: string,
+  customShortCode?: string
 ): Promise<{ id: string; r2Key: string; shortCode: string; expiresAt: Date; filename: string }> {
   const baseFilename = sanitizeUploadFilename(filename)
   const expiresAt = calcExpiresAt(expiresIn)
@@ -294,11 +362,11 @@ export async function allocateUploadFileIdentity(
       continue
     }
 
-    for (let i = 0; i < SHORT_CODE_MAX_ATTEMPTS; i += 1) {
-      const id = crypto.randomUUID()
-      const shortCode = generateRandomCode(FILE_SHORT_CODE_LENGTH)
-      return { id, r2Key, shortCode, expiresAt, filename: resolvedFilename }
-    }
+    const id = crypto.randomUUID()
+    // 自定义短码固定复用（随机码行为完全不变）；短码唯一性由落库 UNIQUE 约束
+    // 与路由层预检共同保证，这里不再做短码重试
+    const shortCode = customShortCode || generateRandomCode(FILE_SHORT_CODE_LENGTH)
+    return { id, r2Key, shortCode, expiresAt, filename: resolvedFilename }
   }
 
   throw new Error('filename_conflict_unresolved')
@@ -313,7 +381,8 @@ export async function createPendingUploadFileRecord(
   expiresIn: number,
   requireLogin: boolean,
   r2ConfigId: string,
-  userQuotaBytes: number
+  userQuotaBytes: number,
+  isCustomShortCode = false
 ): Promise<void> {
   await reserveUploadCapacity(env, {
     fileId: file.id,
@@ -351,6 +420,11 @@ export async function createPendingUploadFileRecord(
 
   await releaseUploadReservation(env.DB, file.id)
   const errorMessage = formatD1ErrorMessage(result.error)
+  // 自定义短码撞 short_code UNIQUE：预检与落库之间的竞态，硬报冲突不重试
+  if (isCustomShortCode && isUniqueConstraintError(errorMessage, 'short_code')) {
+    throw new Error('create_file_record_short_code_conflict')
+  }
+  // 随机码场景：r2_key 或 short_code 冲突均走既有重试路径（行为不变）
   if (
     isUniqueConstraintError(errorMessage, 'r2_key') ||
     isUniqueConstraintError(errorMessage, 'short_code')

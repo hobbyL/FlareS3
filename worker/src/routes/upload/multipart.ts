@@ -14,7 +14,7 @@ import {
   resolveR2ConfigForKey,
   summarizeS3Error,
 } from '../../services/r2'
-import { prepareAuditLogInsert } from '../../services/audit'
+import { logAudit, prepareAuditLogInsert } from '../../services/audit'
 import { getClientIp } from '../../middleware/rateLimit'
 import { resolveUploadConfigForUser } from '../../services/uploadConfigPolicy'
 import {
@@ -25,6 +25,8 @@ import {
 } from '../../services/uploadValidation'
 import {
   createUploadError,
+  customShortCodeConflictError,
+  customShortCodeInvalidError,
   fileTooLargeError,
   invalidUploadRequestError,
   mapUnexpectedUploadError,
@@ -55,6 +57,8 @@ import {
   verifyUploadedObjectSizeOrReject,
   allocateUploadFileIdentity,
   createPendingUploadFileRecord,
+  normalizeCustomShortCode,
+  isShortCodeTaken,
 } from './helpers'
 
 function invalidMultipartPartCountError(declaredSize: number) {
@@ -161,6 +165,7 @@ export async function initMultipart(request: Request, env: Env): Promise<Respons
       require_login?: boolean
       config_id?: string
       dir?: string
+      custom_short_code?: string
     }>(request)
 
     const declaredSize = normalizeDeclaredFileSize(body.size)
@@ -169,6 +174,12 @@ export async function initMultipart(request: Request, env: Env): Promise<Respons
     }
     const expiresIn = normalizeExpiresIn(body.expires_in)
     const dir = body.dir
+
+    const customCode = normalizeCustomShortCode(body.custom_short_code)
+    if (customCode.kind === 'invalid') {
+      return uploadErrorResponse(customShortCodeInvalidError(customCode.message))
+    }
+    const customShortCode = customCode.kind === 'ok' ? customCode.code : undefined
 
     const maxSize = getMaxFileSize(env)
     if (declaredSize > maxSize) {
@@ -193,6 +204,11 @@ export async function initMultipart(request: Request, env: Env): Promise<Respons
       return uploadErrorResponse(uploadConfigUnavailableError())
     }
 
+    // 自定义短码：落库前跨三表预检占用（竞态由 createFileRecord 的 409 兜底）
+    if (customShortCode && (await isShortCodeTaken(env, customShortCode))) {
+      return uploadErrorResponse(customShortCodeConflictError())
+    }
+
     const contentType = body.content_type || 'application/octet-stream'
     const requireLogin = body.require_login !== false
     let file: {
@@ -204,7 +220,14 @@ export async function initMultipart(request: Request, env: Env): Promise<Respons
     } | null = null
     let lastCreateError: unknown = null
     for (let attempt = 0; attempt < SHORT_CODE_MAX_ATTEMPTS; attempt += 1) {
-      file = await allocateUploadFileIdentity(env, body.filename, expiresIn, loaded.id, dir)
+      file = await allocateUploadFileIdentity(
+        env,
+        body.filename,
+        expiresIn,
+        loaded.id,
+        dir,
+        customShortCode
+      )
       try {
         await createPendingUploadFileRecord(
           env,
@@ -215,7 +238,8 @@ export async function initMultipart(request: Request, env: Env): Promise<Respons
           expiresIn,
           requireLogin,
           loaded.id,
-          user.quota_bytes
+          user.quota_bytes,
+          Boolean(customShortCode)
         )
         lastCreateError = null
         break
@@ -243,6 +267,19 @@ export async function initMultipart(request: Request, env: Env): Promise<Respons
       .prepare('UPDATE files SET upload_status = ?, multipart_upload_id = ? WHERE id = ?')
       .bind('uploading', uploadId, file.id)
       .run()
+
+    // 自定义短码审计：仅在实际使用自定义码时记录，默认随机码行为不变（不新增审计行）
+    if (customShortCode) {
+      await logAudit(env.DB, {
+        actorUserId: user.id,
+        action: 'UPLOAD_MULTIPART_INIT',
+        targetType: 'file',
+        targetId: file.id,
+        ip: getClientIp(request),
+        userAgent: request.headers.get('User-Agent') || undefined,
+        metadata: { custom_short_code: true },
+      })
+    }
 
     return jsonResponse({
       file_id: file.id,

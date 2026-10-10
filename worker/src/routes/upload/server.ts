@@ -6,6 +6,8 @@ import { getClientIp } from '../../middleware/rateLimit'
 import { normalizeDeclaredFileSize } from '../../services/uploadValidation'
 import {
   invalidUploadRequestError,
+  customShortCodeConflictError,
+  customShortCodeInvalidError,
   mapUnexpectedUploadError,
   uploadConfigNotFoundError,
   uploadErrorResponse,
@@ -27,6 +29,8 @@ import {
   createPendingUploadFileRecord,
   createUploadConfigPolicyErrorResponse,
   buildProviderScopedStorageKey,
+  normalizeCustomShortCode,
+  isShortCodeTaken,
 } from './helpers'
 
 const MAX_SERVER_UPLOAD_BYTES = 100 * 1024 * 1024
@@ -154,6 +158,12 @@ export async function serverUpload(request: Request, env: Env): Promise<Response
     const dirRaw = String(formData.get('dir') || '').trim()
     const dir = sanitizeDir(dirRaw)
 
+    const customCode = normalizeCustomShortCode(formData.get('custom_short_code'))
+    if (customCode.kind === 'invalid') {
+      return uploadErrorResponse(customShortCodeInvalidError(customCode.message))
+    }
+    const customShortCode = customCode.kind === 'ok' ? customCode.code : undefined
+
     if (!configId) {
       return jsonResponse({ error: '缺少 config_id' }, 400)
     }
@@ -202,6 +212,11 @@ export async function serverUpload(request: Request, env: Env): Promise<Response
       return uploadErrorResponse(invalidUploadRequestError())
     }
 
+    // 自定义短码：落库前跨三表预检占用（竞态由 createFileRecord 的 409 兜底）
+    if (customShortCode && (await isShortCodeTaken(env, customShortCode))) {
+      return uploadErrorResponse(customShortCodeConflictError())
+    }
+
     let uploadFile: {
       id: string
       r2Key: string
@@ -217,7 +232,7 @@ export async function serverUpload(request: Request, env: Env): Promise<Response
       const relativeKey = dir ? `${dir}/${resolvedFilename}` : resolvedFilename
       const r2Key = buildProviderScopedStorageKey(configId, relativeKey)
       const id = crypto.randomUUID()
-      const shortCode = generateRandomCode(FILE_SHORT_CODE_LENGTH)
+      const shortCode = customShortCode || generateRandomCode(FILE_SHORT_CODE_LENGTH)
       uploadFile = { id, r2Key, shortCode, expiresAt, filename: resolvedFilename }
 
       const occupied = await withD1Retry(env.DB)
@@ -236,7 +251,8 @@ export async function serverUpload(request: Request, env: Env): Promise<Response
           expiresIn,
           requireLogin,
           configId,
-          user.quota_bytes
+          user.quota_bytes,
+          Boolean(customShortCode)
         )
         lastError = null
         break
@@ -294,7 +310,12 @@ export async function serverUpload(request: Request, env: Env): Promise<Response
             targetId: uploadFile.id,
             ip: getClientIp(request),
             userAgent: request.headers.get('User-Agent') || undefined,
-            metadata: { configId, key: uploadFile.r2Key, size: fileSize },
+            metadata: {
+              configId,
+              key: uploadFile.r2Key,
+              size: fileSize,
+              ...(customShortCode ? { custom_short_code: true } : {}),
+            },
           },
           now
         ),

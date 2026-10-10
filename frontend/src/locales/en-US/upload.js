@@ -5,6 +5,10 @@ export default {
     expiresIn: 'Expiration',
     uploadConfig: 'Upload config',
     uploadDir: 'Directory',
+    customShortCode: 'Custom short code',
+    customShortCodePlaceholder: 'Leave blank to auto-generate',
+    customShortCodeHint:
+      'Optional, 4-32 chars of letters, digits, underscore or hyphen; must be globally unique and applies to single-file uploads only',
     folderHint: 'Upload a folder (keeps directory structure)',
     folderEmpty: 'The selected folder is empty or has no files',
     downloadPermission: 'Download access',

@@ -28,6 +28,90 @@ function escapeHtml(value: string): string {
 }
 
 /**
+ * 口令保护分享页的 og:description 脱敏文案。
+ *
+ * 口令页不得通过社交卡片泄漏标题之外的内容；统一用此固定文案替代内容预览。
+ */
+const PASSWORD_PROTECTED_SHARE_DESCRIPTION = '受口令保护的分享'
+
+/**
+ * 分享页 Open Graph / Twitter 卡片 meta 数据。
+ *
+ * 不含 og:image（避免引入图片托管复杂度，twitter:card 固定 summary）。
+ * title/description 由调用方按分享类型构造；口令保护页须传脱敏 description。
+ */
+interface ShareOgMeta {
+  /** og:title / twitter 标题（渲染时截断并转义） */
+  title: string
+  /** og:description / twitter 描述（渲染时折叠空白、截断、转义） */
+  description: string
+  /** og:type：文本分享用 article，文件/文件夹分享用 website */
+  type: 'website' | 'article'
+  /** og:url：由 request.url 的 origin+pathname 拼得，不硬编码域名；缺省则不输出 */
+  url?: string
+}
+
+/**
+ * 为 meta 文案折叠空白并截断到上限（截断发生在转义之前，按原文字符计数）。
+ *
+ * @param value - 原始文案
+ * @param maxLength - 最大字符数（默认 200）
+ * @returns 折叠空白并截断后的纯文本（未转义）
+ */
+function truncateForMeta(value: string, maxLength = 200): string {
+  const collapsed = String(value ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (collapsed.length <= maxLength) return collapsed
+  return `${collapsed.slice(0, maxLength - 1).trimEnd()}…`
+}
+
+/**
+ * 构造分享页 OG / Twitter meta 标签 HTML。
+ *
+ * 所有属性值先截断再 escapeHtml，安全用于属性上下文；缺省 og 返回空串。
+ *
+ * @param og - 分享页 OG 元数据；省略则不注入任何 meta
+ * @returns 以换行连接的 meta 标签字符串（已缩进），或空串
+ */
+function buildOgMeta(og?: ShareOgMeta): string {
+  if (!og) return ''
+  const title = escapeHtml(truncateForMeta(og.title))
+  const description = escapeHtml(truncateForMeta(og.description))
+  const type = og.type === 'article' ? 'article' : 'website'
+  const tags = [
+    `<meta property="og:type" content="${type}" />`,
+    `<meta property="og:title" content="${title}" />`,
+    `<meta property="og:description" content="${description}" />`,
+    `<meta name="twitter:card" content="summary" />`,
+  ]
+  if (og.url) {
+    tags.splice(1, 0, `<meta property="og:url" content="${escapeHtml(og.url)}" />`)
+  }
+  return `\n${tags.map((tag) => `  ${tag}`).join('\n')}`
+}
+
+/**
+ * 由分享页请求 URL 推导 og:url（origin + pathname，去查询串）。
+ *
+ * 不硬编码域名，拆分部署与单 Worker 全栈两种拓扑下均取请求实际 origin。
+ *
+ * @param requestUrl - 当前请求的完整 URL
+ * @returns `https://<host>/<path>` 形式的规范链接；解析失败返回 undefined
+ */
+function resolveShareOgUrl(requestUrl: string): string | undefined {
+  try {
+    const parsed = new URL(requestUrl)
+    return `${parsed.origin}${parsed.pathname}`
+  } catch {
+    return undefined
+  }
+}
+
+export { buildOgMeta, resolveShareOgUrl, PASSWORD_PROTECTED_SHARE_DESCRIPTION }
+export type { ShareOgMeta }
+
+/**
  * 构造分享页 HTML 响应。
  *
  * 当页面内联脚本带 nonce 时，同步通过内部约定头把 nonce 传给
@@ -57,16 +141,17 @@ export { buildPage, escapeHtml, htmlResponse }
  *
  * @param title - 页面标题（自动转义）
  * @param body - 页面主体 HTML（调用方负责对动态内容转义）
+ * @param og - 可选 OG / Twitter 卡片元数据；省略则不注入 meta（如 302 短链无页面）
  * @returns 完整 HTML 文档字符串
  */
-function buildPage({ title, body }: { title: string; body: string }): string {
+function buildPage({ title, body, og }: { title: string; body: string; og?: ShareOgMeta }): string {
   const nonce = generateCspNonce()
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>${escapeHtml(title)}</title>
+  <title>${escapeHtml(title)}</title>${buildOgMeta(og)}
   <script nonce="${nonce}">
     (() => {
       try {
@@ -479,6 +564,25 @@ function buildPage({ title, body }: { title: string; body: string }): string {
     .dir-row form {
       margin: 0;
       max-width: none;
+      display: flex;
+      flex-direction: row;
+      gap: 8px;
+    }
+
+    /* ── 内联预览（图片 / 文本） ── */
+
+    .preview-media {
+      display: flex;
+      justify-content: center;
+    }
+
+    .preview-image {
+      max-width: 100%;
+      height: auto;
+      display: block;
+      border: var(--share-border-width) solid var(--share-border);
+      border-radius: calc(var(--share-radius) + 2px);
+      background: var(--share-code-bg);
     }
   </style>
 </head>

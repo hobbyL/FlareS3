@@ -19,15 +19,34 @@ import {
   consumeFileShareViewIfAllowed,
   SHARE_VIEW_LIMIT_EXHAUSTED_MESSAGE,
 } from '../services/shareViewGuard'
-import { buildSharedDownloadResponse } from '../services/fileShareDownload'
+import {
+  buildSharedDownloadResponse,
+  buildSharedPreviewBytes,
+  buildSharedPreviewText,
+  encodeBase64Chunked,
+  IMAGE_INLINE_MAX_BYTES,
+  MAX_INLINE_TEXT_BYTES,
+} from '../services/fileShareDownload'
+import {
+  getFilenameExtension,
+  normalizeContentType,
+  resolvePreviewMode,
+} from '../services/filePreview'
 import { formatDateTimeLocal } from '../services/shareFormatting'
 import { recordShareAccess, type ShareAccessResult } from '../services/shareAccessLog'
 import { tryHandleFolderShareView } from './folderShareView'
 import {
   renderFileConfirmPage,
+  renderFileImagePreviewPage,
   renderFileMessagePage,
   renderFilePasswordForm,
+  renderFileTextPreviewPage,
 } from './fileSharePages'
+import {
+  resolveShareOgUrl,
+  PASSWORD_PROTECTED_SHARE_DESCRIPTION,
+  type ShareOgMeta,
+} from './sharePage'
 
 type LoadFileAuthResult =
   | { response: Response }
@@ -508,8 +527,48 @@ type ResolveFileShareRecordResult =
         r2_key: string
         expires_at: string
         config_id: string | null
+        content_type: string
+        size: number
       }
     }
+
+/** 内联预览判定：image（data: URI 内嵌）/ text（<pre> 内联）/ none（回退下载） */
+type SharePreviewPlan =
+  | { kind: 'none' }
+  | { kind: 'image'; responseContentType: string }
+  | { kind: 'text' }
+
+/**
+ * 依文件声明类型与扩展名判定分享页内联预览能力（复用 resolvePreviewMode）。
+ *
+ * 图片须声明 size 在 IMAGE_INLINE_MAX_BYTES 内（不可截断，超限回退下载）；
+ * 文本（proxy 类）始终可内联（读取时按字节截断）；视频/音频/pdf/未知一律 none。
+ */
+function resolveSharePreviewPlan(file: {
+  filename: string
+  content_type: string
+  size: number
+}): SharePreviewPlan {
+  const mode = resolvePreviewMode(
+    normalizeContentType(file.content_type),
+    getFilenameExtension(file.filename)
+  )
+  if (!mode) return { kind: 'none' }
+
+  if (mode.kind === 'redirect' && mode.responseContentType.startsWith('image/')) {
+    const size = Number(file.size)
+    if (!Number.isFinite(size) || size <= 0 || size > IMAGE_INLINE_MAX_BYTES) {
+      return { kind: 'none' }
+    }
+    return { kind: 'image', responseContentType: mode.responseContentType }
+  }
+
+  if (mode.kind === 'proxy') {
+    return { kind: 'text' }
+  }
+
+  return { kind: 'none' }
+}
 
 async function resolveFileShareRecord(
   env: Env,
@@ -518,7 +577,7 @@ async function resolveFileShareRecord(
   const row = await withD1Retry(env.DB)
     .prepare(
       `SELECT s.id AS share_id, s.file_id, s.share_code, s.password_hash, s.expires_at AS share_expires_at, s.max_views, s.views,
-            f.filename, f.r2_key, f.expires_at AS file_expires_at, f.upload_status, f.deleted_at, f.config_id,
+            f.filename, f.r2_key, f.expires_at AS file_expires_at, f.upload_status, f.deleted_at, f.config_id, f.content_type, f.size,
             u.status AS owner_status
      FROM file_shares s
      LEFT JOIN files f ON f.id = s.file_id
@@ -594,6 +653,8 @@ async function resolveFileShareRecord(
       r2_key: String(row.r2_key),
       expires_at: String(row.file_expires_at),
       config_id: row.config_id ? String(row.config_id) : null,
+      content_type: row.content_type ? String(row.content_type) : '',
+      size: Number(row.size ?? 0),
     },
   }
 }
@@ -703,9 +764,48 @@ export async function viewFileShare(request: Request, env: Env, code: string): P
   const passwordHash = String(share.password_hash || '').trim()
   const needsPassword = Boolean(passwordHash)
 
+  // OG / 社交卡片：文件分享为 website；口令页脱敏，非口令页用通用文案（不泄漏文件内容）
+  const og: ShareOgMeta = {
+    title,
+    description: needsPassword
+      ? PASSWORD_PROTECTED_SHARE_DESCRIPTION
+      : '共享文件，点击查看或下载。',
+    type: 'website',
+    url: resolveShareOgUrl(request.url),
+  }
+
   const method = request.method.toUpperCase()
 
-  const consumeAndRedirect = async (): Promise<Response> => {
+  // 内联预览能力：决定确认页/口令页是否显示「在线查看」及 POST 内联分流是否生效
+  const previewPlan = resolveSharePreviewPlan(file)
+  const canPreview = previewPlan.kind !== 'none'
+
+  // 内联内容渲染：图片内嵌 data: URI，文本 escapeHtml 后 <pre>；上游失败回错误页。
+  // 调用点在消费之后，故此处失败仍属「访问成立」（与既有下载失败仍记 ok 一致）。
+  const buildInlinePreview = async (): Promise<Response> => {
+    if (previewPlan.kind === 'image') {
+      const bytes = await buildSharedPreviewBytes(env, file, IMAGE_INLINE_MAX_BYTES)
+      if (!bytes.ok) {
+        return renderFileMessagePage('分享', bytes.error.message, bytes.error.status)
+      }
+      const src = `data:${previewPlan.responseContentType};base64,${encodeBase64Chunked(bytes.bytes)}`
+      return renderFileImagePreviewPage({ title, meta, og, src, filename: file.filename })
+    }
+
+    const textResult = await buildSharedPreviewText(env, file, MAX_INLINE_TEXT_BYTES)
+    if (!textResult.ok) {
+      return renderFileMessagePage('分享', textResult.error.message, textResult.error.status)
+    }
+    return renderFileTextPreviewPage({
+      title,
+      meta,
+      og,
+      content: textResult.text,
+      truncated: textResult.truncated,
+    })
+  }
+
+  const consumeAndRespond = async (inline: boolean): Promise<Response> => {
     try {
       const { consumed } = await consumeFileShareViewIfAllowed(env.DB, share.id)
       if (!consumed) {
@@ -719,18 +819,18 @@ export async function viewFileShare(request: Request, env: Env, code: string): P
         return renderFileMessagePage('分享', SHARE_VIEW_LIMIT_EXHAUSTED_MESSAGE, 410)
       }
 
-      const download = await buildSharedDownloadResponse(env, file)
-      if (!download.ok) {
-        // 消费已发生（访问成立），下载失败仍记 ok
-        await recordShareAccess(env, {
-          share_type: 'file',
-          share_id: share.file_id,
-          ip: getClientIp(request),
-          user_agent: request.headers.get('User-Agent'),
-          result: 'ok',
-        })
-        return renderFileMessagePage('分享', download.error.message, download.error.status)
-      }
+      // 消费（恰好一次）已发生：内联与下载共用这一次 consumed 结果，不再触发第二次。
+      // 内联/下载/上游失败后续一律记 ok（访问已成立）。
+      const response =
+        inline && canPreview
+          ? await buildInlinePreview()
+          : await (async () => {
+              const download = await buildSharedDownloadResponse(env, file)
+              return download.ok
+                ? download.response
+                : renderFileMessagePage('分享', download.error.message, download.error.status)
+            })()
+
       await recordShareAccess(env, {
         share_type: 'file',
         share_id: share.file_id,
@@ -738,7 +838,7 @@ export async function viewFileShare(request: Request, env: Env, code: string): P
         user_agent: request.headers.get('User-Agent'),
         result: 'ok',
       })
-      return download.response
+      return response
     } catch {
       return renderFileMessagePage('分享', '访问失败，请稍后重试', 500)
     }
@@ -746,20 +846,28 @@ export async function viewFileShare(request: Request, env: Env, code: string): P
 
   if (method === 'GET') {
     if (needsPassword) {
-      return renderFilePasswordForm({ title, meta })
+      return renderFilePasswordForm({ title, meta, og, canPreview })
     }
 
-    return renderFileConfirmPage({ title, meta })
+    return renderFileConfirmPage({ title, meta, og, canPreview })
   }
 
   if (method === 'POST') {
+    const wantInline = new URL(request.url).searchParams.get('inline') === '1'
+
     if (!needsPassword) {
-      return consumeAndRedirect()
+      return consumeAndRespond(wantInline)
     }
 
     const ip = getClientIp(request)
     if (await isSharePasswordBlocked(env, normalized, ip)) {
-      return renderFilePasswordForm({ title, meta, error: '尝试次数过多，请 10 分钟后重试' })
+      return renderFilePasswordForm({
+        title,
+        meta,
+        og,
+        canPreview,
+        error: '尝试次数过多，请 10 分钟后重试',
+      })
     }
 
     const bodySizeError = rejectInvalidContentLength(
@@ -778,7 +886,7 @@ export async function viewFileShare(request: Request, env: Env, code: string): P
     }
 
     if (!password) {
-      return renderFilePasswordForm({ title, meta, error: '请输入访问口令' })
+      return renderFilePasswordForm({ title, meta, og, canPreview, error: '请输入访问口令' })
     }
 
     if (!verifyPassword(password, passwordHash)) {
@@ -791,13 +899,19 @@ export async function viewFileShare(request: Request, env: Env, code: string): P
         result: 'rejected_password',
       })
       if (await isSharePasswordBlocked(env, normalized, ip)) {
-        return renderFilePasswordForm({ title, meta, error: '尝试次数过多，请 10 分钟后重试' })
+        return renderFilePasswordForm({
+          title,
+          meta,
+          og,
+          canPreview,
+          error: '尝试次数过多，请 10 分钟后重试',
+        })
       }
-      return renderFilePasswordForm({ title, meta, error: '口令不正确' })
+      return renderFilePasswordForm({ title, meta, og, canPreview, error: '口令不正确' })
     }
 
     await clearSharePasswordFailedAttempts(env, normalized, ip)
-    return consumeAndRedirect()
+    return consumeAndRespond(wantInline)
   }
 
   return new Response('Method Not Allowed', { status: 405 })

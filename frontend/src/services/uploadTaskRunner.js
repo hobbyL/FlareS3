@@ -136,6 +136,7 @@ export function createUploadTaskRunner({ api, t, onUploaded }) {
       require_login: taskFile.requireLogin,
       config_id: taskFile.configId || undefined,
       dir: taskFile.dir || undefined,
+      custom_short_code: taskFile.customShortCode || undefined,
     })
     ensureTaskActive(taskState, isCancelled)
 
@@ -211,6 +212,7 @@ export function createUploadTaskRunner({ api, t, onUploaded }) {
           require_login: taskFile.requireLogin,
           config_id: taskFile.configId || undefined,
           dir: taskFile.dir || undefined,
+          custom_short_code: taskFile.customShortCode || undefined,
         })
 
         const { file_id, upload_id, part_size, total_parts } = initResponse
@@ -370,6 +372,7 @@ export function createUploadTaskRunner({ api, t, onUploaded }) {
       expiresIn: taskFile.expiresIn,
       requireLogin: taskFile.requireLogin,
       dir: taskFile.dir || undefined,
+      customShortCode: taskFile.customShortCode || undefined,
       onProgress: (_percent, loaded, total) =>
         updateUploadStats(taskState, taskFile, updateItem, loaded, total),
     })

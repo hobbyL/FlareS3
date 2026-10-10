@@ -689,7 +689,9 @@ test("viewFileShare consumes no-password share only after confirmation post and 
     const getBody = await getResponse.text();
 
     assert.equal(getResponse.status, 200);
-    assert.match(getBody, /开始下载文件/);
+    // report.txt 可内联预览：确认页提供「在线查看」与「下载文件」两个动作（B2）
+    assert.match(getBody, /在线查看/);
+    assert.match(getBody, /下载文件/);
     assert.equal(
       state.runs.some((entry) =>
         /UPDATE file_shares[\s\S]*SET views = views \+ 1, updated_at = \?/.test(

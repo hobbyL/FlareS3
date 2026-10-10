@@ -1,4 +1,9 @@
-import { buildPage, escapeHtml, htmlResponse } from './sharePage'
+import { buildPage, escapeHtml, htmlResponse, type ShareOgMeta } from './sharePage'
+import {
+  getFilenameExtension,
+  normalizeContentType,
+  resolvePreviewMode,
+} from '../services/filePreview'
 
 function buildListUrl(code: string, path: string): string {
   const encoded = encodeURIComponent(path)
@@ -45,12 +50,14 @@ export function renderFolderPasswordForm({
   meta,
   path,
   error,
+  og,
 }: {
   code: string
   title: string
   meta: string
   path: string
   error?: string
+  og?: ShareOgMeta
 }): Response {
   const errorHtml = error
     ? `<div class="alert alert-error" role="alert">
@@ -60,6 +67,7 @@ export function renderFolderPasswordForm({
     : ''
   const html = buildPage({
     title,
+    og,
     body: `
 <div class="header">
   <h1 class="title">${escapeHtml(title)}</h1>
@@ -116,6 +124,7 @@ export function renderFolderListPage({
   sharePrefix,
   folders,
   objects,
+  og,
 }: {
   code: string
   title: string
@@ -124,6 +133,7 @@ export function renderFolderListPage({
   sharePrefix: string
   folders: string[]
   objects: { key: string; size: number; last_modified?: string }[]
+  og?: ShareOgMeta
 }): Response {
   const parentPath = parentDirectoryPath(path)
   const toRelativePath = (key: string): string =>
@@ -147,6 +157,12 @@ export function renderFolderListPage({
 
   const objectRows = objects.map((object) => {
     const name = getBasename(object.key)
+    // 文本子文件追加「在线查看」提交动作（POST ?inline=1，消费一次后内联渲染）；
+    // 非文本仅保留下载。两动作各消费恰好一次。
+    const inlineButton =
+      resolvePreviewMode(normalizeContentType(''), getFilenameExtension(name))?.kind === 'proxy'
+        ? `<button type="submit" class="dir-download" formaction="${escapeHtml(buildListUrl(code, '') + '?inline=1')}">在线查看</button>`
+        : ''
     return `
     <li class="dir-row">
       <span class="dir-name">
@@ -155,6 +171,7 @@ export function renderFolderListPage({
       </span>
       <form method="post" action="${escapeHtml(buildListUrl(code, ''))}">
         <input type="hidden" name="path" value="${escapeHtml(toRelativePath(object.key))}" />
+        ${inlineButton}
         <button type="submit" class="dir-download">下载</button>
       </form>
     </li>`
@@ -167,6 +184,7 @@ export function renderFolderListPage({
 
   const html = buildPage({
     title,
+    og,
     body: `
 <div class="header">
   <h1 class="title">${escapeHtml(title)}</h1>
@@ -178,6 +196,42 @@ export function renderFolderListPage({
 </div>
 <div class="body">
   ${emptyHtml}
+</div>`,
+  })
+
+  return htmlResponse(html, 200)
+}
+
+/**
+ * 渲染文件夹子文件内联文本预览页（escapeHtml 后 `<pre>`）。
+ *
+ * 内容超限时按字节截断并提示；无二次下载按钮（避免二次消费访问次数）。
+ */
+export function renderFolderTextPreviewPage({
+  title,
+  meta,
+  content,
+  truncated = false,
+  og,
+}: {
+  title: string
+  meta: string
+  content: string
+  truncated?: boolean
+  og?: ShareOgMeta
+}): Response {
+  const truncatedHint = truncated ? `<p class="hint">内容较大，仅显示前 256 KB。</p>` : ''
+  const html = buildPage({
+    title,
+    og,
+    body: `
+<div class="header">
+  <h1 class="title">${escapeHtml(title)}</h1>
+  <div class="meta">${escapeHtml(meta)}</div>
+</div>
+<div class="body">
+  ${truncatedHint}
+  <pre>${escapeHtml(content)}</pre>
 </div>`,
   })
 

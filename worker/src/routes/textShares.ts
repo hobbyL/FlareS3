@@ -19,7 +19,14 @@ import {
 } from '../services/requestBodyPolicy'
 import { generateRandomCode } from '../utils/random'
 import { SHARE_SHORT_CODE_LENGTH } from '../utils/codePolicy'
-import { buildPage, escapeHtml, htmlResponse } from './sharePage'
+import {
+  buildPage,
+  escapeHtml,
+  htmlResponse,
+  resolveShareOgUrl,
+  PASSWORD_PROTECTED_SHARE_DESCRIPTION,
+  type ShareOgMeta,
+} from './sharePage'
 import { formatDateTimeLocal } from '../services/shareFormatting'
 import { recordShareAccess } from '../services/shareAccessLog'
 
@@ -501,10 +508,12 @@ function renderPasswordForm({
   title,
   meta,
   error,
+  og,
 }: {
   title: string
   meta: string
   error?: string
+  og?: ShareOgMeta
 }): Response {
   const errorHtml = error
     ? `<div class="alert alert-error" role="alert">
@@ -514,6 +523,7 @@ function renderPasswordForm({
     : ''
   const html = buildPage({
     title,
+    og,
     body: `
 <div class="header">
   <h1 class="title">${escapeHtml(title)}</h1>
@@ -560,11 +570,21 @@ function renderPasswordForm({
  *
  * @param title - 页面标题
  * @param meta - 元信息（如访问次数、过期时间）
+ * @param og - 可选 OG / Twitter 卡片元数据
  * @returns HTML 响应
  */
-export function renderConfirmPage({ title, meta }: { title: string; meta: string }): Response {
+export function renderConfirmPage({
+  title,
+  meta,
+  og,
+}: {
+  title: string
+  meta: string
+  og?: ShareOgMeta
+}): Response {
   const html = buildPage({
     title,
+    og,
     body: `
 <div class="header">
   <h1 class="title">${escapeHtml(title)}</h1>
@@ -613,19 +633,23 @@ export function renderMessagePage(title: string, message: string, status = 200):
  * @param title - 页面标题
  * @param meta - 元信息（如访问次数、过期时间）
  * @param content - 要显示的文本内容
+ * @param og - 可选 OG / Twitter 卡片元数据
  * @returns HTML 响应
  */
 export function renderContentPage({
   title,
   meta,
   content,
+  og,
 }: {
   title: string
   meta: string
   content: string
+  og?: ShareOgMeta
 }): Response {
   const html = buildPage({
     title,
+    og,
     body: `
 <div class="header">
   <h1 class="title">${escapeHtml(title)}</h1>
@@ -743,6 +767,13 @@ export async function viewTextShare(request: Request, env: Env, code: string): P
 
   const passwordHash = String((share as any).password_hash || '').trim()
   const needsPassword = Boolean(passwordHash)
+  // OG / 社交卡片：文本分享为 article；口令页用脱敏文案，非口令页用内容预览（buildOgMeta 内截断）
+  const og: ShareOgMeta = {
+    title,
+    description: needsPassword ? PASSWORD_PROTECTED_SHARE_DESCRIPTION : content,
+    type: 'article',
+    url: resolveShareOgUrl(request.url),
+  }
   const consumeAndRender = async (): Promise<Response> => {
     try {
       const { consumed } = await consumeTextShareViewIfAllowed(env.DB, shareId)
@@ -764,7 +795,7 @@ export async function viewTextShare(request: Request, env: Env, code: string): P
         user_agent: request.headers.get('User-Agent'),
         result: 'ok',
       })
-      return renderContentPage({ title, meta, content })
+      return renderContentPage({ title, meta, content, og })
     } catch {
       return renderMessagePage('分享', '访问失败，请稍后重试', 500)
     }
@@ -772,10 +803,10 @@ export async function viewTextShare(request: Request, env: Env, code: string): P
 
   if (request.method.toUpperCase() === 'GET') {
     if (needsPassword) {
-      return renderPasswordForm({ title, meta })
+      return renderPasswordForm({ title, meta, og })
     }
 
-    return renderConfirmPage({ title, meta })
+    return renderConfirmPage({ title, meta, og })
   }
 
   if (request.method.toUpperCase() === 'POST') {
@@ -785,7 +816,7 @@ export async function viewTextShare(request: Request, env: Env, code: string): P
 
     const ip = getClientIp(request)
     if (await isSharePasswordBlocked(env, normalizedCode, ip)) {
-      return renderPasswordForm({ title, meta, error: '尝试次数过多，请 10 分钟后重试' })
+      return renderPasswordForm({ title, meta, og, error: '尝试次数过多，请 10 分钟后重试' })
     }
 
     const bodySizeError = rejectInvalidContentLength(
@@ -804,7 +835,7 @@ export async function viewTextShare(request: Request, env: Env, code: string): P
     }
 
     if (!password) {
-      return renderPasswordForm({ title, meta, error: '请输入访问口令' })
+      return renderPasswordForm({ title, meta, og, error: '请输入访问口令' })
     }
 
     if (!verifyPassword(password, passwordHash)) {
@@ -817,9 +848,9 @@ export async function viewTextShare(request: Request, env: Env, code: string): P
         result: 'rejected_password',
       })
       if (await isSharePasswordBlocked(env, normalizedCode, ip)) {
-        return renderPasswordForm({ title, meta, error: '尝试次数过多，请 10 分钟后重试' })
+        return renderPasswordForm({ title, meta, og, error: '尝试次数过多，请 10 分钟后重试' })
       }
-      return renderPasswordForm({ title, meta, error: '口令不正确' })
+      return renderPasswordForm({ title, meta, og, error: '口令不正确' })
     }
 
     await clearSharePasswordFailedAttempts(env, normalizedCode, ip)

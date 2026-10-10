@@ -58,6 +58,15 @@
         </FormItem>
       </div>
 
+      <FormItem :label="t('upload.customShortCode')">
+        <Input
+          v-model="customShortCode"
+          :placeholder="t('upload.customShortCodePlaceholder')"
+          maxlength="32"
+        />
+        <p class="upload-field-hint">{{ t('upload.customShortCodeHint') }}</p>
+      </FormItem>
+
       <FormItem :label="t('upload.downloadPermission')">
         <Switch
           v-model="requireLogin"
@@ -152,6 +161,7 @@ const pendingResumeFileId = ref('')
 const expiresIn = ref(7)
 const requireLogin = ref(true)
 const uploadDir = ref('')
+const customShortCode = ref('')
 
 const {
   selectedConfigId,
@@ -251,8 +261,11 @@ const beforeUpload = ({ files }) => {
   return true
 }
 
-const buildQueuedFiles = (files = []) =>
-  files.map((item) => ({
+const buildQueuedFiles = (files = []) => {
+  // 自定义短码必须全局唯一，无法套用到多个文件；仅单文件批次生效，
+  // 多选 / 文件夹上传一律回退随机码（与后端留空→随机码一致）
+  const vanityCode = files.length === 1 ? customShortCode.value.trim() : ''
+  return files.map((item) => ({
     rawFile: item.file,
     name: item.name,
     type: item.type || item.file?.type || 'application/octet-stream',
@@ -261,6 +274,7 @@ const buildQueuedFiles = (files = []) =>
     requireLogin: requireLogin.value,
     configId: resolvedUploadConfigId.value || undefined,
     configType: selectedConfigType.value,
+    customShortCode: vanityCode || undefined,
     // 文件夹上传：每文件独立 dir（相对路径前缀拼面板 dir）；
     // 普通多选 relativePath 为空 → 回退面板 dir
     dir: buildFolderEntryDir(
@@ -268,6 +282,7 @@ const buildQueuedFiles = (files = []) =>
       uploadDir.value
     ),
   }))
+}
 
 const handleUpload = ({ files }) => {
   if (!resolvedUploadConfigId.value) {
@@ -284,6 +299,8 @@ const handleUpload = ({ files }) => {
   uploadRef.value?.clear()
   folderUploadRef.value?.clear()
   uploadQueue.enqueueFiles(queuedFiles)
+  // 自定义短码是一次性的（唯一性约束），入队后清空避免误用到下一次上传
+  customShortCode.value = ''
 }
 
 const handleResumeRequest = (fileId) => {
@@ -391,6 +408,12 @@ onUnmounted(() => {
   color: var(--nb-gray-500);
   font-size: 14px;
   margin-top: var(--nb-space-sm);
+}
+
+.upload-field-hint {
+  color: var(--nb-gray-500);
+  font-size: 12px;
+  margin-top: var(--nb-space-xs);
 }
 
 .upload-config-alert {

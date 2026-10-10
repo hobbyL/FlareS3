@@ -147,6 +147,26 @@ export function confirmUploadNotPendingError(): UploadRouteError {
   })
 }
 
+export function customShortCodeInvalidError(
+  message: string = '自定义短码格式不正确'
+): UploadRouteError {
+  return createUploadError({
+    status: 400,
+    code: 'UPLOAD_CUSTOM_SHORT_CODE_INVALID',
+    message,
+  })
+}
+
+export function customShortCodeConflictError(
+  message: string = '该自定义短码已被占用，请更换后重试'
+): UploadRouteError {
+  return createUploadError({
+    status: 409,
+    code: 'UPLOAD_CUSTOM_SHORT_CODE_CONFLICT',
+    message,
+  })
+}
+
 export function multipartNotInitializedError(): UploadRouteError {
   return createUploadError({
     status: 400,
@@ -229,6 +249,11 @@ export function mapUnexpectedUploadError(
 ): UploadRouteError {
   if (isUploadRouteError(error)) {
     return error
+  }
+
+  // 自定义短码落库竞态冲突：统一映射为 409（与路由层预检文案一致）
+  if (error instanceof Error && error.message === 'create_file_record_short_code_conflict') {
+    return customShortCodeConflictError()
   }
 
   if (error instanceof SyntaxError || (error instanceof Error && error.message === 'empty_body')) {

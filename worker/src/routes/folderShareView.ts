@@ -8,7 +8,19 @@ import {
   consumeFolderShareViewIfAllowed,
   SHARE_VIEW_LIMIT_EXHAUSTED_MESSAGE,
 } from '../services/shareViewGuard'
-import { buildSanitizedSharedDownloadResponse } from '../services/fileShareDownload'
+import {
+  buildSanitizedSharedDownloadResponse,
+  MAX_INLINE_TEXT_BYTES,
+} from '../services/fileShareDownload'
+import {
+  getFilenameExtension,
+  normalizeContentType,
+  resolvePreviewMode,
+} from '../services/filePreview'
+import {
+  MAX_UPSTREAM_ERROR_TEXT_BYTES,
+  readBoundedResponseText,
+} from '../services/upstreamResponsePolicy'
 import { fetchWithUpstreamTimeout } from '../services/upstreamFetch'
 import { recordShareAccess } from '../services/shareAccessLog'
 import {
@@ -28,7 +40,13 @@ import {
   renderFolderListPage,
   renderFolderMessagePage,
   renderFolderPasswordForm,
+  renderFolderTextPreviewPage,
 } from './folderSharePages'
+import {
+  resolveShareOgUrl,
+  PASSWORD_PROTECTED_SHARE_DESCRIPTION,
+  type ShareOgMeta,
+} from './sharePage'
 
 function getBasename(key: string): string {
   const normalized = String(key || '')
@@ -112,6 +130,71 @@ async function buildFolderDownloadResponse(
   }
 }
 
+type FolderPreviewTextResult =
+  | { ok: true; text: string; truncated: boolean }
+  | { ok: false; error: { status: number; message: string } }
+
+/** 文件夹子文件是否为可内联文本（仅按扩展名判定，folder 列表无 content_type） */
+function isFolderTextPreviewable(filename: string): boolean {
+  return (
+    resolvePreviewMode(normalizeContentType(''), getFilenameExtension(filename))?.kind === 'proxy'
+  )
+}
+
+/**
+ * 读取文件夹子文件文本用于内联预览（超限按字节截断）。
+ *
+ * 复用 `buildFolderDownloadResponse` 同一 provider/R2 字节源（它返回 Response，
+ * 故此处独立取字节，不拆其响应）；在守卫与口令校验之后调用，恰好一次消费。
+ */
+async function buildFolderPreviewText(
+  env: Env,
+  configId: string,
+  fullKey: string,
+  filename: string,
+  maxBytes: number
+): Promise<FolderPreviewTextResult> {
+  const provider = await createProvider(env, configId)
+  if (!provider) {
+    return { ok: false, error: { status: 503, message: '存储配置未找到' } }
+  }
+
+  try {
+    const result = await provider.download(fullKey, filename, 3600)
+    const upstream =
+      result.kind === 'redirect'
+        ? // 上游拉取经统一超时封装（GET 只读，超时按配置轻量重试）
+          await fetchWithUpstreamTimeout(result.url, { method: 'GET' })
+        : result.response
+
+    if (!upstream.ok) {
+      await readBoundedResponseText(
+        upstream,
+        MAX_UPSTREAM_ERROR_TEXT_BYTES,
+        '共享目录预览错误响应',
+        {
+          truncate: true,
+        }
+      ).catch(() => '')
+      return {
+        ok: false,
+        error: { status: upstream.status || 502, message: '文件下载失败，请稍后重试' },
+      }
+    }
+
+    const declaredLength = Number(upstream.headers.get('Content-Length') || '')
+    const truncated = Number.isFinite(declaredLength) && declaredLength > maxBytes
+    const text = await readBoundedResponseText(upstream, maxBytes, '共享目录预览内容', {
+      truncate: true,
+    })
+    return { ok: true, text, truncated }
+  } catch (error) {
+    // 上游错误详情仅进服务端日志，响应体保持固定文案（对齐 file 分享下载管线）
+    console.error('[folderShareView] provider preview failed', error)
+    return { ok: false, error: { status: 502, message: '文件下载失败，请稍后重试' } }
+  }
+}
+
 /**
  * folder 分享视图处理（/f/:code 双模的 folder 分支）。
  *
@@ -175,6 +258,17 @@ export async function tryHandleFolderShareView(
   const title = buildFolderTitle(share.prefix)
   const meta = buildShareMeta(share)
 
+  // OG / 社交卡片：文件夹分享为 website；口令未解锁时脱敏，否则用通用目录文案
+  const og: ShareOgMeta = {
+    title,
+    description:
+      needsPassword && !hasValidCookie
+        ? PASSWORD_PROTECTED_SHARE_DESCRIPTION
+        : '共享目录，点击浏览文件。',
+    type: 'website',
+    url: resolveShareOgUrl(request.url),
+  }
+
   const ip = getClientIp(request)
   const userAgent = request.headers.get('User-Agent')
 
@@ -190,6 +284,7 @@ export async function tryHandleFolderShareView(
         title,
         meta,
         path: pathResult.path,
+        og,
       })
     }
 
@@ -211,6 +306,7 @@ export async function tryHandleFolderShareView(
         sharePrefix: share.prefix,
         folders: listResult.common_prefixes || [],
         objects: listResult.contents || [],
+        og,
       })
     } catch (error) {
       console.error('[folderShareView] provider list failed', error)
@@ -279,6 +375,7 @@ export async function tryHandleFolderShareView(
           title,
           meta,
           path: '',
+          og,
           error: '尝试次数过多，请 10 分钟后重试',
         })
       }
@@ -289,6 +386,7 @@ export async function tryHandleFolderShareView(
           title,
           meta,
           path: '',
+          og,
           error: '请输入访问口令',
         })
       }
@@ -309,6 +407,7 @@ export async function tryHandleFolderShareView(
             title,
             meta,
             path: '',
+            og,
             error: '尝试次数过多，请 10 分钟后重试',
           })
         }
@@ -317,6 +416,7 @@ export async function tryHandleFolderShareView(
           title,
           meta,
           path: '',
+          og,
           error: '口令不正确',
         })
       }
@@ -333,7 +433,7 @@ export async function tryHandleFolderShareView(
       }
     }
 
-    // 下载请求：消费访问次数后走 provider 下载
+    // 下载请求：消费访问次数后走 provider 下载 / 文本内联
     if (downloadPath) {
       try {
         const { consumed } = await consumeFolderShareViewIfAllowed(env.DB, share.id)
@@ -349,12 +449,32 @@ export async function tryHandleFolderShareView(
           return renderFolderMessagePage('分享目录', SHARE_VIEW_LIMIT_EXHAUSTED_MESSAGE, 410)
         }
 
-        const downloadResponse = await buildFolderDownloadResponse(
-          env,
-          share.config_id,
-          `${share.prefix}${downloadPath}`,
-          getBasename(downloadPath)
-        )
+        const basename = getBasename(downloadPath)
+        // 消费（恰好一次）后依意图分流：文本子文件 inline → 内联渲染；否则既有下载。
+        // inline 意图仅对文本生效，非文本/未知 ?inline=1 回退下载（不新开绕过端点）。
+        const wantInline =
+          url.searchParams.get('inline') === '1' && isFolderTextPreviewable(basename)
+        const fullKey = `${share.prefix}${downloadPath}`
+        const response = wantInline
+          ? await (async () => {
+              const preview = await buildFolderPreviewText(
+                env,
+                share.config_id,
+                fullKey,
+                basename,
+                MAX_INLINE_TEXT_BYTES
+              )
+              return preview.ok
+                ? renderFolderTextPreviewPage({
+                    title: basename,
+                    meta,
+                    content: preview.text,
+                    truncated: preview.truncated,
+                    og,
+                  })
+                : renderFolderMessagePage('分享目录', preview.error.message, preview.error.status)
+            })()
+          : await buildFolderDownloadResponse(env, share.config_id, fullKey, basename)
 
         await recordShareAccess(env, {
           share_type: 'folder',
@@ -365,7 +485,7 @@ export async function tryHandleFolderShareView(
           result: 'ok',
         })
 
-        return respondWithCookie(downloadResponse)
+        return respondWithCookie(response)
       } catch {
         return renderFolderMessagePage('分享目录', '访问失败，请稍后重试', 500)
       }
