@@ -552,6 +552,15 @@ router.post(
   )
 )
 router.post(
+  '/api/mount/cross-config-copy',
+  withAdmin(
+    lazyRoute(
+      () => import('./routes/mount'),
+      (module, request, env) => module.crossConfigCopyObject(request, env)
+    )
+  )
+)
+router.post(
   '/api/mount/folder-share',
   withAuth(
     lazyRoute(

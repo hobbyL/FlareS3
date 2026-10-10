@@ -1,5 +1,14 @@
 import { h } from 'vue'
-import { Download, Eye, FolderInput, FolderOpen, Pencil, Share2, Trash2 } from 'lucide-vue-next'
+import {
+  Copy,
+  Download,
+  Eye,
+  FolderInput,
+  FolderOpen,
+  Pencil,
+  Share2,
+  Trash2,
+} from 'lucide-vue-next'
 import Button from '../ui/button/Button.vue'
 import Tooltip from '../ui/tooltip/Tooltip.vue'
 import TableCellText from '../ui/table/TableCellText.vue'
@@ -22,6 +31,8 @@ export function buildMountTableColumns({
   onRenameObject = () => {},
   onMoveObject = () => {},
   onShareFolder = () => {},
+  // 跨存储复制：仅多存储配置环境注入（单配置传 undefined 即隐藏入口）
+  onCrossCopyObject = undefined,
 } = {}) {
   const translate = typeof t === 'function' ? t : (key) => key
 
@@ -130,7 +141,7 @@ export function buildMountTableColumns({
 
         const canPreview = isMountedObjectPreviewSupported(row.key)
 
-        return h('div', { class: 'action-buttons' }, [
+        const actionButtons = [
           h(
             Button,
             {
@@ -183,6 +194,28 @@ export function buildMountTableColumns({
               translate('mount.move.actionMove'),
             ]
           ),
+        ]
+
+        // 跨存储复制入口：仅多存储配置环境（onCrossCopyObject 由父层按 configs.length>1 注入）
+        if (typeof onCrossCopyObject === 'function') {
+          actionButtons.push(
+            h(
+              Button,
+              {
+                size: 'small',
+                type: 'default',
+                disabled: loading || deleting,
+                onClick: () => onCrossCopyObject(row.key),
+              },
+              () => [
+                h(Copy, { size: 16, style: 'margin-right: 4px' }),
+                translate('mount.crossCopy.action'),
+              ]
+            )
+          )
+        }
+
+        actionButtons.push(
           h(
             Button,
             {
@@ -196,8 +229,10 @@ export function buildMountTableColumns({
               h(Trash2, { size: 16, style: 'margin-right: 4px' }),
               translate('mount.actions.delete'),
             ]
-          ),
-        ])
+          )
+        )
+
+        return h('div', { class: 'action-buttons' }, actionButtons)
       },
     },
   ]

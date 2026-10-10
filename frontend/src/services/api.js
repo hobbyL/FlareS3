@@ -765,6 +765,32 @@ export default {
     })
   },
 
+  /**
+   * 跨存储配置复制对象（仅管理员；服务端中转，上限与挂载上传一致）
+   * @param {object} options
+   * @param {string} options.sourceConfigId - 源存储配置 ID
+   * @param {string} options.sourceKey - 源对象 key（文件对象）
+   * @param {string} options.destConfigId - 目标存储配置 ID
+   * @param {string} [options.destDir] - 目标目录（空 = 挂载点根）
+   * @param {boolean} [options.deleteSourceAfterCopy] - 复制成功后删除源对象（默认 false）
+   * @returns {Promise<{ok: boolean, key: string, source_deleted: boolean}>}
+   */
+  crossConfigCopyMountObject({
+    sourceConfigId,
+    sourceKey,
+    destConfigId,
+    destDir = '',
+    deleteSourceAfterCopy = false,
+  } = {}) {
+    return api.post('/mount/cross-config-copy', {
+      source_config_id: sourceConfigId,
+      source_key: sourceKey,
+      dest_config_id: destConfigId,
+      dest_dir: destDir,
+      delete_source_after_copy: deleteSourceAfterCopy,
+    })
+  },
+
   // ========== 用户管理 ==========
 
   /**

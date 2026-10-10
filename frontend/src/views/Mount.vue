@@ -96,6 +96,20 @@
         @confirm="handleMoveConfirm"
       />
 
+      <MountCrossCopyModal
+        v-if="showCrossCopyModal"
+        :show="showCrossCopyModal"
+        :source-key="crossCopySourceKey"
+        :source-name="crossCopySourceName"
+        :source-dir="crossCopySourceDir"
+        :source-config-id="selectedConfigId"
+        :config-options="configOptions"
+        :loading="crossCopying"
+        @update:show="showCrossCopyModal = $event"
+        @cancel="closeCrossCopyModal"
+        @confirm="handleCrossCopyConfirm"
+      />
+
       <MountUploadProgressModal
         :show="showUploadProgressModal"
         :uploading="uploading"
@@ -144,6 +158,9 @@ const MountedObjectPreviewModal = defineAsyncComponent(
   () => import('../components/mount/MountedObjectPreviewModal.vue')
 )
 const MountMoveModal = defineAsyncComponent(() => import('../components/mount/MountMoveModal.vue'))
+const MountCrossCopyModal = defineAsyncComponent(
+  () => import('../components/mount/MountCrossCopyModal.vue')
+)
 const FolderShareModal = defineAsyncComponent(
   () => import('../components/mount/FolderShareModal.vue')
 )
@@ -445,6 +462,75 @@ const closeMoveModalForce = () => {
   moveSourceDir.value = ''
 }
 
+// ── 跨存储复制 ──
+
+const showCrossCopyModal = ref(false)
+const crossCopySourceKey = ref('')
+const crossCopySourceName = ref('')
+const crossCopySourceDir = ref('')
+const crossCopying = ref(false)
+
+const openCrossCopyModal = (key) => {
+  const objectKey = String(key || '').trim()
+  if (!objectKey || objectKey.endsWith('/')) return
+  if (loading.value || crossCopying.value) return
+  if (!selectedConfigId.value) return
+  // 单配置环境无跨存储语义，隐藏入口（columns 注入已按 configs.length>1 控制，此处兜底）
+  if (configs.value.length <= 1) return
+
+  crossCopySourceKey.value = objectKey
+  crossCopySourceName.value = getMountObjectBasename(objectKey) || objectKey
+  crossCopySourceDir.value = getMountObjectDirPrefix(objectKey)
+  showCrossCopyModal.value = true
+}
+
+const closeCrossCopyModal = () => {
+  if (crossCopying.value) return
+  showCrossCopyModal.value = false
+  crossCopySourceKey.value = ''
+  crossCopySourceName.value = ''
+  crossCopySourceDir.value = ''
+}
+
+const closeCrossCopyModalForce = () => {
+  showCrossCopyModal.value = false
+  crossCopySourceKey.value = ''
+  crossCopySourceName.value = ''
+  crossCopySourceDir.value = ''
+}
+
+const handleCrossCopyConfirm = async ({ destConfigId, destDir, deleteSourceAfterCopy } = {}) => {
+  if (crossCopying.value) return
+
+  const sourceConfigId = String(selectedConfigId.value || '').trim()
+  const sourceKey = String(crossCopySourceKey.value || '').trim()
+  const targetConfigId = String(destConfigId || '').trim()
+  if (!sourceConfigId || !sourceKey || !targetConfigId) return
+
+  crossCopying.value = true
+  try {
+    const result = await api.crossConfigCopyMountObject({
+      sourceConfigId,
+      sourceKey,
+      destConfigId: targetConfigId,
+      destDir: String(destDir || '').trim(),
+      deleteSourceAfterCopy: Boolean(deleteSourceAfterCopy),
+    })
+    // 删源失败时复制本身已成功：仍提示成功，但明确告知源未删除
+    if (result?.source_deleted) {
+      message.success(t('mount.crossCopy.successMoved'))
+    } else {
+      message.success(t('mount.crossCopy.successCopied'))
+    }
+    closeCrossCopyModalForce()
+    await handleRefresh()
+  } catch (error) {
+    message.error(error.response?.data?.error || t('mount.crossCopy.failed'))
+  } finally {
+    crossCopying.value = false
+  }
+}
+
 const handleMoveConfirm = async ({ toDir, newName } = {}) => {
   if (moving.value) return
 
@@ -581,6 +667,8 @@ const columns = computed(() =>
     onRenameObject: (key) => openMoveModal(key, 'rename'),
     onMoveObject: (key) => openMoveModal(key, 'move'),
     onShareFolder: openShareFolder,
+    // 跨存储复制入口仅多存储配置环境可见（单配置隐藏）
+    onCrossCopyObject: configs.value.length > 1 ? openCrossCopyModal : undefined,
   })
 )
 

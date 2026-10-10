@@ -7,6 +7,8 @@ import { getClientIp } from '../middleware/rateLimit'
 import { limitedPreviewResponse } from '../services/previewResponsePolicy'
 import { rejectInvalidContentLength } from '../services/requestBodyPolicy'
 import { normalizeStorageFilename, normalizeStoragePath } from '../services/storage/pathPolicy'
+import { fetchWithUpstreamTimeout } from '../services/upstreamFetch'
+import { logWarn } from '../utils/log'
 import {
   measureRouteStep,
   withRouteTimingHeaders,
@@ -967,4 +969,275 @@ export async function moveMountedObject(request: Request, env: Env): Promise<Res
   })
 
   return jsonResponse({ ok: true, key: destKey })
+}
+
+// ── 跨存储复制 ──
+
+// 跨存储复制中转上限与 mount 上传同口径：download 全量读入 ArrayBuffer → upload
+// 全量写出，与上传路径的 Worker 内存边界完全同构，不引入第二套上限常量
+const MAX_CROSS_CONFIG_COPY_BYTES = MAX_MOUNT_UPLOAD_BYTES
+
+/**
+ * 读取对象 body 用于服务端中转。
+ *
+ * redirect 形态（R2 预签名）：Worker 出网 GET 拉回 body；
+ * proxy 形态（WebDAV/Koofr）：直接取响应 body。
+ */
+async function readObjectBody(provider: StorageProvider, key: string): Promise<ArrayBuffer> {
+  const result = await provider.download(key, 'download', 3600)
+  if (result.kind === 'proxy') {
+    return result.response.arrayBuffer()
+  }
+  const response = await fetchWithUpstreamTimeout(result.url, { method: 'GET' })
+  if (!response.ok) {
+    throw new StorageError(
+      `读取源对象失败（HTTP ${response.status}）`,
+      undefined,
+      response.status === 404 ? 404 : 502
+    )
+  }
+  return response.arrayBuffer()
+}
+
+/**
+ * 写出对象 body（中转语义要求 Worker 完成上传，不得把 redirect URL 丢给前端）。
+ *
+ * redirect 形态（R2 预签名 PUT）：Worker 出网 PUT；consumed 形态：已完成。
+ */
+async function writeObjectBody(
+  provider: StorageProvider,
+  key: string,
+  body: ArrayBuffer,
+  contentType: string,
+  size: number
+): Promise<void> {
+  const result = await provider.upload(key, body, contentType, size)
+  if (result.kind === 'consumed') return
+  const response = await fetchWithUpstreamTimeout(result.url, {
+    method: 'PUT',
+    headers: { 'Content-Type': contentType },
+    body,
+  })
+  if (!response.ok) {
+    throw new StorageError(`写入目标对象失败（HTTP ${response.status}）`, undefined, 502)
+  }
+}
+
+/**
+ * 逐级确保目标 key 的父目录存在（镜像 server.ts 中转上传的目录创建容错：
+ * 已存在或创建失败均 continue，由后续 upload 报真实错误）。
+ */
+async function ensureParentFolders(provider: StorageProvider, key: string): Promise<void> {
+  const lastSlash = key.lastIndexOf('/')
+  if (lastSlash <= 0) return
+  const dirParts = key.slice(0, lastSlash).split('/').filter(Boolean)
+  let current = ''
+  for (const part of dirParts) {
+    current += `/${part}`
+    try {
+      await provider.createFolder(`${current}/`)
+    } catch {
+      // directory already exists or creation failed, continue
+    }
+  }
+}
+
+/**
+ * 跨存储配置复制对象（R2↔WebDAV↔Koofr）
+ *
+ * 服务端中转：download 拉回 body → dest.upload 写出；勾选 delete_source
+ * 时复制成功后删除源对象（=迁移语义；删除失败不回滚目标，仅 warn）。
+ * 上限与 mount 上传同口径（100MB）——超大文件跨后端迁移不在本任务范围。
+ *
+ * @route POST /api/mount/cross-config-copy（仅管理员）
+ * @param request - HTTP 请求对象（需要认证）
+ * @param env - Cloudflare Workers 环境变量
+ * @returns JSON 响应 `{ ok, key, source_deleted }`
+ *
+ * @example
+ * // 请求体
+ * {
+ *   "source_config_id": "webdav-1",
+ *   "source_key": "docs/a.txt",
+ *   "dest_config_id": "koofr-1",
+ *   "dest_dir": "backup",          // 可选，空 = 目标挂载点根
+ *   "delete_source_after_copy": false // 可选，默认 false
+ * }
+ *
+ * // 成功响应 (200)
+ * { "ok": true, "key": "backup/a.txt", "source_deleted": false }
+ *
+ * // 参数错误 (400)
+ * { "error": "缺少 source_config_id" }
+ * { "error": "源与目标配置相同" }
+ *
+ * // 超过中转上限 (413)
+ * { "error": "文件过大，跨存储复制上限为 100MB" }
+ *
+ * // 目标已存在 (409)
+ * { "error": "目标文件已存在" }
+ *
+ * // 配置不存在 (404)
+ * { "error": "配置不存在或不可用" }
+ */
+export async function crossConfigCopyObject(request: Request, env: Env): Promise<Response> {
+  const user = getUser(request)
+  if (!user) return jsonResponse({ error: '未授权' }, 401)
+
+  let sourceConfigId = ''
+  let rawSourceKey = ''
+  let destConfigId = ''
+  let rawDestDir: string | undefined
+  let deleteSourceAfterCopy = false
+
+  try {
+    const body = await parseJson<{
+      source_config_id?: string
+      source_key?: string
+      dest_config_id?: string
+      dest_dir?: string
+      delete_source_after_copy?: boolean
+    }>(request)
+    sourceConfigId = String(body.source_config_id || '').trim()
+    rawSourceKey = String(body.source_key || '').trim()
+    destConfigId = String(body.dest_config_id || '').trim()
+    rawDestDir = body.dest_dir
+    deleteSourceAfterCopy = Boolean(body.delete_source_after_copy)
+  } catch (error) {
+    return invalidJsonBodyResponse(error, '请求格式错误')
+  }
+
+  if (!sourceConfigId) {
+    return jsonResponse({ error: '缺少 source_config_id' }, 400)
+  }
+  if (!rawSourceKey) {
+    return jsonResponse({ error: '缺少 source_key' }, 400)
+  }
+  if (!destConfigId) {
+    return jsonResponse({ error: '缺少 dest_config_id' }, 400)
+  }
+  if (sourceConfigId === destConfigId) {
+    return jsonResponse({ error: '源与目标配置相同' }, 400)
+  }
+
+  // 源 key：文件对象（禁止尾斜杠/穿越/绝对路径，与 moveMountedObject 同守卫）
+  const keyResult = normalizeMountKey(rawSourceKey)
+  if ('response' in keyResult) return keyResult.response
+  const sourceKey = keyResult.key
+
+  // 目标目录：可空（挂载点根）、可带尾斜杠
+  const destDirResult = normalizeStoragePath(rawDestDir, {
+    allowEmpty: true,
+    allowTrailingSlash: true,
+  })
+  if (!destDirResult.ok) {
+    return jsonResponse({ error: destDirResult.message }, 400)
+  }
+  const destDir = destDirResult.key.replace(/\/+$/, '')
+  const basename = sourceKey.slice(sourceKey.lastIndexOf('/') + 1)
+  const destKey = destDir ? `${destDir}/${basename}` : basename
+
+  const sourceProvider = await createProvider(env, sourceConfigId)
+  if (!sourceProvider) {
+    return jsonResponse({ error: '源配置不存在或不可用' }, 404)
+  }
+  const destProvider = await createProvider(env, destConfigId)
+  if (!destProvider) {
+    return jsonResponse({ error: '目标配置不存在或不可用' }, 404)
+  }
+
+  // 大小守卫前置（半写防护）：超限直接 413，不触碰 download/upload
+  let sourceSize: number | null = null
+  try {
+    sourceSize = await sourceProvider.getSize(sourceKey)
+  } catch (error) {
+    const formatted = formatStorageError(error)
+    if (formatted.status === 404) {
+      return jsonResponse({ error: '对象不存在' }, 404)
+    }
+    return jsonResponse({ error: `检查源对象失败（${formatted.message}）` }, formatted.status)
+  }
+  if (typeof sourceSize === 'number' && sourceSize > MAX_CROSS_CONFIG_COPY_BYTES) {
+    return jsonResponse(
+      { error: `文件过大，跨存储复制上限为 ${MAX_CROSS_CONFIG_COPY_BYTES / 1024 / 1024}MB` },
+      413
+    )
+  }
+
+  // 目标占用检查（默认不覆盖；与 moveMountedObject 的 409 语义一致）
+  try {
+    const destExists = await destProvider.checkExists(destKey)
+    if (destExists) {
+      return jsonResponse({ error: '目标文件已存在' }, 409)
+    }
+  } catch (error) {
+    const formatted = formatStorageError(error)
+    return jsonResponse({ error: `检查目标失败（${formatted.message}）` }, formatted.status)
+  }
+
+  // 中转：拉回 → 写出；写出失败 best-effort 清理目标，不留半写
+  let body: ArrayBuffer
+  try {
+    body = await readObjectBody(sourceProvider, sourceKey)
+  } catch (error) {
+    const formatted = formatStorageError(error)
+    if (formatted.status === 404) {
+      return jsonResponse({ error: '对象不存在' }, 404)
+    }
+    return jsonResponse({ error: `复制失败（${formatted.message}）` }, formatted.status)
+  }
+
+  const contentType = 'application/octet-stream'
+
+  try {
+    await ensureParentFolders(destProvider, destKey)
+    await writeObjectBody(
+      destProvider,
+      destKey,
+      body,
+      contentType,
+      body.byteLength || sourceSize || 0
+    )
+  } catch (error) {
+    // best-effort 清理可能的目标半写；清理失败仅 warn（下次复制会先 409 拦截）
+    await Promise.allSettled([destProvider.delete(destKey)])
+    const formatted = formatStorageError(error)
+    return jsonResponse({ error: `复制失败（${formatted.message}）` }, formatted.status)
+  }
+
+  // 可选删源（=迁移）：失败不回滚目标，仅 warn；幂等重试同一复制即可收敛
+  let sourceDeleted = false
+  if (deleteSourceAfterCopy) {
+    try {
+      await sourceProvider.delete(sourceKey)
+      sourceDeleted = true
+    } catch (error) {
+      logWarn('mount.crossConfigCopyDeleteSourceFailed', {
+        sourceConfigId,
+        sourceKey,
+        destConfigId,
+        destKey,
+        error: String(error instanceof Error ? error.message : error),
+      })
+    }
+  }
+
+  await logAudit(env.DB, {
+    actorUserId: user.id,
+    action: 'MOUNT_CROSS_CONFIG_COPY',
+    targetType: 'mount_object',
+    targetId: destKey,
+    ip: getClientIp(request),
+    userAgent: request.headers.get('User-Agent') || undefined,
+    metadata: {
+      sourceConfigId,
+      sourceKey,
+      destConfigId,
+      destKey,
+      size: body.byteLength || sourceSize || 0,
+      sourceDeleted,
+    },
+  })
+
+  return jsonResponse({ ok: true, key: destKey, source_deleted: sourceDeleted })
 }
