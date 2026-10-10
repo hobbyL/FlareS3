@@ -215,6 +215,9 @@ test("R2Provider.move surfaces copy failures without deleting the source", async
     error.$metadata = { httpStatusCode: 400 };
     throw error;
   };
+  // size 未知 + EntityTooLarge 回退路径需要补齐 totalSize；HEAD 返回 null（对象已不存在）
+  // 时无法多段拷贝，必须原样上抛原始错误而不是误删源对象。
+  r2.getObjectSize = async () => null;
   r2.deleteObject = async () => {
     deleteCalled = true;
   };
@@ -303,7 +306,7 @@ test("R2Provider.move treats missing source after copy as success", async () => 
   }
 });
 
-test("R2Provider.move prechecks the 5GiB CopyObject limit before any request", async () => {
+test("R2Provider.move routes >5GiB objects through multipart copy then deletes source", async () => {
   const { r2, providerModule } = loadR2ProviderModules();
   const config = {
     endpoint: "e",
@@ -312,30 +315,104 @@ test("R2Provider.move prechecks the 5GiB CopyObject limit before any request", a
     bucketName: "b",
   };
 
-  let requests = 0;
+  const multipartCalls = [];
+  const deleteCalls = [];
+  let singleCopyCalled = false;
   r2.copyObject = async () => {
-    requests += 1;
+    singleCopyCalled = true;
   };
-  r2.deleteObject = async () => {
-    requests += 1;
+  r2.multipartCopyObject = async (receivedConfig, sourceKey, destKey, size) => {
+    multipartCalls.push({ receivedConfig, sourceKey, destKey, size });
+  };
+  r2.deleteObject = async (_config, key) => {
+    deleteCalls.push(key);
   };
 
-  await assert.rejects(
-    () =>
-      providerModule.R2Provider.prototype.move.call(
-        { config },
-        "huge.bin",
-        "renamed.bin",
-        { size: 5 * 1024 * 1024 * 1024 + 1 },
-      ),
-    (error) => {
-      assert.equal(error.name, "StorageError");
-      assert.equal(error.code, "EntityTooLarge");
-      assert.equal(error.httpStatusCode, 413);
-      return true;
-    },
+  const size = 5 * 1024 * 1024 * 1024 + 1; // 恰好越过 5GiB 上限
+  await providerModule.R2Provider.prototype.move.call(
+    { config },
+    "huge.bin",
+    "renamed.bin",
+    { size },
   );
-  assert.equal(requests, 0);
+
+  // >5GiB 走多段拷贝、不走单次 CopyObject；拷贝后照常删除源（move=copy+delete）
+  assert.equal(singleCopyCalled, false);
+  assert.deepEqual(multipartCalls, [
+    {
+      receivedConfig: config,
+      sourceKey: "huge.bin",
+      destKey: "renamed.bin",
+      size,
+    },
+  ]);
+  assert.deepEqual(deleteCalls, ["huge.bin"]);
+});
+
+test("R2Provider.move keeps the single CopyObject path for sizes at or below 5GiB", async () => {
+  const { r2, providerModule } = loadR2ProviderModules();
+  const config = {
+    endpoint: "e",
+    accessKeyId: "ak",
+    secretAccessKey: "sk",
+    bucketName: "b",
+  };
+
+  let multipartCalled = false;
+  const copyCalls = [];
+  r2.copyObject = async (_config, sourceKey, destKey) => {
+    copyCalls.push({ sourceKey, destKey });
+  };
+  r2.multipartCopyObject = async () => {
+    multipartCalled = true;
+  };
+  r2.deleteObject = async () => {};
+
+  await providerModule.R2Provider.prototype.move.call(
+    { config },
+    "exact.bin",
+    "renamed.bin",
+    { size: 5 * 1024 * 1024 * 1024 }, // 恰好 5GiB：仍走单次 CopyObject
+  );
+
+  assert.equal(multipartCalled, false);
+  assert.deepEqual(copyCalls, [
+    { sourceKey: "exact.bin", destKey: "renamed.bin" },
+  ]);
+});
+
+test("R2Provider.move falls back to multipart when single copy reports EntityTooLarge", async () => {
+  const { r2, providerModule } = loadR2ProviderModules();
+  const config = {
+    endpoint: "e",
+    accessKeyId: "ak",
+    secretAccessKey: "sk",
+    bucketName: "b",
+  };
+
+  const multipartCalls = [];
+  r2.copyObject = async () => {
+    const error = new Error("too large for single copy");
+    error.name = "EntityTooLarge";
+    error.$metadata = { httpStatusCode: 400 };
+    throw error;
+  };
+  // size 未知：HEAD 补齐 totalSize 后回退多段拷贝
+  r2.getObjectSize = async () => 7 * 1024 * 1024 * 1024;
+  r2.multipartCopyObject = async (_config, sourceKey, destKey, size) => {
+    multipartCalls.push({ sourceKey, destKey, size });
+  };
+  r2.deleteObject = async () => {};
+
+  await providerModule.R2Provider.prototype.move.call(
+    { config },
+    "a.bin",
+    "b.bin",
+  );
+
+  assert.deepEqual(multipartCalls, [
+    { sourceKey: "a.bin", destKey: "b.bin", size: 7 * 1024 * 1024 * 1024 },
+  ]);
 });
 
 // ── r2Objects.copyObject ──

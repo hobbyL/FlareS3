@@ -187,3 +187,37 @@ test("library-mode empty directory registry is managed by migrations", () => {
   assert.match(migration, /SELECT RAISE\(ABORT,/);
   assert.match(migration, /FROM users WHERE id = NEW\.owner_id/);
 });
+
+test("api tokens table and owner guards are managed by migrations", () => {
+  const migration = fs.readFileSync(
+    path.join(workerRoot, "migrations", "0009_api_tokens.sql"),
+    "utf8",
+  );
+
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS api_tokens \(/);
+
+  // token_hash 唯一：库内只认哈希，且不得重复
+  assert.match(
+    migration,
+    /CREATE UNIQUE INDEX IF NOT EXISTS idx_api_tokens_token_hash ON api_tokens\(token_hash\)/,
+  );
+  // 按 user_id 列举需有索引
+  assert.match(
+    migration,
+    /CREATE INDEX IF NOT EXISTS idx_api_tokens_user_id ON api_tokens\(user_id\)/,
+  );
+
+  for (const triggerName of [
+    "trg_api_tokens_user_exists_insert",
+    "trg_api_tokens_user_exists_update",
+  ]) {
+    assert.match(
+      migration,
+      new RegExp(`CREATE TRIGGER IF NOT EXISTS ${triggerName}\\b`),
+    );
+  }
+
+  // owner 存在性护栏：user_id 必须引用 users.id
+  assert.match(migration, /SELECT RAISE\(ABORT,/);
+  assert.match(migration, /FROM users WHERE id = NEW\.user_id/);
+});

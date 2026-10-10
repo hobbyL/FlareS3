@@ -335,6 +335,7 @@ import {
   Trash2,
 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
+import { useRoute } from 'vue-router'
 import api from '../services/api'
 import { useAuthStore } from '../stores/auth'
 import { useThemeStore } from '../stores/theme'
@@ -367,6 +368,7 @@ const themeStore = useThemeStore()
 const userOptionsStore = useUserOptionsStore()
 const message = useMessage()
 const { t, locale } = useI18n({ useScope: 'global' })
+const route = useRoute()
 
 const texts = ref([])
 const loading = ref(false)
@@ -972,10 +974,31 @@ const handleClearTrashConfirm = async () => {
   }
 }
 
+// 从路由 query 带入搜索词（全局搜索点击跳转时复用文档关键词筛选）
+const applySearchFromRoute = () => {
+  const term = String(route.query.q ?? '').trim()
+  if (term) {
+    filters.value.q = term
+  }
+}
+
 onMounted(() => {
+  applySearchFromRoute()
   loadTexts()
   loadUsers()
 })
+
+// 已在文档页时再次全局搜索 → query 变化驱动重新加载
+watch(
+  () => route.query.q,
+  (next) => {
+    const term = String(next ?? '').trim()
+    if (!term || term === filters.value.q) return
+    filters.value.q = term
+    pagination.value.page = 1
+    loadTexts({ page: 1 })
+  }
+)
 
 watch(
   [isMobile, viewMode],

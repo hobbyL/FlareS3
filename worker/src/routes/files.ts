@@ -758,16 +758,6 @@ export async function permanentlyDeleteFile(
 // ── 重命名 ──
 
 /**
- * 判断 provider 异常是否表示对象超过 R2 CopyObject 上限。
- */
-function isRenameEntityTooLargeError(error: unknown): boolean {
-  return (
-    error instanceof StorageError &&
-    (error.httpStatusCode === 413 || error.code === 'EntityTooLarge')
-  )
-}
-
-/**
  * 判断 provider 异常是否表示对象在远端不存在。
  */
 function isRenameObjectMissingError(error: unknown): boolean {
@@ -862,9 +852,6 @@ function buildMovedR2Key(r2Key: string, targetDir: string): string | null {
  * // 并发状态下守卫 UPDATE 未命中 (409)
  * { "error": "文件状态已变化，请刷新后重试" }
  *
- * // 对象超过 R2 复制上限 (413)
- * { "error": "文件过大，超过 R2 复制上限（5GiB），请删除后重新上传到目标名称" }
- *
  * // 存储配置未找到 (503)
  * { "error": "存储配置未找到" }
  *
@@ -950,12 +937,6 @@ export async function renameFile(request: Request, env: Env, fileId: string): Pr
   try {
     await provider.move(oldKey, newKey, { size: Number(file.size) })
   } catch (error) {
-    if (isRenameEntityTooLargeError(error)) {
-      return jsonResponse(
-        { error: '文件过大，超过 R2 复制上限（5GiB），请删除后重新上传到目标名称' },
-        413
-      )
-    }
     if (isRenameObjectMissingError(error)) {
       return jsonResponse({ error: '文件对象不存在，无法重命名' }, 409)
     }
@@ -1051,9 +1032,6 @@ export async function renameFile(request: Request, env: Env, fileId: string): Pr
  * // 并发状态下守卫 UPDATE 未命中 (409)
  * { "error": "文件状态已变化，请刷新后重试" }
  *
- * // 对象超过 R2 复制上限 (413)
- * { "error": "文件过大，超过 R2 复制上限（5GiB），请删除后重新上传到目标目录" }
- *
  * // 存储配置未找到 (503)
  * { "error": "存储配置未找到" }
  *
@@ -1140,12 +1118,6 @@ export async function moveFile(request: Request, env: Env, fileId: string): Prom
   try {
     await provider.move(oldKey, newKey, { size: Number(file.size) })
   } catch (error) {
-    if (isRenameEntityTooLargeError(error)) {
-      return jsonResponse(
-        { error: '文件过大，超过 R2 复制上限（5GiB），请删除后重新上传到目标目录' },
-        413
-      )
-    }
     if (isRenameObjectMissingError(error)) {
       return jsonResponse({ error: '文件对象不存在，无法移动' }, 409)
     }

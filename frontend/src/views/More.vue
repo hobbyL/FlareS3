@@ -9,6 +9,18 @@
       </header>
 
       <section class="more-grid">
+        <Card class="more-card more-search-card">
+          <template #header>{{ t('search.entry') }}</template>
+          <GlobalSearch>
+            <template #trigger="{ open }">
+              <Button type="default" size="small" block @click="open">
+                <Search :size="18" />
+                {{ t('search.placeholder') }}
+              </Button>
+            </template>
+          </GlobalSearch>
+        </Card>
+
         <Card class="more-card">
           <template #header>{{ t('more.sections.account') }}</template>
 
@@ -195,6 +207,65 @@
           </div>
         </Card>
 
+        <Card class="more-card more-tokens-card">
+          <template #header>{{ t('more.tokens.sectionTitle') }}</template>
+
+          <p class="more-tokens-description">{{ t('more.tokens.description') }}</p>
+
+          <form class="token-form" @submit.prevent="handleCreateToken">
+            <Input
+              v-model="tokenForm.name"
+              :placeholder="t('more.tokens.namePlaceholder')"
+              @keyup.enter="handleCreateToken"
+            />
+            <Input
+              v-model="tokenForm.expiresIn"
+              type="number"
+              min="0"
+              :placeholder="t('more.tokens.expiresPlaceholder')"
+            />
+            <Button type="primary" size="small" :loading="creatingToken" @click="handleCreateToken">
+              {{ t('more.tokens.create') }}
+            </Button>
+          </form>
+
+          <div v-if="tokensLoading" class="session-state">{{ t('common.loading') }}</div>
+          <div v-else-if="tokensError" class="session-state">
+            {{ t('more.tokens.loadFailed') }}
+            <Button type="ghost" size="small" @click="loadTokens">
+              {{ t('more.usage.retry') }}
+            </Button>
+          </div>
+          <div v-else-if="!tokens.length" class="session-state">
+            {{ t('more.tokens.empty') }}
+          </div>
+          <ul v-else class="token-list">
+            <li v-for="item in tokenViews" :key="item.id" class="token-item">
+              <div class="token-main">
+                <div class="token-name-row">
+                  <span class="token-name">{{ item.name }}</span>
+                  <Tag :type="item.statusType" size="small">{{ item.statusLabel }}</Tag>
+                </div>
+                <div class="token-meta">
+                  <span>{{ t('more.tokens.createdAt', { time: item.createdAtLabel }) }}</span>
+                  <span>{{ item.lastUsedLabel }}</span>
+                  <span>{{ item.expiresLabel }}</span>
+                </div>
+              </div>
+              <Button
+                v-if="item.canRevoke"
+                type="ghost"
+                size="small"
+                :loading="revokingTokenId === item.id"
+                :disabled="Boolean(revokingTokenId)"
+                @click="openRevokeToken(item.id)"
+              >
+                {{ t('more.tokens.revoke') }}
+              </Button>
+            </li>
+          </ul>
+        </Card>
+
         <Card class="more-card more-admin-card">
           <template #header>
             <div class="more-card-heading">
@@ -252,16 +323,56 @@
         </Button>
       </template>
     </Modal>
+
+    <Modal
+      :show="createdTokenVisible"
+      :title="t('more.tokens.createdTitle')"
+      width="480px"
+      @update:show="handleCreatedTokenModalUpdate"
+    >
+      <p class="token-created-hint">{{ t('more.tokens.createdHint') }}</p>
+      <div class="token-plaintext-row">
+        <code class="token-plaintext">{{ createdTokenPlaintext }}</code>
+        <Button type="default" size="small" @click="copyCreatedToken">
+          {{ t('more.tokens.copy') }}
+        </Button>
+      </div>
+      <template #footer>
+        <Button type="primary" @click="closeCreatedToken">{{ t('more.tokens.close') }}</Button>
+      </template>
+    </Modal>
+
+    <Modal
+      :show="revokeTokenVisible"
+      :title="t('more.tokens.revokeTitle')"
+      width="420px"
+      @update:show="handleRevokeTokenModalUpdate"
+    >
+      <p class="session-confirm-text">{{ t('more.tokens.confirmRevoke') }}</p>
+      <template #footer>
+        <Button
+          type="default"
+          :disabled="Boolean(revokingTokenId)"
+          @click="revokeTokenVisible = false"
+        >
+          {{ t('common.cancel') }}
+        </Button>
+        <Button type="danger" :loading="Boolean(revokingTokenId)" @click="confirmRevokeToken">
+          {{ t('more.tokens.revoke') }}
+        </Button>
+      </template>
+    </Modal>
   </AppLayout>
 </template>
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { HardDrive, History, LayoutDashboard, Settings, Users } from 'lucide-vue-next'
+import { HardDrive, History, LayoutDashboard, Search, Settings, Users } from 'lucide-vue-next'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import LogoutConfirmModal from '../components/auth/LogoutConfirmModal.vue'
 import AppLayout from '../components/layout/AppLayout.vue'
+import GlobalSearch from '../components/layout/GlobalSearch.vue'
 import Button from '../components/ui/button/Button.vue'
 import Card from '../components/ui/card/Card.vue'
 import FormItem from '../components/ui/form-item/FormItem.vue'
@@ -435,6 +546,7 @@ const loadUsage = async () => {
 onMounted(() => {
   loadUsage()
   loadSessions()
+  loadTokens()
 })
 
 // ── 活跃会话 ──
@@ -524,6 +636,127 @@ const handleRevokeOthers = async () => {
   }
 }
 
+// ── API Token ──
+const tokens = ref([])
+const tokensLoading = ref(false)
+const tokensError = ref(false)
+const tokenForm = ref({ name: '', expiresIn: '' })
+const creatingToken = ref(false)
+const createdTokenPlaintext = ref('')
+const createdTokenVisible = ref(false)
+const revokeTokenVisible = ref(false)
+const revokeTokenPendingId = ref('')
+const revokingTokenId = ref('')
+
+const tokenStatusTypeMap = { active: 'success', expired: 'warning', revoked: 'default' }
+
+const tokenViews = computed(() =>
+  tokens.value.map((item) => ({
+    id: item.id,
+    name: item.name,
+    statusType: tokenStatusTypeMap[item.status] || 'default',
+    statusLabel: t(`more.tokens.status.${item.status}`),
+    canRevoke: item.status !== 'revoked',
+    createdAtLabel: formatSessionTime(item.created_at),
+    lastUsedLabel: item.last_used_at
+      ? t('more.tokens.lastUsedAt', { time: formatSessionTime(item.last_used_at) })
+      : t('more.tokens.lastUsedNever'),
+    expiresLabel: item.expires_at
+      ? t('more.tokens.expiresAt', { time: formatSessionTime(item.expires_at) })
+      : t('more.tokens.neverExpires'),
+  }))
+)
+
+const loadTokens = async () => {
+  tokensLoading.value = true
+  try {
+    tokensError.value = false
+    const result = await api.listTokens()
+    tokens.value = result.tokens || []
+  } catch (error) {
+    // 令牌列表失败不阻塞页面其余区块，显示重试入口
+    tokensError.value = true
+    tokens.value = []
+  } finally {
+    tokensLoading.value = false
+  }
+}
+
+const handleCreateToken = async () => {
+  if (creatingToken.value) return
+  const name = String(tokenForm.value.name || '').trim()
+  if (!name) {
+    message.error(t('more.tokens.nameRequired'))
+    return
+  }
+  const rawExpires = Number(tokenForm.value.expiresIn)
+  const payload = { name }
+  if (Number.isFinite(rawExpires) && rawExpires > 0) {
+    payload.expires_in = Math.floor(rawExpires)
+  }
+  creatingToken.value = true
+  try {
+    const result = await api.createToken(payload)
+    createdTokenPlaintext.value = result.token || ''
+    createdTokenVisible.value = true
+    tokenForm.value = { name: '', expiresIn: '' }
+    message.success(t('more.tokens.createSuccess'))
+    await loadTokens()
+  } catch (error) {
+    message.error(error.response?.data?.error || t('more.tokens.createFailed'))
+  } finally {
+    creatingToken.value = false
+  }
+}
+
+const copyCreatedToken = async () => {
+  const value = createdTokenPlaintext.value
+  if (!value) return
+  try {
+    await navigator.clipboard?.writeText(value)
+    message.success(t('more.tokens.copied'))
+  } catch (error) {
+    message.error(t('more.tokens.copyFailed'))
+  }
+}
+
+const closeCreatedToken = () => {
+  createdTokenVisible.value = false
+  createdTokenPlaintext.value = ''
+}
+
+const handleCreatedTokenModalUpdate = (nextValue) => {
+  if (!nextValue) closeCreatedToken()
+}
+
+const openRevokeToken = (tokenId) => {
+  if (!tokenId || revokingTokenId.value) return
+  revokeTokenPendingId.value = tokenId
+  revokeTokenVisible.value = true
+}
+
+const handleRevokeTokenModalUpdate = (nextValue) => {
+  if (revokingTokenId.value) return
+  if (!nextValue) revokeTokenVisible.value = false
+}
+
+const confirmRevokeToken = async () => {
+  const tokenId = revokeTokenPendingId.value
+  if (!tokenId || revokingTokenId.value) return
+  revokingTokenId.value = tokenId
+  try {
+    await api.revokeToken(tokenId)
+    message.success(t('more.tokens.revokeSuccess'))
+    revokeTokenVisible.value = false
+    revokeTokenPendingId.value = ''
+    await loadTokens()
+  } catch (error) {
+    message.error(error.response?.data?.error || t('more.tokens.revokeFailed'))
+  } finally {
+    revokingTokenId.value = ''
+  }
+}
+
 const { logoutConfirmVisible, logoutSubmitting, openLogoutConfirm, confirmLogout } =
   useLogoutConfirm()
 </script>
@@ -572,6 +805,104 @@ const { logoutConfirmVisible, logoutSubmitting, openLogoutConfirm, confirmLogout
 
 .more-admin-card {
   grid-column: 1 / -1;
+}
+
+.more-search-card {
+  grid-column: 1 / -1;
+}
+
+.more-tokens-card {
+  grid-column: 1 / -1;
+}
+
+.more-tokens-description {
+  margin: 0 0 var(--nb-space-md);
+  color: var(--nb-muted-foreground, var(--nb-gray-500));
+  font-size: var(--nb-font-size-sm);
+}
+
+.token-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--nb-space-sm);
+  margin-bottom: var(--nb-space-md);
+}
+
+.token-form > :first-child {
+  flex: 2 1 220px;
+}
+
+.token-form > :nth-child(2) {
+  flex: 1 1 160px;
+}
+
+.token-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nb-space-sm);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.token-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--nb-space-sm);
+  min-width: 0;
+}
+
+.token-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.token-name-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--nb-space-xs, 4px);
+  min-width: 0;
+}
+
+.token-name {
+  font-weight: 700;
+  word-break: break-word;
+}
+
+.token-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--nb-space-sm);
+  color: var(--nb-muted-foreground, var(--nb-gray-500));
+  font-size: var(--nb-font-size-sm);
+}
+
+.token-created-hint {
+  margin: 0 0 var(--nb-space-sm);
+  color: var(--nb-ink);
+}
+
+.token-plaintext-row {
+  display: flex;
+  align-items: center;
+  gap: var(--nb-space-sm);
+}
+
+.token-plaintext {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 8px 10px;
+  border: var(--nb-border);
+  border-radius: var(--nb-radius-sm, var(--nb-radius));
+  background: var(--nb-secondary);
+  font-family: var(--nb-font-mono);
+  font-size: 13px;
+  word-break: break-all;
 }
 
 .more-card-heading {

@@ -11,6 +11,7 @@ import {
   LayoutDashboard,
   LogOut,
   Palette,
+  Search,
   Settings,
   Share2,
   SunMoon,
@@ -28,6 +29,7 @@ import {
   normalizeNavigationPath,
 } from '../../utils/navigation.js'
 import LogoutConfirmModal from '../auth/LogoutConfirmModal.vue'
+import GlobalSearch from './GlobalSearch.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -35,6 +37,8 @@ const authStore = useAuthStore()
 const themeStore = useThemeStore()
 const { t, locale } = useI18n({ useScope: 'global' })
 const moreSheetOpen = ref(false)
+// 全局搜索弹窗挂在 tabbar 根节点（独立于底部 sheet 的 v-if），通过 ref 调用其 open()
+const globalSearchRef = ref(null)
 let bodyScrollLockState = null
 
 const iconMap = {
@@ -146,6 +150,12 @@ const closeMoreSheet = () => {
 
 const openMoreSheet = () => {
   moreSheetOpen.value = true
+}
+
+// 先收起底部 sheet 再打开搜索弹窗（二者独立挂载，避免 sheet 卸载连带销毁弹窗）
+const handleOpenSearch = () => {
+  closeMoreSheet()
+  globalSearchRef.value?.open()
 }
 
 const navigate = (path, { closeSheet = false } = {}) => {
@@ -267,6 +277,13 @@ onBeforeUnmount(() => {
           </header>
 
           <div class="more-menu-list">
+            <button type="button" class="more-menu-item" @click="handleOpenSearch">
+              <span class="more-menu-icon">
+                <Search :size="18" />
+              </span>
+              <span class="more-menu-label">{{ t('search.entry') }}</span>
+            </button>
+
             <button
               v-for="item in moreActionItems"
               :key="item.key"
@@ -305,6 +322,10 @@ onBeforeUnmount(() => {
       </div>
     </Transition>
   </Teleport>
+
+  <GlobalSearch ref="globalSearchRef">
+    <template #trigger />
+  </GlobalSearch>
 
   <LogoutConfirmModal
     v-model:show="logoutConfirmVisible"

@@ -20,6 +20,7 @@ import { listTexts, getText, createText, updateText, deleteText } from './routes
 import { getTextShare, upsertTextShare, deleteTextShare, viewTextShare } from './routes/textShares'
 import { listShares } from './routes/shares'
 import { createTextOneTimeShare, deleteTextOneTimeShare } from './routes/textOneTimeShares'
+import { globalSearch } from './routes/search'
 
 type RouteHandler = (request: Request, env: Env) => Response | Promise<Response>
 
@@ -669,6 +670,41 @@ router.get(
 router.get(
   '/api/stats',
   withAuth((request, env: Env) => getStats(request, env))
+)
+
+// ── Search ──
+router.get(
+  '/api/search',
+  withAuth((request, env: Env) => globalSearch(request, env))
+)
+
+// ── API Tokens ──
+router.get(
+  '/api/tokens',
+  withAuth(
+    lazyRoute(
+      () => import('./routes/apiTokens'),
+      (module, request, env) => module.listTokens(request, env)
+    )
+  )
+)
+router.post(
+  '/api/tokens',
+  withAuth(
+    lazyRoute(
+      () => import('./routes/apiTokens'),
+      (module, request, env) => module.createToken(request, env)
+    )
+  )
+)
+router.delete(
+  '/api/tokens/:id',
+  withAuth(
+    lazyRoute(
+      () => import('./routes/apiTokens'),
+      (module, request, env) => module.revokeToken(request, env, (request as any).params.id)
+    )
+  )
 )
 
 // ── Admin ──

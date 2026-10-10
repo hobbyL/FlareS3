@@ -5,7 +5,14 @@ import { readFileSync } from "node:fs";
 // locale 的 index.js 可被 node ESM 加载（import 已带显式 .js 后缀），
 // 但为定位缺失键所属模块，这里仍按 index.js 的组装顺序逐叶子模块加载对比；
 // 叶子模块均为纯数据，可在 node 下运行
-const ROOT_MODULES = ["common", "errors", "sidebar", "components", "upload"];
+const ROOT_MODULES = [
+  "common",
+  "errors",
+  "sidebar",
+  "components",
+  "upload",
+  "search",
+];
 const PAGE_MODULES = [
   "auth",
   "audit",

@@ -9,6 +9,7 @@ import {
   getObjectSize,
   checkObjectExists as r2CheckObjectExists,
   listObjectsV2 as r2ListObjectsV2,
+  multipartCopyObject as r2MultipartCopyObject,
   summarizeS3Error,
   testConnection as r2TestConnection,
   type R2Config,
@@ -39,7 +40,12 @@ function wrapS3Error(error: unknown): StorageError {
   )
 }
 
-/** S3 CopyObject 单请求上限（约 5GiB），超过需走分片复制，此处直接拒绝 */
+/** 判断上游 S3 错误是否为 CopyObject 超限（EntityTooLarge），用于触发多段拷贝回退 */
+function isEntityTooLargeError(error: unknown): boolean {
+  return summarizeS3Error(error).code === 'EntityTooLarge'
+}
+
+/** S3 CopyObject 单请求上限（约 5GiB），超过改走服务端多段拷贝（UploadPartCopy） */
 const R2_COPY_OBJECT_MAX_BYTES = 5 * 1024 * 1024 * 1024
 
 export class R2Provider implements StorageProvider {
@@ -175,17 +181,24 @@ export class R2Provider implements StorageProvider {
 
   async move(sourceKey: string, destKey: string, options?: { size?: number }): Promise<void> {
     const size = options?.size
-    if (typeof size === 'number' && Number.isFinite(size) && size > R2_COPY_OBJECT_MAX_BYTES) {
-      throw new StorageError(
-        '文件过大，超过 R2 复制上限（5GiB），请删除后重新上传到目标名称',
-        'EntityTooLarge',
-        413
-      )
-    }
+    const knownSize = typeof size === 'number' && Number.isFinite(size) ? size : null
 
-    // copy 失败（含上游 EntityTooLarge）原样映射上抛
+    // 复制阶段：≤5GiB 单次 CopyObject；>5GiB 走服务端多段拷贝（UploadPartCopy）。
+    // size 未知/低估但对象实际 >5GiB 时，单次 CopyObject 会返回 EntityTooLarge，
+    // 据此回退多段拷贝（回退前用 HEAD 补齐 totalSize）。
     try {
-      await r2CopyObject(this.config, sourceKey, destKey)
+      if (knownSize !== null && knownSize > R2_COPY_OBJECT_MAX_BYTES) {
+        await r2MultipartCopyObject(this.config, sourceKey, destKey, knownSize)
+      } else {
+        try {
+          await r2CopyObject(this.config, sourceKey, destKey)
+        } catch (error) {
+          if (!isEntityTooLargeError(error)) throw error
+          const resolvedSize = knownSize ?? (await getObjectSize(this.config, sourceKey))
+          if (resolvedSize === null) throw error
+          await r2MultipartCopyObject(this.config, sourceKey, destKey, resolvedSize)
+        }
+      }
     } catch (error) {
       throw wrapS3Error(error)
     }

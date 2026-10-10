@@ -8,6 +8,7 @@ import { toggleLocale } from '../../locales'
 import { useLogoutConfirm } from '../../composables/useLogoutConfirm.js'
 import { buildSidebarMenuItems } from '../../utils/navigation.js'
 import LogoutConfirmModal from '../auth/LogoutConfirmModal.vue'
+import GlobalSearch from './GlobalSearch.vue'
 import Modal from '../ui/modal/Modal.vue'
 import FormItem from '../ui/form-item/FormItem.vue'
 import Button from '../ui/button/Button.vue'
@@ -220,6 +221,21 @@ const logoLetters = computed(() => logoText.split(''))
     </div>
 
     <nav class="sidebar-nav">
+      <GlobalSearch>
+        <template #trigger="{ open }">
+          <button class="nav-item" type="button" :aria-label="t('search.entry')" @click="open">
+            <span class="nav-icon">
+              <svg viewBox="0 0 24 24" fill="currentColor">
+                <path
+                  d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z"
+                />
+              </svg>
+            </span>
+            <span v-show="!collapsed" class="nav-label">{{ t('search.entry') }}</span>
+          </button>
+        </template>
+      </GlobalSearch>
+
       <button
         v-for="item in menuItems"
         :key="item.key"

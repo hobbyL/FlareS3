@@ -254,6 +254,7 @@
 <script setup>
 import { ref, onMounted, computed, watch, defineAsyncComponent } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRoute } from 'vue-router'
 import { FolderPlus, Trash2 } from 'lucide-vue-next'
 import { useAuthStore } from '../stores/auth'
 import { useFilesStore } from '../stores/files'
@@ -299,6 +300,7 @@ const themeStore = useThemeStore()
 const userOptionsStore = useUserOptionsStore()
 const message = useMessage()
 const { t, locale } = useI18n({ useScope: 'global' })
+const route = useRoute()
 
 const showInfoModal = ref(false)
 const selectedFile = ref(null)
@@ -1119,11 +1121,33 @@ const handleUploaded = () => {
   loadFileDirs()
 }
 
+// 从路由 query 带入搜索词（全局搜索点击跳转时复用文件名筛选）
+const applySearchFromRoute = () => {
+  const term = String(route.query.q ?? '').trim()
+  if (term) {
+    filters.value.filename = term
+  }
+}
+
 onMounted(() => {
+  applySearchFromRoute()
   loadFiles({ mode: 'active' })
   loadFileDirs()
   loadUsers()
 })
+
+// 已在文件页时再次全局搜索 → query 变化驱动重新加载
+watch(
+  () => route.query.q,
+  (next) => {
+    const term = String(next ?? '').trim()
+    if (!term || term === filters.value.filename) return
+    filters.value.filename = term
+    pagination.value.page = 1
+    loadFiles({ mode: 'active' })
+    loadFileDirs()
+  }
+)
 
 watch(
   () => filesStore.mode,

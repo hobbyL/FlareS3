@@ -479,19 +479,16 @@ test("renameFile returns 409 when the guarded update misses concurrently", async
   );
 });
 
-test("renameFile maps EntityTooLarge provider errors to 413", async () => {
+test("renameFile no longer rejects >5GiB objects: provider.move success proceeds to the guarded update", async () => {
   const { storageFactory, files } = loadFilesRouteModules();
-  const { StorageError } = cachedModule("services/storage/types.js");
+  let moveCalled = false;
+  // provider.move 内部回退多段拷贝后成功（>5GiB 不再被 413 短路）
   storageFactory.createProvider = async () => ({
     async checkExists() {
       return false;
     },
     async move() {
-      throw new StorageError(
-        "文件过大，超过 R2 复制上限（5GiB），请删除后重新上传到目标名称",
-        "EntityTooLarge",
-        413,
-      );
+      moveCalled = true;
     },
   });
   const { db, state } = createLifecycleDb({
@@ -508,6 +505,7 @@ test("renameFile maps EntityTooLarge provider errors to 413", async () => {
         value: null,
       },
     ],
+    runHandlers: renameBatchRunHandlers(),
   });
 
   const response = await files.renameFile(
@@ -516,9 +514,12 @@ test("renameFile maps EntityTooLarge provider errors to 413", async () => {
     "file-1",
   );
 
-  assert.equal(response.status, 413);
-  assert.match((await response.json()).error, /5GiB/);
-  assert.equal(state.batches.length, 0);
+  assert.equal(moveCalled, true);
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.r2_key, "storage/config-1/docs/renamed.bin");
+  // 大文件成功后照常走守卫 batch 更新 D1（UPDATE + 审计）
+  assert.equal(state.batches.length, 1);
 });
 
 test("renameFile maps missing remote objects to 409", async () => {

@@ -91,6 +91,7 @@
 <script setup>
 import { computed, onMounted, ref, watch, defineAsyncComponent } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useThemeStore } from '../stores/theme'
 import { useUserOptionsStore } from '../stores/userOptions'
@@ -125,6 +126,7 @@ const ShareAccessLogModal = defineAsyncComponent(
 )
 
 const { t, locale } = useI18n({ useScope: 'global' })
+const route = useRoute()
 const authStore = useAuthStore()
 const themeStore = useThemeStore()
 const userOptionsStore = useUserOptionsStore()
@@ -590,10 +592,31 @@ const columns = computed(() =>
   })
 )
 
+// 从路由 query 带入搜索词（全局搜索点击跳转时复用分享关键词筛选）
+const applySearchFromRoute = () => {
+  const term = String(route.query.q ?? '').trim()
+  if (term) {
+    filters.value.q = term
+  }
+}
+
 onMounted(async () => {
   restoreFilters()
+  applySearchFromRoute()
   await Promise.all([authStore.isAdmin ? loadOwnerOptions() : Promise.resolve(), loadShares()])
 })
+
+// 已在分享页时再次全局搜索 → query 变化驱动重新加载
+watch(
+  () => route.query.q,
+  (next) => {
+    const term = String(next ?? '').trim()
+    if (!term || term === filters.value.q) return
+    filters.value.q = term
+    pagination.value.page = 1
+    loadShares()
+  }
+)
 
 watch(filters, persistFilters, { deep: true })
 </script>

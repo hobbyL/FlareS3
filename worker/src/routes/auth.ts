@@ -1,6 +1,12 @@
 import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
-import { jsonResponse, parseJson, requestBodyPolicyErrorResponse, getUser } from './utils'
+import {
+  jsonResponse,
+  parseJson,
+  requestBodyPolicyErrorResponse,
+  getUser,
+  patForbiddenResponse,
+} from './utils'
 import bcrypt from 'bcryptjs'
 import { hashPassword, verifyPassword } from '../services/password'
 import {
@@ -292,6 +298,9 @@ export async function changePassword(request: Request, env: Env): Promise<Respon
     if (!user) {
       return jsonResponse({ error: '未授权' }, 401)
     }
+    // 改密需会话登录：PAT 不得改密（防令牌越权重置凭证）
+    const patBlocked = patForbiddenResponse(request)
+    if (patBlocked) return patBlocked
 
     const body = await parseJson<{ current_password: string; new_password: string }>(request)
     const currentPassword = String(body.current_password || '')
@@ -433,6 +442,9 @@ function getSessionId(request: Request): string | undefined {
 export async function listSessions(request: Request, env: Env): Promise<Response> {
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)
+  // 会话管理需会话登录：PAT 不得查看/操作会话
+  const patBlocked = patForbiddenResponse(request)
+  if (patBlocked) return patBlocked
 
   const currentSessionId = getSessionId(request)
   const nowIso = new Date().toISOString()
@@ -491,6 +503,9 @@ export async function revokeSession(
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)
   if (!sessionId) return jsonResponse({ error: 'id 不能为空' }, 400)
+  // 会话管理需会话登录：PAT 不得撤销会话
+  const patBlocked = patForbiddenResponse(request)
+  if (patBlocked) return patBlocked
 
   const existing = await withD1Retry(env.DB)
     .prepare('SELECT id FROM sessions WHERE id = ? AND user_id = ? AND revoked_at IS NULL LIMIT 1')
@@ -549,6 +564,9 @@ export async function revokeSession(
 export async function revokeOtherSessions(request: Request, env: Env): Promise<Response> {
   const user = getUser(request)
   if (!user) return jsonResponse({ error: '未授权' }, 401)
+  // 会话管理需会话登录：PAT 不得下线其他设备
+  const patBlocked = patForbiddenResponse(request)
+  if (patBlocked) return patBlocked
 
   const currentSessionId = getSessionId(request)
   if (!currentSessionId) {

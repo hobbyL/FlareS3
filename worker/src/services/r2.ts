@@ -52,6 +52,7 @@ import {
   generateMultipartUploadUrl as multipartGenerateMultipartUploadUrl,
   initiateMultipartUpload as multipartInitiateMultipartUpload,
   listParts as multipartListParts,
+  multipartCopyObject as multipartMultipartCopyObject,
 } from './r2Multipart'
 
 export { LEGACY_R2_CONFIG_ID, SYSTEM_DEFAULT_R2_CONFIG_ID_KEY, SYSTEM_LEGACY_FILES_CONFIG_ID_KEY }
@@ -222,4 +223,13 @@ export async function completeMultipartUpload(
   parts: { PartNumber?: number; ETag?: string }[]
 ): Promise<void> {
   return multipartCompleteMultipartUpload(config, key, uploadId, parts)
+}
+
+export async function multipartCopyObject(
+  config: R2Config,
+  sourceKey: string,
+  destKey: string,
+  totalSize: number
+): Promise<void> {
+  return multipartMultipartCopyObject(config, sourceKey, destKey, totalSize)
 }

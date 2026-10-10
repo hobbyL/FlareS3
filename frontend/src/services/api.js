@@ -154,6 +154,35 @@ export default {
     return api.post('/auth/sessions/revoke-others')
   },
 
+  // ========== API Token（个人访问令牌）==========
+
+  /**
+   * 列出当前用户的 API Token（元数据，不含明文 / token_hash）。
+   * 拦截器已返回 data，调用方用 `const result = await api.listTokens()`，勿二次解构。
+   * @returns {Promise<{tokens: Array<{id: string, name: string, created_at: string, last_used_at: string|null, expires_at: string|null, status: 'active'|'expired'|'revoked'}>}>}
+   */
+  listTokens() {
+    return api.get('/tokens')
+  },
+
+  /**
+   * 创建一枚 API Token（明文仅本次响应返回一次，务必立即保存，不可回读）。
+   * @param {{ name: string, expires_in?: number }} payload - 名称与可选有效期（天，<=0/省略=永不过期）
+   * @returns {Promise<{id: string, name: string, token: string, created_at: string, expires_at: string|null}>}
+   */
+  createToken(payload) {
+    return api.post('/tokens', payload)
+  },
+
+  /**
+   * 吊销指定 API Token（仅限本人；吊销后立即失效）。
+   * @param {string} tokenId - 令牌 ID
+   * @returns {Promise<{success: boolean}>}
+   */
+  revokeToken(tokenId) {
+    return api.delete(`/tokens/${tokenId}`)
+  },
+
   // ========== R2 配置（旧版）==========
 
   /**
@@ -218,6 +247,19 @@ export default {
    */
   getStats() {
     return api.get('/stats')
+  },
+
+  // ========== 全局搜索 ==========
+
+  /**
+   * 全局搜索：一次聚合返回文件/文档/分享三组命中（各 ≤10）。
+   * 注意：拦截器已返回 response.data，调用方用 `const result = await api.search(q)`，
+   * 勿二次解构 `const { data }`（否则 result.files 永恒 undefined）。
+   * @param {string} q - 搜索关键词
+   * @returns {Promise<{files: Array, texts: Array, shares: Array}>}
+   */
+  search(q) {
+    return api.get('/search', { params: { q } })
   },
 
   // ========== 存储配置 ==========

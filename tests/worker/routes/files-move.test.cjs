@@ -10,8 +10,6 @@ const loadModule = (p) => {
   delete require.cache[t];
   return require(t);
 };
-// 不清缓存地取 types.js：routes 捕获的 StorageError 必须与此处同一实例
-const cachedModule = (p) => require(compiledPath(p));
 const clearModule = (p) => {
   delete require.cache[compiledPath(p)];
 };
@@ -364,15 +362,16 @@ test("moveFile moving to root clears the directory segment", async () => {
   assert.equal(state.batches[0][0].args[0], "flares3/config-1/demo.bin");
 });
 
-test("moveFile maps EntityTooLarge provider errors to 413", async () => {
+test("moveFile no longer rejects >5GiB objects: provider.move success proceeds to the guarded update", async () => {
   const { storageFactory, files } = loadFilesRouteModules();
-  const { StorageError } = cachedModule("services/storage/types.js");
+  let moveCalled = false;
+  // provider.move 内部回退多段拷贝后成功（>5GiB 不再被 413 短路）
   storageFactory.createProvider = async () => ({
     async checkExists() {
       return false;
     },
     async move() {
-      throw new StorageError("too large", "EntityTooLarge", 413);
+      moveCalled = true;
     },
   });
   const { db, state } = createLifecycleDb({
@@ -380,15 +379,19 @@ test("moveFile maps EntityTooLarge provider errors to 413", async () => {
       firstHandlerFor(completedFileRow({ size: 6 * 1024 * 1024 * 1024 })),
       occupancyHandler(null),
     ],
+    runHandlers: moveBatchRunHandlers(),
   });
   const response = await files.moveFile(
     createMoveRequest({ dir: "images" }),
     { DB: db },
     "file-1",
   );
-  assert.equal(response.status, 413);
-  assert.match((await response.json()).error, /5GiB/);
-  assert.equal(state.batches.length, 0);
+  assert.equal(moveCalled, true);
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.r2_key, "storage/config-1/images/demo.bin");
+  assert.equal(payload.dir, "images");
+  assert.equal(state.batches.length, 1);
 });
 
 test("moveFile returns 503 when the storage config cannot be resolved", async () => {

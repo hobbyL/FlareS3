@@ -3,6 +3,7 @@ import errors from './errors.js'
 import sidebar from './sidebar.js'
 import components from './components.js'
 import upload from './upload.js'
+import search from './search.js'
 import auth from './pages/auth.js'
 import audit from './pages/audit.js'
 import users from './pages/users.js'
@@ -20,6 +21,7 @@ export default {
   ...sidebar,
   ...components,
   ...upload,
+  ...search,
   ...auth,
   ...audit,
   ...users,

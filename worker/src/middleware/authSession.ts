@@ -4,6 +4,7 @@ import {
   verifySignedAuthToken,
   type VerifiedAuthToken,
 } from '../services/authToken'
+import { isApiToken, validateApiToken } from '../services/apiTokens'
 import { hashToken } from '../utils/token'
 import { withD1Retry } from '../utils/db'
 
@@ -18,6 +19,18 @@ export type AuthUser = {
   role: 'admin' | 'user'
   status: 'active' | 'disabled' | 'deleted'
   quota_bytes: number
+}
+
+/**
+ * 鉴权来源标记：会话（cookie/JWT/opaque session）为 'session'，个人访问令牌为 'pat'。
+ * 敏感端点（改密 / 会话管理 / token 自管理）据此拒绝 PAT，防止令牌自我扩权 / 自传播。
+ */
+export type AuthKind = 'session' | 'pat'
+
+type AuthedRequestState = Request & {
+  user?: AuthUser
+  sessionId?: string
+  authKind?: AuthKind
 }
 
 type SessionLookupResult = {
@@ -242,13 +255,28 @@ export async function authSessionMiddleware(
     ) {
       return
     }
-    const req = request as Request & { user?: AuthUser; sessionId?: string }
+    const req = request as AuthedRequestState
     req.user = session.user
     req.sessionId = session.sessionId
+    req.authKind = 'session'
     return
   }
 
   if (isLikelySignedAuthToken(token)) {
+    return
+  }
+
+  // PAT 分支：fla_ 前缀 opaque 令牌走 api_tokens 校验，置于 sessions 查询之前，
+  // 避免 PAT 多打一次无谓的 sessions 表查询。命中仅装载 user + authKind='pat'，
+  // 有意不设 sessionId（PAT 不属于任何会话；会话管理端点据 authKind 拒绝）。
+  if (isApiToken(token)) {
+    const validation = await validateApiToken(env, token)
+    if (!validation) {
+      return
+    }
+    const req = request as AuthedRequestState
+    req.user = validation.user
+    req.authKind = 'pat'
     return
   }
 
@@ -257,7 +285,8 @@ export async function authSessionMiddleware(
   if (!session) {
     return
   }
-  const req = request as Request & { user?: AuthUser; sessionId?: string }
+  const req = request as AuthedRequestState
   req.user = session.user
   req.sessionId = session.sessionId
+  req.authKind = 'session'
 }

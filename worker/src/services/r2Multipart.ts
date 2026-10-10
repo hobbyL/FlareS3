@@ -4,12 +4,14 @@ import {
   CreateMultipartUploadCommand,
   ListPartsCommand,
   UploadPartCommand,
+  UploadPartCopyCommand,
 } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import type { R2Config } from './r2ConfigRegistry'
 import {
   buildCompleteMultipartUploadXml,
   decodeXmlEntities,
+  extractXmlBlocks,
   extractXmlValue,
   normalizeCompleteMultipartParts,
   parseListPartsXml,
@@ -196,4 +198,111 @@ export async function completeMultipartUpload(
   if (response.ok) return
   const text = await readS3ErrorText(response)
   throw buildS3HttpError(response.status, text)
+}
+
+/**
+ * 服务端多段拷贝的单段大小：1 GiB。
+ *
+ * S3 UploadPartCopy 单段源范围上限约 5GiB；取更保守的 1GiB 可缩短单段请求时长、
+ * 降低单段失败后的重做成本。配合 10000 片的 S3 分片数上限，可覆盖约 9.5TiB，
+ * 远超 R2 单对象 ~5TiB 的实际上限，故对任意 R2 对象均可完成拷贝。
+ */
+export const MULTIPART_COPY_PART_SIZE = 1 * 1024 * 1024 * 1024
+
+/** S3 单个 multipart 上传的分片数上限（规范固定值） */
+export const MAX_MULTIPART_COPY_PARTS = 10000
+
+/**
+ * R2/S3 服务端多段拷贝：对超过单次 CopyObject 上限（~5GiB）的对象，通过
+ * CreateMultipartUpload → 分段 UploadPartCopy → CompleteMultipartUpload 完成，
+ * 全程零字节经过 Worker（纯服务端拷贝）。
+ *
+ * - 每段用 `x-amz-copy-source` + `x-amz-copy-source-range: bytes=start-end` 指定源范围，
+ *   段大小 MULTIPART_COPY_PART_SIZE（≤5GiB 规范上限）。CopySource 的 bucket/key 编码口径
+ *   与 r2Objects.copyObject 的 `x-amz-copy-source` 一致（源 key 逐段 encodeURIComponent）。
+ *   预签名器会把这两个参数提升进签名查询串，故 fetchSigned 仅发 URL 即可，无需额外请求头。
+ * - 分段 ETag 从 CopyPartResult 响应体解析（UploadPartCopy 的 ETag 在 body，不在 header）；
+ *   个别兼容实现会以 200 返回 `<Error>` body，故成功状态码仍需检查 body。
+ * - 目标对象的 Content-Type 在 CreateMultipartUpload 时确定（UploadPartCopy 仅拷字节、不带
+ *   元数据），这里统一用 application/octet-stream：本应用的预览按 DB content_type 下发
+ *   ResponseContentType、下载按 attachment 处理，均不依赖对象实际存储的 Content-Type。
+ * - 任一步失败 → AbortMultipartUpload(dest, uploadId) 补偿，清理半成品 multipart（对齐
+ *   d1 写一致性的「外部多步失败即回滚」语义），随后原样上抛原始错误。
+ */
+export async function multipartCopyObject(
+  config: R2Config,
+  sourceKey: string,
+  destKey: string,
+  totalSize: number
+): Promise<void> {
+  if (!Number.isFinite(totalSize) || !Number.isInteger(totalSize) || totalSize <= 0) {
+    throw new Error('invalid_total_size')
+  }
+
+  const partCount = Math.ceil(totalSize / MULTIPART_COPY_PART_SIZE)
+  if (partCount > MAX_MULTIPART_COPY_PARTS) {
+    // 不可恢复：对象超过分片复制容量上限（~9.5TiB）。标注 413/EntityTooLarge 供上层识别。
+    throw buildS3HttpError(
+      413,
+      '<Error><Code>EntityTooLarge</Code><Message>对象超过分片复制容量上限</Message></Error>'
+    )
+  }
+
+  const client = createS3Client(config)
+  const encodedSourceKey = sourceKey
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/')
+  const copySource = `/${config.bucketName}/${encodedSourceKey}`
+
+  const uploadId = await initiateMultipartUpload(config, destKey, 'application/octet-stream')
+
+  try {
+    const parts: { PartNumber: number; ETag: string }[] = []
+    for (let index = 0; index < partCount; index++) {
+      const start = index * MULTIPART_COPY_PART_SIZE
+      const end = Math.min(start + MULTIPART_COPY_PART_SIZE, totalSize) - 1
+      const partNumber = index + 1
+
+      // 写操作：fetchSigned 内部对 PUT 不重试（幂等性不保证），超时/失败按原样映射
+      const response = await fetchSigned(
+        client,
+        new UploadPartCopyCommand({
+          Bucket: config.bucketName,
+          Key: destKey,
+          UploadId: uploadId,
+          PartNumber: partNumber,
+          CopySource: copySource,
+          CopySourceRange: `bytes=${start}-${end}`,
+        }),
+        { method: 'PUT', expiresInSeconds: 60 }
+      )
+
+      if (!response.ok) {
+        const text = await readS3ErrorText(response)
+        throw buildS3HttpError(response.status, text)
+      }
+
+      const text = await readS3XmlText(response, 'S3 分段复制响应')
+      if (extractXmlBlocks(text, 'Error').length > 0) {
+        throw buildS3HttpError(response.status, text)
+      }
+
+      const etagRaw = extractXmlValue(text, 'ETag')
+      const etag = etagRaw ? decodeXmlEntities(etagRaw) : ''
+      if (!etag) throw new Error('missing_copy_part_etag')
+      parts.push({ PartNumber: partNumber, ETag: etag })
+    }
+
+    await completeMultipartUpload(config, destKey, uploadId, parts)
+  } catch (error) {
+    // 补偿删除半成品 multipart，避免悬挂上传占用配额；补偿失败不覆盖原始错误
+    // （原始错误更具诊断价值，且 R2 会按桶生命周期自动清理未完成的 multipart）。
+    try {
+      await abortMultipartUpload(config, destKey, uploadId)
+    } catch {
+      // 吞掉补偿异常，保留并上抛原始错误
+    }
+    throw error
+  }
 }
