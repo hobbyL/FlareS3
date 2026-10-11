@@ -22,6 +22,10 @@
         <ArrowUp :size="16" />
         <span class="btn-label">{{ t('files.dir.upFolder') }}</span>
       </Button>
+
+      <div v-if="$slots.actions" class="files-dir-path-actions">
+        <slot name="actions" />
+      </div>
     </div>
 
     <div v-if="childFolders.length > 0" class="files-dir-children">
@@ -83,7 +87,16 @@ const childFolders = computed(() => collectChildDirs(props.dir, props.dirs))
   align-items: center;
   gap: 10px;
   min-width: 0;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+}
+
+.files-dir-path-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--nb-space-sm);
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .btn-label {
@@ -95,7 +108,8 @@ const childFolders = computed(() => collectChildDirs(props.dir, props.dirs))
   align-items: center;
   gap: 4px;
   min-width: 0;
-  flex-wrap: wrap;
+  overflow: hidden;
+  flex-wrap: nowrap;
   color: var(--nb-muted-foreground, var(--nb-gray-500));
 }
 

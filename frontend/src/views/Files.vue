@@ -38,30 +38,30 @@
           @go-root="goRootDir"
           @go-up="goUpDir"
           @navigate="navigateDir"
-        />
-
-        <div v-if="!isTrashMode" class="files-dir-actions">
-          <Button
-            type="default"
-            size="small"
-            :disabled="filesStore.loading || deleting || deletingDir"
-            @click="openNewFolderModal"
-          >
-            <FolderPlus :size="16" />
-            <span class="files-dir-actions-label">{{ t('files.newFolder') }}</span>
-          </Button>
-          <Button
-            v-if="canDeleteCurrentDir"
-            type="default"
-            size="small"
-            :loading="deletingDir"
-            :disabled="filesStore.loading || deleting"
-            @click="openDeleteDirModal"
-          >
-            <Trash2 :size="16" />
-            <span class="files-dir-actions-label">{{ t('files.deleteDir') }}</span>
-          </Button>
-        </div>
+        >
+          <template #actions>
+            <Button
+              type="default"
+              size="small"
+              :disabled="filesStore.loading || deleting || deletingDir"
+              @click="openNewFolderModal"
+            >
+              <FolderPlus :size="16" />
+              <span class="files-dir-actions-label">{{ t('files.newFolder') }}</span>
+            </Button>
+            <Button
+              v-if="canDeleteCurrentDir"
+              type="default"
+              size="small"
+              :loading="deletingDir"
+              :disabled="filesStore.loading || deleting"
+              @click="openDeleteDirModal"
+            >
+              <Trash2 :size="16" />
+              <span class="files-dir-actions-label">{{ t('files.deleteDir') }}</span>
+            </Button>
+          </template>
+        </FilesDirBreadcrumb>
 
         <FilesBatchActionBar
           :count="selectedFilesCount"
@@ -1186,12 +1186,6 @@ watch(
 .files-delete-confirm {
   margin: 0;
   color: var(--nb-muted-foreground, var(--nb-gray-600));
-}
-
-.files-dir-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--nb-space-sm);
 }
 
 .files-dir-actions-label {
