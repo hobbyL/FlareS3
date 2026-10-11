@@ -121,7 +121,7 @@ export function buildFilesTableColumns({
       title: translate('files.columns.actions'),
       key: 'actions',
       width:
-        locale === 'zh-CN' ? (uiTheme === 'shadcn' ? 380 : 440) : uiTheme === 'shadcn' ? 440 : 510,
+        locale === 'zh-CN' ? (uiTheme === 'shadcn' ? 480 : 540) : uiTheme === 'shadcn' ? 540 : 610,
       align: 'center',
       ellipsis: false,
       fixed: 'right',
