@@ -2,6 +2,7 @@
   "name": "flares3-monorepo",
   "private": true,
   "scripts": {
+    "postinstall": "npm --prefix worker install && npm --prefix frontend install",
     "dev:worker": "npm --prefix worker run dev",
     "dev:frontend": "npm --prefix frontend run dev",
     "dev": "npm run dev:worker & npm run dev:frontend",
