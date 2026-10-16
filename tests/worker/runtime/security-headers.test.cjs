@@ -320,6 +320,24 @@ test("origin guard rejects cookie sessions without browser source metadata", () 
   });
 });
 
+test("origin guard rejects cookie sessions even when a bearer header is also present", () => {
+  const { originGuardMiddleware } = loadModule("middleware/originGuard.js");
+  const response = originGuardMiddleware(
+    new Request("https://example.com/api/files", {
+      method: "POST",
+      headers: {
+        Cookie: "flares3_session=session-token",
+        Authorization: "Bearer fla_test_token",
+      },
+    }),
+  );
+
+  assert.equal(response?.status, 403);
+  return response.json().then((payload) => {
+    assert.deepEqual(payload, { error: "请求缺少来源校验信息" });
+  });
+});
+
 test("origin guard accepts one same-origin source signal without the other", () => {
   const { originGuardMiddleware } = loadModule("middleware/originGuard.js");
   const sameOrigin = originGuardMiddleware(
