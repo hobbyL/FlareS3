@@ -140,6 +140,7 @@ test("createFolderShare normalizes prefix, creates the row and audits FOLDER_SHA
   const response = await folderShareRoutes.createFolderShare(
     createAuthedRequest("https://example.com/api/mount/folder-share", {
       method: "POST",
+      user: ADMIN,
       body: {
         config_id: "r2-main",
         prefix: "docs",
@@ -168,7 +169,7 @@ test("createFolderShare normalizes prefix, creates the row and audits FOLDER_SHA
   assert.ok(insert, "应写入 folder_shares");
   assert.equal(insert.args[1], "r2-main");
   assert.equal(insert.args[2], "docs/");
-  assert.equal(insert.args[3], "user-1");
+  assert.equal(insert.args[3], "admin-1");
   assert.equal(typeof insert.args[4], "string");
   // expires_in：距 2099 年的剩余秒数，必须为正
   assert.ok(Number.isFinite(insert.args[6]) && insert.args[6] > 0);
@@ -213,6 +214,7 @@ test("createFolderShare accepts an empty prefix (root scope) and zero options", 
   const response = await folderShareRoutes.createFolderShare(
     createAuthedRequest("https://example.com/api/mount/folder-share", {
       method: "POST",
+      user: ADMIN,
       body: { config_id: "r2-main", prefix: "" },
     }),
     { DB: db },
@@ -225,6 +227,16 @@ test("createFolderShare accepts an empty prefix (root scope) and zero options", 
 });
 
 test("createFolderShare rejects invalid input with 400/401/404/409", async () => {
+  // 普通用户不能创建 folder share，即使请求中的配置和目录看似合法。
+  const ordinaryUser = await freshFolderShareRoutes().createFolderShare(
+    createAuthedRequest("https://example.com/api/mount/folder-share", {
+      method: "POST",
+      body: { config_id: "r2-main", prefix: "docs/" },
+    }),
+    { DB: createDb().db },
+  );
+  assert.equal(ordinaryUser.status, 403);
+
   // 未认证
   const folderShareRoutes = freshFolderShareRoutes();
   const unauthed = await folderShareRoutes.createFolderShare(
@@ -241,6 +253,7 @@ test("createFolderShare rejects invalid input with 400/401/404/409", async () =>
   const escaping = await folderShareRoutes.createFolderShare(
     createAuthedRequest("https://example.com/api/mount/folder-share", {
       method: "POST",
+      user: ADMIN,
       body: { config_id: "r2-main", prefix: "../etc" },
     }),
     { DB: createDb().db },
@@ -251,6 +264,7 @@ test("createFolderShare rejects invalid input with 400/401/404/409", async () =>
   const missingConfig = await folderShareRoutes.createFolderShare(
     createAuthedRequest("https://example.com/api/mount/folder-share", {
       method: "POST",
+      user: ADMIN,
       body: { prefix: "" },
     }),
     { DB: createDb().db },
@@ -261,6 +275,7 @@ test("createFolderShare rejects invalid input with 400/401/404/409", async () =>
   const badViews = await folderShareRoutes.createFolderShare(
     createAuthedRequest("https://example.com/api/mount/folder-share", {
       method: "POST",
+      user: ADMIN,
       body: { config_id: "r2-main", prefix: "", max_views: -3 },
     }),
     { DB: createDb().db },
@@ -271,6 +286,7 @@ test("createFolderShare rejects invalid input with 400/401/404/409", async () =>
   const pastExpiry = await folderShareRoutes.createFolderShare(
     createAuthedRequest("https://example.com/api/mount/folder-share", {
       method: "POST",
+      user: ADMIN,
       body: {
         config_id: "r2-main",
         prefix: "",
@@ -286,6 +302,7 @@ test("createFolderShare rejects invalid input with 400/401/404/409", async () =>
   const noProvider = await noProviderRoutes.createFolderShare(
     createAuthedRequest("https://example.com/api/mount/folder-share", {
       method: "POST",
+      user: ADMIN,
       body: { config_id: "missing", prefix: "" },
     }),
     { DB: createDb().db },
@@ -297,6 +314,7 @@ test("createFolderShare rejects invalid input with 400/401/404/409", async () =>
   const conflict = await conflictedRoutes.createFolderShare(
     createAuthedRequest("https://example.com/api/mount/folder-share", {
       method: "POST",
+      user: ADMIN,
       body: { config_id: "r2-main", prefix: "docs/" },
     }),
     {

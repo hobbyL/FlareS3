@@ -47,7 +47,7 @@ function normalizeSharePrefix(value: unknown): { prefix: string } | { response: 
  * 创建文件夹分享
  *
  * @route POST /api/mount/folder-share
- * @param request - HTTP 请求对象（需要认证，owner/admin）
+ * @param request - HTTP 请求对象（需要管理员权限）
  * @param env - Cloudflare Workers 环境变量
  * @returns JSON 响应，包含创建后的分享信息
  *
@@ -99,6 +99,9 @@ export async function createFolderShare(request: Request, env: Env): Promise<Res
   const user = getUser(request)
   if (!user) {
     return jsonResponse({ error: '未授权' }, 401)
+  }
+  if (user.role !== 'admin') {
+    return jsonResponse({ error: '无权限' }, 403)
   }
 
   let body: {

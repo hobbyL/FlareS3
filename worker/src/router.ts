@@ -590,7 +590,7 @@ router.post(
 )
 router.post(
   '/api/mount/folder-share',
-  withAuth(
+  withAdmin(
     lazyRoute(
       () => import('./routes/folderShares'),
       (module, request, env) => module.createFolderShare(request, env)
