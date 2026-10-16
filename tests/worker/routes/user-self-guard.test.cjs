@@ -195,3 +195,40 @@ test("updateUser 修改他人的 role/status 维持现状（不受自我保护�
     "应执行目标用户更新",
   );
 });
+
+test("updateUser 单独修改他人的 role 时也撤销已有会话", async () => {
+  const { updateUser } = loadModule("routes/users.js");
+  const { db, state } = createDb({
+    firstHandlers: [
+      {
+        match: /SELECT role, status FROM users WHERE id = \? LIMIT 1/,
+        value: { role: "user", status: "active" },
+      },
+    ],
+    runHandlers: [
+      { match: /UPDATE users SET /, value: { meta: { changes: 1 } } },
+      {
+        match: /UPDATE sessions SET revoked_at/,
+        value: { meta: { changes: 1 } },
+      },
+      { match: /INSERT INTO audit_logs/, value: { meta: { changes: 1 } } },
+    ],
+  });
+
+  const response = await updateUser(
+    createPatchRequest("https://example.com/api/users/user-1", {
+      role: "admin",
+    }),
+    { DB: db },
+    "user-1",
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { success: true });
+  assert.ok(
+    state.runs.some((entry) =>
+      /UPDATE sessions SET revoked_at/.test(entry.sql),
+    ),
+    "角色变化必须撤销目标用户已有会话",
+  );
+});

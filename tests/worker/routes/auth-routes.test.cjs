@@ -479,6 +479,107 @@ test("authSessionMiddleware coalesces concurrent session lookups and caches the 
   assert.equal(lookupCount, 1);
 });
 
+test("authSessionMiddleware clears cached sessions after user token invalidation", async () => {
+  const { authSessionMiddleware, invalidateUserAuthTokens } =
+    loadAuthSessionModule();
+  let lookupCount = 0;
+  const env = {
+    DB: {
+      prepare(sql) {
+        assert.match(sql, /FROM sessions s/);
+        return {
+          bind() {
+            return {
+              async first() {
+                lookupCount += 1;
+                if (lookupCount > 1) return null;
+                return {
+                  session_id: "session-1",
+                  expires_at: new Date(Date.now() + 60_000).toISOString(),
+                  revoked_at: null,
+                  user_id: "user-1",
+                  username: "alice",
+                  role: "admin",
+                  status: "active",
+                  quota_bytes: 1024,
+                };
+              },
+            };
+          },
+        };
+      },
+    },
+  };
+
+  const firstRequest = new Request("https://example.com/api/files", {
+    headers: { Cookie: "flares3_session=session-token" },
+  });
+  await authSessionMiddleware(firstRequest, env);
+  assert.equal(firstRequest.user.id, "user-1");
+
+  invalidateUserAuthTokens("user-1");
+
+  const secondRequest = new Request("https://example.com/api/files", {
+    headers: { Cookie: "flares3_session=session-token" },
+  });
+  await authSessionMiddleware(secondRequest, env);
+  assert.equal(secondRequest.user, undefined);
+  assert.equal(lookupCount, 2);
+});
+
+test("authSessionMiddleware rechecks cached sessions after the shortened TTL", async () => {
+  const { authSessionMiddleware } = loadAuthSessionModule();
+  const originalNow = Date.now;
+  let now = originalNow();
+  let lookupCount = 0;
+  Date.now = () => now;
+
+  try {
+    const env = {
+      DB: {
+        prepare(sql) {
+          assert.match(sql, /FROM sessions s/);
+          return {
+            bind() {
+              return {
+                async first() {
+                  lookupCount += 1;
+                  return {
+                    session_id: "session-1",
+                    expires_at: new Date(now + 60_000).toISOString(),
+                    revoked_at: null,
+                    user_id: "user-1",
+                    username: "alice",
+                    role: "admin",
+                    status: "active",
+                    quota_bytes: 1024,
+                  };
+                },
+              };
+            },
+          };
+        },
+      },
+    };
+
+    const firstRequest = new Request("https://example.com/api/files", {
+      headers: { Cookie: "flares3_session=session-token" },
+    });
+    await authSessionMiddleware(firstRequest, env);
+    assert.equal(lookupCount, 1);
+
+    now += 5_001;
+    const secondRequest = new Request("https://example.com/api/files", {
+      headers: { Cookie: "flares3_session=session-token" },
+    });
+    await authSessionMiddleware(secondRequest, env);
+    assert.equal(secondRequest.user.id, "user-1");
+    assert.equal(lookupCount, 2);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
 test("authSessionMiddleware accepts signed auth tokens after persistent session validation", async () => {
   const { createSignedAuthToken } = loadAuthTokenModule();
   const { authSessionMiddleware } = loadAuthSessionModule();

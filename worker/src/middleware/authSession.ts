@@ -9,7 +9,7 @@ import { hashToken } from '../utils/token'
 import { withD1Retry } from '../utils/db'
 
 const COOKIE_NAME = 'flares3_session'
-const SESSION_CACHE_TTL_MS = 15 * 1000
+const SESSION_CACHE_TTL_MS = 5 * 1000
 const MAX_SESSION_CACHE_ENTRIES = 500
 const MAX_INVALIDATION_ENTRIES = 1000
 
@@ -83,13 +83,19 @@ export function invalidateUserAuthTokens(
   invalidatedAtMs: number = Date.now()
 ): void {
   setBoundedInvalidation(invalidatedUserTokens, userId, invalidatedAtMs)
+  for (const [tokenHash, cached] of sessionCache) {
+    if (cached.user.id === userId) {
+      sessionCache.delete(tokenHash)
+      sessionLookupPromises.delete(tokenHash)
+    }
+  }
 }
 
 /**
  * 按 sessionId 做 isolate 级失效（加速层）。
  *
  * 三层失效语义：本 map（本 isolate 即时）→ sessions.revoked_at（跨 isolate
- * 事实源）→ 会话缓存 TTL 15s（收敛窗口）。判定条件是签名 token 的
+ * 事实源）→ 会话缓存 TTL 5s（收敛窗口）。判定条件是签名 token 的
  * issuedAtMs <= 失效时间戳，因此必须在 batch 落库 revoked_at 之后调用。
  */
 export function invalidateSignedSession(
@@ -213,15 +219,19 @@ async function loadSession(env: Env, tokenHash: string): Promise<SessionLookupRe
     return pending
   }
 
+  const lookupStartedAtMs = Date.now()
   const promise = querySession(env, tokenHash)
     .then((session) => {
-      if (session) {
+      const invalidatedAtMs = session ? invalidatedUserTokens.get(session.user.id) : undefined
+      if (session && (!invalidatedAtMs || lookupStartedAtMs > invalidatedAtMs)) {
         cacheSession(tokenHash, session)
       }
       return session
     })
     .finally(() => {
-      sessionLookupPromises.delete(tokenHash)
+      if (sessionLookupPromises.get(tokenHash) === promise) {
+        sessionLookupPromises.delete(tokenHash)
+      }
     })
   sessionLookupPromises.set(tokenHash, promise)
   return promise

@@ -368,8 +368,8 @@ export async function updateUser(request: Request, env: Env, userId: string): Pr
       return jsonResponse({ error: '无可更新字段' }, 400)
     }
 
-    const shouldRevokeSessions =
-      nextStatus === 'disabled' || nextStatus === 'deleted' || targetStatus !== nextStatus
+    // 角色降权同样必须撤销既有会话，避免旧缓存中的管理员身份继续生效。
+    const shouldRevokeSessions = nextRole !== targetRole || nextStatus !== targetStatus
 
     updates.push('updated_at = ?')
     params.push(new Date().toISOString())

@@ -347,7 +347,7 @@ export async function changePassword(request: Request, env: Env): Promise<Respon
         now
       ),
     ])
-    // 立即失效本 isolate 的会话缓存，消除 15s 缓存窗口内旧 token 仍可通过认证的残余
+    // 立即失效本 isolate 的会话缓存，消除 5s 缓存窗口内旧 token 仍可通过认证的残余
     invalidateUserAuthTokens(user.id, Date.parse(now) || Date.now())
 
     return jsonResponse({ ok: true })
