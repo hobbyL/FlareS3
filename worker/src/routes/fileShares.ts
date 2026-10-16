@@ -233,6 +233,9 @@ export async function getFileShare(request: Request, env: Env, fileId: string): 
  * // 文件未完成上传 (400)
  * { "error": "文件未完成上传" }
  *
+ * // regenerate 类型无效 (400)
+ * { "error": "regenerate 无效" }
+ *
  * // 文件已过期 (410)
  * { "error": "文件已过期" }
  *
@@ -273,6 +276,12 @@ export async function upsertFileShare(
     return invalidJsonBodyResponse(error)
   }
 
+  const regenerateRaw = body.regenerate
+  if (regenerateRaw !== undefined && typeof regenerateRaw !== 'boolean') {
+    return jsonResponse({ error: 'regenerate 无效' }, 400)
+  }
+  const regenerate = regenerateRaw === true
+
   const maxViewsRaw = body.max_views
   const maxViews = Number(maxViewsRaw ?? 0)
   if (!Number.isFinite(maxViews) || maxViews < 0) {
@@ -307,8 +316,6 @@ export async function upsertFileShare(
     )
     .bind(fileId)
     .first()
-
-  const regenerate = Boolean(body.regenerate)
 
   const passwordValue = body.password
   const passwordString = typeof passwordValue === 'string' ? passwordValue.trim() : ''

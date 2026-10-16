@@ -177,6 +177,9 @@ export async function getTextShare(request: Request, env: Env, textId: string): 
  *   }
  * }
  *
+ * // regenerate 类型无效 (400)
+ * { "error": "regenerate 无效" }
+ *
  * // max_views 无效 (400)
  * { "error": "max_views 无效" }
  *
@@ -208,6 +211,12 @@ export async function upsertTextShare(
   } catch (error) {
     return invalidJsonBodyResponse(error)
   }
+
+  const regenerateRaw = body.regenerate
+  if (regenerateRaw !== undefined && typeof regenerateRaw !== 'boolean') {
+    return jsonResponse({ error: 'regenerate 无效' }, 400)
+  }
+  const regenerate = regenerateRaw === true
 
   const maxViewsRaw = body.max_views
   const maxViews = Number(maxViewsRaw ?? 0)
@@ -243,8 +252,6 @@ export async function upsertTextShare(
     )
     .bind(textId)
     .first()
-
-  const regenerate = Boolean(body.regenerate)
 
   const passwordValue = body.password
   const passwordString = typeof passwordValue === 'string' ? passwordValue.trim() : ''
