@@ -208,7 +208,10 @@ function loadWorkerEntrypoint() {
 }
 
 function createAuthedRequest(url, role = "admin") {
-  const request = new Request(url, { method: "POST" });
+  const request = new Request(url, {
+    method: "POST",
+    headers: { Origin: "https://example.com" },
+  });
   request.user = {
     id: role === "admin" ? "admin-1" : "user-1",
     username: role,

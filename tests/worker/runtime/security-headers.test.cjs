@@ -273,7 +273,7 @@ test("worker still rejects same-site browser metadata on loopback unsafe request
   assert.deepEqual(payload, { error: "跨源请求被拒绝" });
 });
 
-test("worker allows non-browser unsafe API clients without origin metadata", async () => {
+test("worker rejects unsafe requests without origin metadata", async () => {
   const worker = loadWorkerEntrypoint();
   const response = await worker.fetch(
     new Request("https://example.com/api/auth/logout", {
@@ -289,5 +289,52 @@ test("worker allows non-browser unsafe API clients without origin metadata", asy
     {},
   );
 
-  assert.equal(response.status, 200);
+  assert.equal(response.status, 403);
+  assert.deepEqual(await response.json(), { error: "请求缺少来源校验信息" });
+});
+
+test("origin guard allows bearer API clients without browser source metadata", () => {
+  const { originGuardMiddleware } = loadModule("middleware/originGuard.js");
+  const response = originGuardMiddleware(
+    new Request("https://example.com/api/files", {
+      method: "POST",
+      headers: { Authorization: "Bearer fla_test_token" },
+    }),
+  );
+
+  assert.equal(response, undefined);
+});
+
+test("origin guard rejects cookie sessions without browser source metadata", () => {
+  const { originGuardMiddleware } = loadModule("middleware/originGuard.js");
+  const response = originGuardMiddleware(
+    new Request("https://example.com/api/files", {
+      method: "POST",
+      headers: { Cookie: "flares3_session=session-token" },
+    }),
+  );
+
+  assert.equal(response?.status, 403);
+  return response.json().then((payload) => {
+    assert.deepEqual(payload, { error: "请求缺少来源校验信息" });
+  });
+});
+
+test("origin guard accepts one same-origin source signal without the other", () => {
+  const { originGuardMiddleware } = loadModule("middleware/originGuard.js");
+  const sameOrigin = originGuardMiddleware(
+    new Request("https://example.com/api/files", {
+      method: "POST",
+      headers: { Origin: "https://example.com" },
+    }),
+  );
+  const sameSite = originGuardMiddleware(
+    new Request("https://example.com/api/files", {
+      method: "POST",
+      headers: { "Sec-Fetch-Site": "same-origin" },
+    }),
+  );
+
+  assert.equal(sameOrigin, undefined);
+  assert.equal(sameSite, undefined);
 });

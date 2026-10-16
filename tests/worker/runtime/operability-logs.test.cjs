@@ -111,6 +111,7 @@ test("worker emits structured request error logs for 5xx responses", async () =>
     const response = await worker.fetch(
       new Request("https://example.com/api/auth/login", {
         method: "POST",
+        headers: { Origin: "https://example.com" },
       }),
       { DB: createDb() },
       {},

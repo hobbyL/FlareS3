@@ -705,6 +705,7 @@ test("worker logout clears cookie even when request is unauthenticated", async (
   const response = await worker.fetch(
     new Request("https://example.com/api/auth/logout", {
       method: "POST",
+      headers: { Origin: "https://example.com" },
     }),
     { DB: db },
     {},
