@@ -182,6 +182,15 @@ export function validateExternalEndpoint(endpoint: unknown): EndpointValidationR
     return { ok: false, message: 'endpoint 必须使用 https' }
   }
 
+  // endpoint 只允许作为上游 base URL；禁止把凭据或会改变请求目标的
+  // query/fragment 混入配置，避免日志、SDK 拼接路径和签名边界被污染。
+  if (url.username || url.password) {
+    return { ok: false, message: 'endpoint 不得包含用户名或密码' }
+  }
+  if (url.search || url.hash) {
+    return { ok: false, message: 'endpoint 不得包含查询参数或片段' }
+  }
+
   const hostname = normalizeHostname(url.hostname)
   if (isBlockedHostname(hostname)) {
     return { ok: false, message: 'endpoint 不能指向本机、内网或保留地址' }

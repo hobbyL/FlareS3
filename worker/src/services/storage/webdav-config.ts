@@ -111,16 +111,16 @@ export async function loadWebDAVConfigById(
   if (!row) return null
 
   try {
+    const configType = String(row.type) === 'koofr' ? 'koofr' : 'webdav'
+    const endpoint = normalizeEndpointForTypeOrThrow(configType, row.endpoint)
     const username = await decryptString(String(row.username_enc), masterKey)
     const password = await decryptString(String(row.password_enc), masterKey)
-
-    const configType = String(row.type) === 'koofr' ? 'koofr' : 'webdav'
 
     return {
       id: String(row.id),
       type: configType as WebDAVConfigType,
       config: {
-        endpoint: String(row.endpoint),
+        endpoint,
         username,
         password,
         remotePath: normalizeRemotePathOrThrow(row.remote_path || '/'),
@@ -145,7 +145,7 @@ export async function createWebDAVConfig(
   const now = new Date().toISOString()
   const usernameEnc = await encryptString(body.username, masterKey)
   const passwordEnc = await encryptString(body.password, masterKey)
-  const endpoint = normalizeEndpointOrThrow(body.endpoint)
+  const endpoint = normalizeEndpointForTypeOrThrow(body.type, body.endpoint)
   const remotePath = normalizeRemotePathOrThrow(body.remote_path)
 
   const result = await withD1Retry(env.DB)
@@ -208,7 +208,10 @@ export async function updateWebDAVConfig(
 
   const nextName = body.name ?? String(existing.name)
   const nextType = body.type ?? String(existing.type)
-  const nextEndpoint = normalizeEndpointOrThrow(body.endpoint ?? String(existing.endpoint))
+  const nextEndpoint = normalizeEndpointForTypeOrThrow(
+    nextType as WebDAVConfigType,
+    body.endpoint ?? String(existing.endpoint)
+  )
 
   let nextQuotaBytes = Number(existing.quota_bytes)
   if (body.quota_bytes !== undefined) {
@@ -284,6 +287,14 @@ function normalizeEndpointOrThrow(endpoint: unknown): string {
     throw new StorageConfigError(endpointCheck.message)
   }
   return endpointCheck.url
+}
+
+function normalizeEndpointForTypeOrThrow(type: WebDAVConfigType, endpoint: unknown): string {
+  const normalized = normalizeEndpointOrThrow(endpoint)
+  if (type === 'koofr' && new URL(normalized).hostname.toLowerCase() !== 'app.koofr.net') {
+    throw new StorageConfigError('Koofr endpoint 只允许 app.koofr.net')
+  }
+  return normalized
 }
 
 function normalizeRemotePathOrThrow(remotePath: unknown): string {

@@ -24,6 +24,25 @@ test("validateExternalEndpoint accepts normalized public HTTPS endpoints only", 
   });
 });
 
+test("validateExternalEndpoint rejects embedded credentials and URL suffixes", () => {
+  const { validateExternalEndpoint } = require(
+    compiledPath("services/endpointPolicy.js"),
+  );
+
+  assert.deepEqual(
+    validateExternalEndpoint("https://user:secret@storage.example.com"),
+    { ok: false, message: "endpoint 不得包含用户名或密码" },
+  );
+  assert.deepEqual(
+    validateExternalEndpoint("https://storage.example.com/?next=/private"),
+    { ok: false, message: "endpoint 不得包含查询参数或片段" },
+  );
+  assert.deepEqual(
+    validateExternalEndpoint("https://storage.example.com/#private"),
+    { ok: false, message: "endpoint 不得包含查询参数或片段" },
+  );
+});
+
 test("validateExternalEndpoint rejects non-decimal IPv4 notation that maps to private addresses", () => {
   const { validateExternalEndpoint } = require(
     compiledPath("services/endpointPolicy.js"),

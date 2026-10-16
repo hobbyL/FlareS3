@@ -60,6 +60,8 @@ export async function fetchWithUpstreamTimeout(
     try {
       return await fetch(url, {
         ...init,
+        // endpoint 来自管理员配置，禁止跟随 3xx 跳转到未校验的主机或内网地址。
+        redirect: 'error',
         signal: init.signal ?? AbortSignal.timeout(fetchTimeoutMs),
       })
     } catch (error) {

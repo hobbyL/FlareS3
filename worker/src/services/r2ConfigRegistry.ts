@@ -2,6 +2,7 @@ import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
 import { DEFAULT_TOTAL_STORAGE } from '../config/env'
 import { decryptString } from './crypto'
+import { validateExternalEndpoint } from './endpointPolicy'
 
 export const LEGACY_R2_CONFIG_ID = 'legacy'
 export const SYSTEM_DEFAULT_R2_CONFIG_ID_KEY = 'r2_default_config_id'
@@ -114,10 +115,14 @@ async function getLegacyDbConfig(db: D1Database, masterKey: string): Promise<R2C
   if (!bucketName || !accessKeyEnc || !secretKeyEnc) {
     return null
   }
+  const endpointCheck = validateExternalEndpoint(endpoint)
+  if (!endpointCheck.ok) {
+    return null
+  }
   const accessKeyId = await decryptString(String(accessKeyEnc), masterKey)
   const secretAccessKey = await decryptString(String(secretKeyEnc), masterKey)
   return {
-    endpoint: String(endpoint),
+    endpoint: endpointCheck.url,
     accessKeyId,
     secretAccessKey,
     bucketName: String(bucketName),
@@ -168,10 +173,14 @@ async function getDbConfigById(
   if (!row) {
     return null
   }
+  const endpointCheck = validateExternalEndpoint(row.endpoint)
+  if (!endpointCheck.ok) {
+    return null
+  }
   const accessKeyId = await decryptString(String(row.access_key_id_enc), masterKey)
   const secretAccessKey = await decryptString(String(row.secret_access_key_enc), masterKey)
   return {
-    endpoint: String(row.endpoint),
+    endpoint: endpointCheck.url,
     accessKeyId,
     secretAccessKey,
     bucketName: String(row.bucket_name),

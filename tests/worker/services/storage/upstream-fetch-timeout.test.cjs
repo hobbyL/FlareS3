@@ -76,6 +76,31 @@ test("WebDAV provider upstream fetches carry an AbortSignal timeout", async () =
   );
 });
 
+test("upstream fetches disable automatic redirect following", async () => {
+  const { refreshUpstreamTimeoutConfig } = loadModule(
+    "config/upstreamTimeout.js",
+  );
+  refreshUpstreamTimeoutConfig({});
+  const { fetchWithUpstreamTimeout } = loadModule("services/upstreamFetch.js");
+
+  const mock = withMockedFetch((_attempt, _url, init) => {
+    assert.equal(init.redirect, "error");
+    return new Response(null, {
+      status: 302,
+      headers: { Location: "https://169.254.169.254/latest/meta-data" },
+    });
+  });
+  try {
+    const response = await fetchWithUpstreamTimeout(
+      "https://storage.example.com/object",
+      { method: "GET", redirect: "follow" },
+    );
+    assert.equal(response.status, 302);
+  } finally {
+    mock.restore();
+  }
+});
+
 test("readonly WebDAV requests retry once on timeout and then succeed", async () => {
   const { refreshUpstreamTimeoutConfig } = loadModule(
     "config/upstreamTimeout.js",
