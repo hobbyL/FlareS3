@@ -21,6 +21,11 @@
     "preview": "npm --prefix worker run dev"
   },
   "devDependencies": {
-    "wrangler": "^4.100.0"
+    "wrangler": "^4.151.0"
+  },
+  "overrides": {
+    "wrangler": {
+      "esbuild": "0.28.0"
+    }
   }
 }
