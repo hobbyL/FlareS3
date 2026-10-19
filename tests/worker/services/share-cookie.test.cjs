@@ -53,6 +53,30 @@ test("signShareCookie caps the credential lifetime at 24h and the share expiry",
   );
 });
 
+test("signShareCookie refuses to issue a credential for an expired share", async () => {
+  const cookie = loadModule("services/shareCookie.js");
+  const env = { AUTH_TOKEN_SECRET: SECRET };
+
+  // 分享已过期：不得兜底签出短有效期的 cookie（判定已过期的分享
+  // 不应因为「剩余秒数取整为 0」而在 cookie 通道上被重新放行）
+  assert.equal(
+    await cookie.signShareCookie(env, "abc123", Date.now() - 1_000),
+    null,
+    "expires_at 已过去时不得签发凭证",
+  );
+  assert.equal(
+    await cookie.signShareCookie(env, "abc123", Date.now() - 60 * 60 * 1000),
+    null,
+    "过期较久的分享同样不得签发凭证",
+  );
+  // 剩余不足 1 秒（取整为 0）同样视为已过期
+  assert.equal(
+    await cookie.signShareCookie(env, "abc123", Date.now() + 100),
+    null,
+    "剩余不足一秒时不得签发 1 秒凭证",
+  );
+});
+
 test("verifyShareCookie rejects expired, tampered and malformed credentials", async () => {
   const cookie = loadModule("services/shareCookie.js");
   const env = { AUTH_TOKEN_SECRET: SECRET };

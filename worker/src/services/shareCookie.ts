@@ -76,7 +76,14 @@ export async function signShareCookie(
   let maxAgeSeconds = SHARE_COOKIE_MAX_AGE_SECONDS
   if (typeof shareExpiresAtMs === 'number' && Number.isFinite(shareExpiresAtMs)) {
     const remainingSeconds = Math.floor((shareExpiresAtMs - nowMs) / 1000)
-    maxAgeSeconds = Math.min(maxAgeSeconds, Math.max(1, remainingSeconds))
+    // 分享已过期时不签发凭证：先前用 Math.max(1, remainingSeconds) 兜底，会把
+    // 已过期（甚至 expires_at 为过去时间）的分享签出一枚 1 秒有效 cookie；
+    // 该 cookie 只多活 1 秒，却让「过期分享」在白名单上多出一个短暂的真值分支。
+    // 过期与否由 expires_at 判定，cookie 不应成为它的例外通道。
+    if (remainingSeconds <= 0) {
+      return null
+    }
+    maxAgeSeconds = Math.min(maxAgeSeconds, remainingSeconds)
   }
 
   const expirySeconds = Math.floor(nowMs / 1000) + maxAgeSeconds

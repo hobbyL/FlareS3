@@ -106,6 +106,18 @@ test("password-protected shares surface the desensitized description, never the 
   assert.doesNotMatch(html, /super-secret-plaintext/);
 });
 
+test("unconsumed text shares expose a neutral description constant, not the body", () => {
+  const { buildOgMeta, SHARE_CONTENT_HIDDEN_DESCRIPTION } = loadSharePage();
+  assert.equal(SHARE_CONTENT_HIDDEN_DESCRIPTION, "点击查看分享内容");
+  const html = buildOgMeta({
+    title: "文本分享",
+    description: SHARE_CONTENT_HIDDEN_DESCRIPTION,
+    type: "article",
+  });
+  assert.match(html, /og:description" content="点击查看分享内容"/);
+  assert.doesNotMatch(html, /super-secret-plaintext/);
+});
+
 test("buildPage splices the og block right after <title> and omits it without og", () => {
   const { buildPage } = loadSharePage();
   const withOg = buildPage({

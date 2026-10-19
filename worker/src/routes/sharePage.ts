@@ -35,6 +35,15 @@ function escapeHtml(value: string): string {
 const PASSWORD_PROTECTED_SHARE_DESCRIPTION = '受口令保护的分享'
 
 /**
+ * 未消费路径（确认页 / 错误页）的 og:description 脱敏文案。
+ *
+ * 社交卡片与爬虫抓取 meta 不计入分享的 views 计数，若在这些路径嵌入正文，
+ * 「消费一次」的 max_views 语义会被绕过；因此正文预览只允许出现在
+ * 已完成消费的内容渲染页。
+ */
+const SHARE_CONTENT_HIDDEN_DESCRIPTION = '点击查看分享内容'
+
+/**
  * 分享页 Open Graph / Twitter 卡片 meta 数据。
  *
  * 不含 og:image（避免引入图片托管复杂度，twitter:card 固定 summary）。
@@ -108,7 +117,12 @@ function resolveShareOgUrl(requestUrl: string): string | undefined {
   }
 }
 
-export { buildOgMeta, resolveShareOgUrl, PASSWORD_PROTECTED_SHARE_DESCRIPTION }
+export {
+  buildOgMeta,
+  resolveShareOgUrl,
+  PASSWORD_PROTECTED_SHARE_DESCRIPTION,
+  SHARE_CONTENT_HIDDEN_DESCRIPTION,
+}
 export type { ShareOgMeta }
 
 /**

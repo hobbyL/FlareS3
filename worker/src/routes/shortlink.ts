@@ -5,6 +5,23 @@ import { tryViewTextOneTimeShare } from './textOneTimeShares'
 import { withD1Retry } from '../utils/db'
 
 /**
+ * 短链层的文件过期判定（与 upload/helpers 的 isExpired / isNeverExpires 同口径）。
+ *
+ * 缺省/非法时间视为已过期（fail-closed）；`9999-12-31T23:59:59.999Z` 为「永不过期」哨兵，
+ * 必须显式豁免，否则永久文件会被误判为过期而 404。
+ */
+const NEVER_EXPIRES_AT_ISO = '9999-12-31T23:59:59.999Z'
+
+function isFileExpired(expiresAt: unknown): boolean {
+  const value = String(expiresAt || '').trim()
+  if (!value) return true
+  if (value === NEVER_EXPIRES_AT_ISO) return false
+  const expiresAtMs = new Date(value).getTime()
+  if (Number.isNaN(expiresAtMs)) return true
+  return Date.now() > expiresAtMs
+}
+
+/**
  * 短链接路由处理
  *
  * @route GET /s/:code
@@ -38,7 +55,7 @@ export async function shortlink(request: Request, env: Env, code: string): Promi
   if (!code) return jsonResponse({ error: '短码不能为空' }, 400)
   const file = await withD1Retry(env.DB)
     .prepare(
-      `SELECT f.id, f.require_login, f.upload_status, f.deleted_at, u.status AS owner_status
+      `SELECT f.id, f.require_login, f.upload_status, f.deleted_at, f.expires_at, u.status AS owner_status
      FROM files f
      LEFT JOIN users u ON u.id = f.owner_id
      WHERE f.short_code = ?
@@ -50,6 +67,7 @@ export async function shortlink(request: Request, env: Env, code: string): Promi
       require_login: number
       upload_status: string
       deleted_at: string | null
+      expires_at: string | null
       owner_status: string | null
     }>()
   if (!file) {
@@ -60,6 +78,7 @@ export async function shortlink(request: Request, env: Env, code: string): Promi
   if (
     file.upload_status !== 'completed' ||
     file.deleted_at ||
+    isFileExpired(file.expires_at) ||
     String(file.owner_status || '') !== 'active'
   ) {
     return new Response('Not Found', { status: 404 })
