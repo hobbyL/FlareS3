@@ -1,5 +1,12 @@
 import type { Env } from '../config/env'
-import { invalidJsonBodyResponse, jsonResponse, redirect, getUser, parseJson } from './utils'
+import {
+  invalidJsonBodyResponse,
+  jsonResponse,
+  redirect,
+  getUser,
+  parseJson,
+  requireAdminUser,
+} from './utils'
 import { createProvider } from '../services/storage/factory'
 import { StorageError, type StorageProvider } from '../services/storage/types'
 import { logAudit } from '../services/audit'
@@ -8,7 +15,7 @@ import { limitedPreviewResponse } from '../services/previewResponsePolicy'
 import { rejectInvalidContentLength } from '../services/requestBodyPolicy'
 import { normalizeStorageFilename, normalizeStoragePath } from '../services/storage/pathPolicy'
 import { fetchWithUpstreamTimeout } from '../services/upstreamFetch'
-import { logWarn } from '../utils/log'
+import { logError, logWarn } from '../utils/log'
 import {
   measureRouteStep,
   withRouteTimingHeaders,
@@ -137,17 +144,33 @@ function resolvePreviewModeByExtension(extension: string): PreviewMode | null {
   return null
 }
 
-function formatStorageError(error: unknown): { status: number; message: string } {
+const STORAGE_OPERATION_FAILED_MESSAGE = '存储操作失败'
+
+/**
+ * 归一化存储错误：对外只暴露通用文案与状态码，细节一律进服务端日志。
+ *
+ * 原始 `StorageError.message` 常由上游响应体拼成，可能带出 endpoint、bucket 名、
+ * 签名串等内部信息；`code` / `httpStatusCode` 同样属于实现细节。因此响应体只保留
+ * 通用文案，排查所需的完整信息（code / HTTP 状态 / message / stack）通过 logError 落日志。
+ *
+ * @param error - 捕获到的异常
+ * @param operation - 操作名，用于日志与错误消息定位（如 `move` / `copy`）
+ * @returns 对外可用的状态码与通用文案
+ */
+function formatStorageError(
+  error: unknown,
+  operation: string
+): { status: number; message: string } {
   if (error instanceof StorageError) {
-    const parts = [
-      error.code,
-      typeof error.httpStatusCode === 'number' ? `HTTP ${error.httpStatusCode}` : null,
-      error.message,
-    ].filter(Boolean)
-    if (!parts.length) return { status: 502, message: '存储操作失败' }
-    return { status: error.httpStatusCode || 502, message: `存储操作失败（${parts.join(' / ')}）` }
+    logError('[mount] storage operation failed', error, {
+      operation,
+      code: error.code,
+      httpStatusCode: error.httpStatusCode,
+    })
+    return { status: error.httpStatusCode || 502, message: STORAGE_OPERATION_FAILED_MESSAGE }
   }
-  return { status: 502, message: '存储操作失败' }
+  logError('[mount] unexpected storage operation failure', error, { operation })
+  return { status: 502, message: STORAGE_OPERATION_FAILED_MESSAGE }
 }
 
 /**
@@ -167,8 +190,8 @@ async function ensureMountedObjectExists(
     if (exists) return null
     return jsonResponse({ error: '对象不存在' }, 404)
   } catch (error) {
-    const formatted = formatStorageError(error)
-    return jsonResponse({ error: `检查对象失败（${formatted.message}）` }, formatted.status)
+    const formatted = formatStorageError(error, 'check_exists')
+    return jsonResponse({ error: `检查对象失败` }, formatted.status)
   }
 }
 
@@ -214,6 +237,10 @@ async function ensureMountedObjectExists(
  * { "error": "配置不存在或不可用" }
  */
 export async function listMountedObjects(request: Request, env: Env): Promise<Response> {
+  // 与路由层 withAdmin 同口径的二道校验：处理器被直接调用时也不得放行
+  const authError = requireAdminUser(request)
+  if (authError) return authError
+
   const timings: RouteTimingEntry[] = []
   const url = new URL(request.url)
   const configId = String(url.searchParams.get('config_id') || '').trim()
@@ -264,9 +291,9 @@ export async function listMountedObjects(request: Request, env: Env): Promise<Re
       timings
     )
   } catch (error) {
-    const formatted = formatStorageError(error)
+    const formatted = formatStorageError(error, 'list_objects')
     return withRouteTimingHeaders(
-      jsonResponse({ error: `读取对象列表失败（${formatted.message}）` }, formatted.status),
+      jsonResponse({ error: `读取对象列表失败` }, formatted.status),
       timings
     )
   }
@@ -296,6 +323,10 @@ export async function listMountedObjects(request: Request, env: Env): Promise<Re
  * { "error": "配置不存在或不可用" }
  */
 export async function downloadMountedObject(request: Request, env: Env): Promise<Response> {
+  // 与路由层 withAdmin 同口径的二道校验：处理器被直接调用时也不得放行
+  const authError = requireAdminUser(request)
+  if (authError) return authError
+
   const url = new URL(request.url)
   const configId = String(url.searchParams.get('config_id') || '').trim()
   const rawKey = String(url.searchParams.get('key') || '')
@@ -362,6 +393,10 @@ export async function downloadMountedObject(request: Request, env: Env): Promise
  * { "error": "不支持预览该文件类型" }
  */
 export async function previewMountedObject(request: Request, env: Env): Promise<Response> {
+  // 与路由层 withAdmin 同口径的二道校验：处理器被直接调用时也不得放行
+  const authError = requireAdminUser(request)
+  if (authError) return authError
+
   const url = new URL(request.url)
   const configId = String(url.searchParams.get('config_id') || '').trim()
   const rawKey = String(url.searchParams.get('key') || '')
@@ -444,8 +479,9 @@ export async function previewMountedObject(request: Request, env: Env): Promise<
  * { "error": "对象不存在" }
  */
 export async function deleteMountedObject(request: Request, env: Env): Promise<Response> {
-  const user = getUser(request)
-  if (!user) return jsonResponse({ error: '未授权' }, 401)
+  const authError = requireAdminUser(request)
+  if (authError) return authError
+  const user = getUser(request)!
 
   const method = request.method.toUpperCase()
   if (method !== 'DELETE') {
@@ -498,9 +534,9 @@ export async function deleteMountedObject(request: Request, env: Env): Promise<R
       return jsonResponse({ error: '对象不存在' }, 404)
     }
 
-    const formatted = formatStorageError(error)
+    const formatted = formatStorageError(error, isFolder ? 'delete_folder' : 'delete_object')
     const errorPrefix = isFolder ? '删除目录失败' : '删除对象失败'
-    return jsonResponse({ error: `${errorPrefix}（${formatted.message}）` }, formatted.status)
+    return jsonResponse({ error: `${errorPrefix}` }, formatted.status)
   }
 
   await logAudit(env.DB, {
@@ -568,8 +604,9 @@ const MAX_MOUNT_MULTIPART_REQUEST_BYTES = MAX_MOUNT_UPLOAD_BYTES + 1024 * 1024
  * { "error": "上传文件超出限制（100MB）" }
  */
 export async function uploadMountedObject(request: Request, env: Env): Promise<Response> {
-  const user = getUser(request)
-  if (!user) return jsonResponse({ error: '未授权' }, 401)
+  const authError = requireAdminUser(request)
+  if (authError) return authError
+  const user = getUser(request)!
 
   const contentType = String(request.headers.get('Content-Type') || '')
   const contentLengthResponse = rejectInvalidContentLength(
@@ -682,8 +719,8 @@ export async function uploadMountedObject(request: Request, env: Env): Promise<R
 
     return jsonResponse({ success: true, key })
   } catch (error) {
-    const formatted = formatStorageError(error)
-    return jsonResponse({ error: `上传失败（${formatted.message}）` }, formatted.status)
+    const formatted = formatStorageError(error, 'upload')
+    return jsonResponse({ error: `上传失败` }, formatted.status)
   }
 }
 
@@ -718,8 +755,9 @@ export async function uploadMountedObject(request: Request, env: Env): Promise<R
  * { "error": "配置不存在或不可用" }
  */
 export async function createMountedFolder(request: Request, env: Env): Promise<Response> {
-  const user = getUser(request)
-  if (!user) return jsonResponse({ error: '未授权' }, 401)
+  const authError = requireAdminUser(request)
+  if (authError) return authError
+  const user = getUser(request)!
 
   let configId = ''
   let key = ''
@@ -767,8 +805,8 @@ export async function createMountedFolder(request: Request, env: Env): Promise<R
 
     return jsonResponse({ success: true, key })
   } catch (error) {
-    const formatted = formatStorageError(error)
-    return jsonResponse({ error: `创建目录失败（${formatted.message}）` }, formatted.status)
+    const formatted = formatStorageError(error, 'create_folder')
+    return jsonResponse({ error: `创建目录失败` }, formatted.status)
   }
 }
 
@@ -861,8 +899,9 @@ function isMoveEntityTooLargeError(error: unknown): boolean {
  * { "error": "移动对象失败（存储操作失败）" }
  */
 export async function moveMountedObject(request: Request, env: Env): Promise<Response> {
-  const user = getUser(request)
-  if (!user) return jsonResponse({ error: '未授权' }, 401)
+  const authError = requireAdminUser(request)
+  if (authError) return authError
+  const user = getUser(request)!
 
   let configId = ''
   let rawKey = ''
@@ -931,8 +970,8 @@ export async function moveMountedObject(request: Request, env: Env): Promise<Res
       return jsonResponse({ error: '目标文件已存在' }, 409)
     }
   } catch (error) {
-    const formatted = formatStorageError(error)
-    return jsonResponse({ error: `检查目标失败（${formatted.message}）` }, formatted.status)
+    const formatted = formatStorageError(error, 'move_check_target')
+    return jsonResponse({ error: `检查目标失败` }, formatted.status)
   }
 
   try {
@@ -950,8 +989,8 @@ export async function moveMountedObject(request: Request, env: Env): Promise<Res
         413
       )
     }
-    const formatted = formatStorageError(error)
-    return jsonResponse({ error: `移动对象失败（${formatted.message}）` }, formatted.status)
+    const formatted = formatStorageError(error, 'move')
+    return jsonResponse({ error: `移动对象失败` }, formatted.status)
   }
 
   await logAudit(env.DB, {
@@ -1081,8 +1120,9 @@ async function ensureParentFolders(provider: StorageProvider, key: string): Prom
  * { "error": "配置不存在或不可用" }
  */
 export async function crossConfigCopyObject(request: Request, env: Env): Promise<Response> {
-  const user = getUser(request)
-  if (!user) return jsonResponse({ error: '未授权' }, 401)
+  const authError = requireAdminUser(request)
+  if (authError) return authError
+  const user = getUser(request)!
 
   let sourceConfigId = ''
   let rawSourceKey = ''
@@ -1151,11 +1191,11 @@ export async function crossConfigCopyObject(request: Request, env: Env): Promise
   try {
     sourceSize = await sourceProvider.getSize(sourceKey)
   } catch (error) {
-    const formatted = formatStorageError(error)
+    const formatted = formatStorageError(error, 'copy_get_source_size')
     if (formatted.status === 404) {
       return jsonResponse({ error: '对象不存在' }, 404)
     }
-    return jsonResponse({ error: `检查源对象失败（${formatted.message}）` }, formatted.status)
+    return jsonResponse({ error: `检查源对象失败` }, formatted.status)
   }
   if (typeof sourceSize === 'number' && sourceSize > MAX_CROSS_CONFIG_COPY_BYTES) {
     return jsonResponse(
@@ -1171,8 +1211,8 @@ export async function crossConfigCopyObject(request: Request, env: Env): Promise
       return jsonResponse({ error: '目标文件已存在' }, 409)
     }
   } catch (error) {
-    const formatted = formatStorageError(error)
-    return jsonResponse({ error: `检查目标失败（${formatted.message}）` }, formatted.status)
+    const formatted = formatStorageError(error, 'copy_check_target')
+    return jsonResponse({ error: `检查目标失败` }, formatted.status)
   }
 
   // 中转：拉回 → 写出；写出失败 best-effort 清理目标，不留半写
@@ -1180,11 +1220,11 @@ export async function crossConfigCopyObject(request: Request, env: Env): Promise
   try {
     body = await readObjectBody(sourceProvider, sourceKey)
   } catch (error) {
-    const formatted = formatStorageError(error)
+    const formatted = formatStorageError(error, 'copy_read_source')
     if (formatted.status === 404) {
       return jsonResponse({ error: '对象不存在' }, 404)
     }
-    return jsonResponse({ error: `复制失败（${formatted.message}）` }, formatted.status)
+    return jsonResponse({ error: `复制失败` }, formatted.status)
   }
 
   const contentType = 'application/octet-stream'
@@ -1201,8 +1241,8 @@ export async function crossConfigCopyObject(request: Request, env: Env): Promise
   } catch (error) {
     // best-effort 清理可能的目标半写；清理失败仅 warn（下次复制会先 409 拦截）
     await Promise.allSettled([destProvider.delete(destKey)])
-    const formatted = formatStorageError(error)
-    return jsonResponse({ error: `复制失败（${formatted.message}）` }, formatted.status)
+    const formatted = formatStorageError(error, 'copy_write_target')
+    return jsonResponse({ error: `复制失败` }, formatted.status)
   }
 
   // 可选删源（=迁移）：失败不回滚目标，仅 warn；幂等重试同一复制即可收敛

@@ -191,6 +191,20 @@ export function multipartUploadIdMismatchError(): UploadRouteError {
   })
 }
 
+/**
+ * 完成分片上传收口时状态守卫未命中（记录已被并发改写）。
+ *
+ * 语义与 `confirmUploadNotPendingError` 一致：R2 侧对象已合并，但 DB 记录不再是
+ * `uploading`，继续按成功返回会指向无效记录，故 fail-closed 返回 409。
+ */
+export function multipartUploadNotInProgressError(): UploadRouteError {
+  return createUploadError({
+    status: 409,
+    code: 'UPLOAD_MULTIPART_NOT_IN_PROGRESS',
+    message: '上传已不在进行中，无法完成分片上传',
+  })
+}
+
 export function multipartPartNumberInvalidError(): UploadRouteError {
   return createUploadError({
     status: 400,

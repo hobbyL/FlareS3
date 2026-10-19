@@ -43,6 +43,40 @@ export function getUser(request: Request): AuthUser | undefined {
   return (request as AuthedRequest).user
 }
 
+/**
+ * 端点自校验鉴权（admin 口径，返回 Response 表示拒绝）。
+ *
+ * 与 `router.ts` 的 `withAdmin` 同口径：无用户 → 401，非 admin → 403。
+ * mount 等同时挂了 `withAdmin` 的处理器用它做二道校验，保证 handler 被
+ * 直接调用（测试、内部复用、未来新增未包 `withAdmin` 的路由）时也不会
+ * 退化成「不校验鉴权」——先前这些 handler 只查 `getUser` 存在性，
+ * 非 admin 会话能越过路由层进入处理器，与 `withAdmin` 的语义不一致。
+ */
+export function requireAdminUser(request: Request): Response {
+  const user = getUser(request)
+  if (!user) {
+    return jsonResponse({ error: '未授权' }, 401)
+  }
+  if (user.role !== 'admin') {
+    return jsonResponse({ error: '无权限' }, 403)
+  }
+  return undefined as unknown as Response
+}
+
+/**
+ * 端点自校验鉴权（登录口径，返回 Response 表示拒绝）。
+ *
+ * 与 `router.ts` 的 `withAuth` 同口径：无用户 → 401。用于只是「需要登录」
+ * 而非「需要管理员」的处理器，避免误用 admin 口径把普通用户挡在外面。
+ */
+export function requireAuthedUser(request: Request): Response {
+  const user = getUser(request)
+  if (!user) {
+    return jsonResponse({ error: '未授权' }, 401)
+  }
+  return undefined as unknown as Response
+}
+
 /** 本次请求的鉴权来源（'session' | 'pat'）；未认证为 undefined。 */
 export function getAuthKind(request: Request): AuthKind | undefined {
   return (request as AuthedRequest).authKind

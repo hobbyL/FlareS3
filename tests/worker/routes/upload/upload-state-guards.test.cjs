@@ -45,6 +45,8 @@ function createAuthedRequest(url, body) {
 }
 
 function createDb({ firstHandlers = [], runHandlers = [] } = {}) {
+  const lateFirstHandlers = [];
+
   function consume(list, sql, args, kind) {
     const index = list.findIndex((handler) => handler.match.test(sql));
     if (index === -1) {
@@ -59,6 +61,10 @@ function createDb({ firstHandlers = [], runHandlers = [] } = {}) {
   }
 
   return {
+    // 供守卫失败后的“事后复核”查询追加 handler（用于模拟并发改写后的真实状态）
+    queueFirst(handler) {
+      lateFirstHandlers.push(handler);
+    },
     prepare(sql) {
       return {
         bind(...args) {
@@ -66,7 +72,12 @@ function createDb({ firstHandlers = [], runHandlers = [] } = {}) {
             __sql: sql,
             __args: args,
             async first() {
-              return consume(firstHandlers, sql, args, "first");
+              return consume(
+                [...firstHandlers, ...lateFirstHandlers],
+                sql,
+                args,
+                "first",
+              );
             },
             async all() {
               throw new Error(`unexpected all SQL: ${sql}`);
@@ -318,9 +329,49 @@ test("completeMultipart returns idempotent success for concurrent duplicate comp
   assert.equal(payload.file_id, "file-1");
   assert.equal(payload.download_url, "/api/files/file-1/download");
   assert.equal(payload.r2_config_id, "config-1");
+  // 无口令撤下直链：require_login=0 且未过期时生成直链（与 confirm 口径一致）
+  assert.equal(payload.filename, "demo.bin");
+  assert.equal(payload.short_url, "/s/abc123");
+  assert.equal(payload.expires_at, "9999-12-31T23:59:59.999Z");
   // 已完成记录不再重复推进，守卫 UPDATE 命中 0 行仍返回幂等成功
   assert.equal(completedUpdates.length, 1);
   assert.match(completedUpdates[0], /AND upload_status = 'uploading'/);
+});
+
+test("completeMultipart fails closed when an in-progress record is taken over concurrently", async () => {
+  const { r2, upload } = loadUploadModules();
+  r2.resolveR2ConfigForKey = async () => ({ id: "config-1", config: {} });
+  // R2 合并成功（无 NoSuchUpload），但守卫 UPDATE 命中 0 行：
+  // 记录在合并期间被并发 delete/abort 改写，不得按成功返回无效下载地址
+  r2.completeMultipartUpload = async () => {};
+  r2.getObjectSize = async () => 100;
+
+  const db = createDb({
+    firstHandlers: [{ match: COMPLETE_FILE_SELECT, value: multipartFileRow() }],
+    runHandlers: [
+      { match: COMPLETED_UPDATE, value: { meta: { changes: 0 } } },
+      { match: RESERVATION_UPDATE, value: { meta: { changes: 0 } } },
+    ],
+  });
+  // 守卫 0 行后必有一次状态复核：记录已被并发 delete/abort 改写为 deleted
+  db.queueFirst({ match: STATUS_SELECT, value: { upload_status: "deleted" } });
+
+  const response = await upload.completeMultipart(
+    createAuthedRequest("https://example.com/api/upload/multipart/complete", {
+      file_id: "file-1",
+      upload_id: "upload-1",
+      parts: [{ part_number: 1, etag: "etag-1" }],
+    }),
+    { DB: db },
+  );
+
+  assert.equal(response.status, 409);
+  assert.deepEqual(await response.json(), {
+    error: {
+      code: "UPLOAD_MULTIPART_NOT_IN_PROGRESS",
+      message: "上传已不在进行中，无法完成分片上传",
+    },
+  });
 });
 
 test("completeMultipart recovers crash residue when R2 merged but DB write failed", async () => {

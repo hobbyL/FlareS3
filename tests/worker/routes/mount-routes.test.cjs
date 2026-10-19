@@ -19,8 +19,22 @@ function clearModule(relativePath) {
   delete require.cache[compiledPath(relativePath)];
 }
 
+const ADMIN_USER = {
+  id: "admin-1",
+  username: "root",
+  role: "admin",
+  status: "active",
+  quota_bytes: 1024,
+};
+
+/**
+ * mount 路由层包了 withAdmin，处理器自身也做同口径二道校验（见 R13 用例），
+ * 因此这些 GET 用例必须带上 admin 身份，否则会先撞 401 而不是被测分支。
+ */
 function createGetRequest(url) {
-  return new Request(url, { method: "GET" });
+  const request = new Request(url, { method: "GET" });
+  request.user = ADMIN_USER;
+  return request;
 }
 
 function createAuthedDeleteRequest(url) {

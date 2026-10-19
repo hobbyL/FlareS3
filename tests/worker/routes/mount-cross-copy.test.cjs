@@ -332,6 +332,48 @@ test("crossConfigCopyObject maps missing source objects to 404", async () => {
   assert.deepEqual((await response.json()).error, "对象不存在");
 });
 
+test("crossConfigCopyObject hides storage error details from clients but logs them", async () => {
+  const { storageFactory, mount } = loadMountRouteModules();
+  const source = createStubProvider({
+    getSizeError: createStorageError(
+      "GET https://s3.example.com/bucket?X-Amz-Signature=leaked-signature failed",
+      "InternalError",
+      502,
+    ),
+  });
+  const dest = createStubProvider();
+  storageFactory.createProvider = async (env, configId) =>
+    configId === "a" ? source : dest;
+
+  const logged = [];
+  const originalError = console.error;
+  console.error = (line) => logged.push(String(line));
+  let response;
+  try {
+    response = await mount.crossConfigCopyObject(
+      createAuthedCopyRequest({
+        source_config_id: "a",
+        source_key: "docs/a.txt",
+        dest_config_id: "b",
+      }),
+      { DB: {} },
+    );
+  } finally {
+    console.error = originalError;
+  }
+
+  assert.equal(response.status, 502);
+  const body = await response.json();
+  // 响应体不得带出 StorageError.code / 上游 message / endpoint / 签名串
+  assert.deepEqual(body, { error: "检查源对象失败" });
+  // 服务端日志仍保留完整细节，供排查
+  const text = logged.join("\n");
+  assert.match(text, /storage operation failed/);
+  assert.match(text, /copy_get_source_size/);
+  assert.match(text, /InternalError/);
+  assert.match(text, /leaked-signature/);
+});
+
 test("crossConfigCopyObject returns 409 when destination exists without copying", async () => {
   const { storageFactory, mount } = loadMountRouteModules();
   const source = createStubProvider();
@@ -599,4 +641,77 @@ test("crossConfigCopyObject maps download failures to formatted errors without w
   assert.equal(response.status, 404);
   assert.deepEqual((await response.json()).error, "对象不存在");
   assert.equal(dest.calls.upload.length, 0);
+});
+
+/**
+ * R13：mount 处理器自身的鉴权口径必须与路由层 withAdmin 一致。
+ *
+ * 路由层已用 withAdmin 挡住非 admin，但处理器此前只用 getUser 判断「有无用户」，
+ * 于是「已登录的普通用户」直接调用处理器时会一路走到 storage 层。本用例逐个
+ * 调用 mount 的全部 8 个导出处理器，断言未认证 → 401、非 admin → 403，
+ * 且拒绝发生在触碰 provider 之前（不泄漏存储配置是否存在）。
+ */
+test("mount handlers enforce the router's requireAdmin semantics on their own", async () => {
+  const { mount } = loadMountRouteModules();
+
+  const buildRequest = (user, url, method = "GET") => {
+    const request = new Request(url, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      ...(method === "GET" ? {} : { body: JSON.stringify({}) }),
+    });
+    if (user) request.user = user;
+    return request;
+  };
+
+  const user = {
+    id: "user-1",
+    username: "alice",
+    role: "user",
+    status: "active",
+    quota_bytes: 1024,
+  };
+
+  const cases = [
+    [
+      "listMountedObjects",
+      "GET",
+      "https://example.com/api/mount/objects?config_id=r2-main",
+    ],
+    [
+      "downloadMountedObject",
+      "GET",
+      "https://example.com/api/mount/download?config_id=r2-main&key=a.txt",
+    ],
+    [
+      "previewMountedObject",
+      "GET",
+      "https://example.com/api/mount/preview?config_id=r2-main&key=a.txt",
+    ],
+    [
+      "deleteMountedObject",
+      "DELETE",
+      "https://example.com/api/mount/object?config_id=r2-main&key=a.txt",
+    ],
+    ["uploadMountedObject", "POST", "https://example.com/api/mount/upload"],
+    ["createMountedFolder", "POST", "https://example.com/api/mount/folder"],
+    ["moveMountedObject", "POST", "https://example.com/api/mount/move"],
+    [
+      "crossConfigCopyObject",
+      "POST",
+      "https://example.com/api/mount/cross-config-copy",
+    ],
+  ];
+
+  for (const [name, method, url] of cases) {
+    // 未认证：401（无 user）
+    const anonymous = await mount[name](buildRequest(null, url, method), {});
+    assert.equal(anonymous.status, 401, `${name} 未认证应返回 401`);
+    assert.deepEqual((await anonymous.json()).error, "未授权");
+
+    // 已登录普通用户：403（与 withAdmin 同口径，不得进入处理器主体）
+    const forbidden = await mount[name](buildRequest(user, url, method), {});
+    assert.equal(forbidden.status, 403, `${name} 非 admin 应返回 403`);
+    assert.deepEqual((await forbidden.json()).error, "无权限");
+  }
 });

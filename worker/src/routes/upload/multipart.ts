@@ -34,6 +34,7 @@ import {
   multipartNotInitializedError,
   multipartPartNumberInvalidError,
   multipartUploadIdMismatchError,
+  multipartUploadNotInProgressError,
   multipartUploadIdMissingError,
   uploadConfigNotFoundError,
   uploadConfigUnavailableError,
@@ -619,7 +620,7 @@ export async function completeMultipart(request: Request, env: Env): Promise<Res
     }
 
     const now = new Date().toISOString()
-    await withD1Retry(env.DB).batch([
+    const [updateResult] = await withD1Retry(env.DB).batch([
       withD1Retry(env.DB)
         .prepare(
           "UPDATE files SET size = ?, upload_status = 'completed', multipart_upload_id = NULL WHERE id = ? AND upload_status = 'uploading'"
@@ -627,6 +628,28 @@ export async function completeMultipart(request: Request, env: Env): Promise<Res
         .bind(sizeValidation.actualSize, file.id),
       prepareConsumeUploadReservation(env.DB, String(file.id), now),
     ])
+
+    // 收口校验不能只看 `meta.changes`：并发的重复 complete 是**幂等成功**场景，
+    // 此时前一个请求已把记录置为 completed，本条守卫必然命中 0 行，若据此判失败会把
+    // 成功的重试误报为错误（该语义由 isMultipartCompletionRecoverable 与
+    // upload-state-guards 的 "idempotent success" 用例锁定）。
+    //
+    // 因此只在「守卫 0 行 **且** 记录当前不是 completed」时 fail-closed：
+    // 这意味着记录在合并期间被并发 delete/abort 改写或已删除。此时必须重新确认状态，
+    // 不能沿用合并前读到的旧快照，否则会返回指向已删除记录的下载地址。
+    if (!updateResult?.meta?.changes) {
+      const currentStatus = String(
+        (
+          await withD1Retry(env.DB)
+            .prepare('SELECT upload_status FROM files WHERE id = ? LIMIT 1')
+            .bind(String(file.id))
+            .first<{ upload_status: string | null }>()
+        )?.upload_status || ''
+      )
+      if (currentStatus !== 'completed') {
+        return uploadErrorResponse(multipartUploadNotInProgressError())
+      }
+    }
 
     let downloadUrl = `/api/files/${file.id}/download`
     const allowDirect = Number(file.require_login) === 0
