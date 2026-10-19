@@ -468,14 +468,36 @@ test("authSessionMiddleware coalesces concurrent session lookups and caches the 
   const cachedRequest = new Request("https://example.com/api/shares", {
     headers: { Cookie: "flares3_session=session-token" },
   });
+  let cachedLookupCount = 0;
   await authSessionMiddleware(cachedRequest, {
+    AUTH_TOKEN_SECRET: "test-auth-secret",
     DB: {
-      prepare() {
-        throw new Error("cached session should not touch D1");
+      prepare(sql) {
+        assert.match(sql, /FROM sessions s/);
+        return {
+          bind() {
+            return {
+              async first() {
+                cachedLookupCount += 1;
+                return {
+                  session_id: "session-1",
+                  expires_at: new Date(Date.now() + 60_000).toISOString(),
+                  revoked_at: null,
+                  user_id: "user-1",
+                  username: "alice",
+                  role: "admin",
+                  status: "active",
+                  quota_bytes: 1024,
+                };
+              },
+            };
+          },
+        };
       },
     },
   });
   assert.equal(cachedRequest.user.id, "user-1");
+  assert.equal(cachedLookupCount, 0, "缓存命中时不应再查询 D1");
   assert.equal(lookupCount, 1);
 });
 
@@ -780,6 +802,102 @@ test("invalidateAuthToken rejects a previously valid signed token in the same is
   await authSessionMiddleware(request, env);
 
   assert.equal(request.user, undefined);
+});
+
+/**
+ * 失效表按「时间戳最旧」淘汰，而不是按「插入最早」淘汰。
+ *
+ * 场景：同一 sessionId 被反复失效（每次时间戳递增），随后又有大量其它会话失效把
+ * 1000 条容量灌满。`Map.set` 对已存在的 key 不改变插入顺序，所以 FIFO 淘汰会优先
+ * 删掉这条被反复重写的会话——它恰恰持有最新的失效时间戳；删掉后该会话在本 isolate
+ * 内重新通过 `issuedAtMs <= 失效时间戳` 的拦截。
+ *
+ * 判定口径用 `request.user`：中间件通过时装载 user，拦截时保持 undefined。
+ * 不能看返回值——鉴权成功同样返回 undefined（只在失败时返回 Response）。
+ */
+test("invalidateSignedSession evicts the oldest invalidation timestamp, not the oldest insertion", async () => {
+  const { createSignedAuthToken } = loadAuthTokenModule();
+  const { authSessionMiddleware, invalidateSignedSession } =
+    loadAuthSessionModule();
+  const base = Date.now();
+  const authUser = {
+    id: "user-1",
+    username: "alice",
+    role: "admin",
+    status: "active",
+    quota_bytes: 1024,
+  };
+  // D1 层要「回显」被查询的会话：中间件会用行里的 session_id / user_id 与 token
+  // 声明比对，固定返回某一个 sessionId 会让另一条断言被 D1 而非失效表否掉。
+  // 这里按 token 声明的 sessionId 建档，模拟该会话确实存在且未撤销。
+  const sessionsByTokenHash = new Map();
+  const env = {
+    AUTH_TOKEN_SECRET: "test-auth-secret",
+    DB: {
+      prepare() {
+        return {
+          bind(tokenHash) {
+            return {
+              async first() {
+                const sessionId = sessionsByTokenHash.get(tokenHash);
+                if (!sessionId) return null;
+                return {
+                  session_id: sessionId,
+                  expires_at: new Date(Date.now() + 60_000).toISOString(),
+                  revoked_at: null,
+                  user_id: "user-1",
+                  username: "alice",
+                  role: "admin",
+                  status: "active",
+                  quota_bytes: 1024,
+                };
+              },
+            };
+          },
+        };
+      },
+    },
+  };
+
+  const { hashToken } = loadModule("utils/token.js");
+  const authenticate = async (sessionId, issuedAtMs) => {
+    const token = await createSignedAuthToken(env, {
+      sessionId,
+      user: authUser,
+      issuedAtMs,
+      expiresAtSeconds: Math.floor(base / 1000) + 600,
+    });
+    // 让 D1 mock 能按 token 找到对应会话行
+    sessionsByTokenHash.set(await hashToken(token), sessionId);
+    const request = new Request("https://example.com/api/files", {
+      headers: { Cookie: `flares3_session=${token}` },
+    });
+    await authSessionMiddleware(request, env);
+    return request.user;
+  };
+
+  // 反复失效同一 sessionId：Map.set 不改变插入顺序，FIFO 会优先淘汰它
+  for (let i = 0; i < 300; i += 1) {
+    invalidateSignedSession("session-flooded", base + 900_000 + i);
+  }
+  // 再灌入 1000 条不同 sessionId，超出 1000 条容量，必然触发淘汰
+  for (let i = 0; i < 1_000; i += 1) {
+    invalidateSignedSession(`session-bulk-${i}`, base + 1 + i);
+  }
+
+  // 该 sessionId 持有最大的失效时间戳 → 必须保留，token 签发于 base 仍被拦截
+  assert.equal(
+    await authenticate("session-flooded", base),
+    undefined,
+    "最新失效时间戳的会话必须仍然被拦截",
+  );
+
+  // 时间戳最小的 session-bulk-0 才是被淘汰者，其拦截随之失效
+  assert.equal(
+    (await authenticate("session-bulk-0", base))?.id,
+    "user-1",
+    "被淘汰的应是最旧的失效时间戳",
+  );
 });
 
 test("worker logout clears cookie even when request is unauthenticated", async () => {

@@ -48,10 +48,41 @@ const sessionLookupPromises = new Map<string, Promise<SessionLookupResult | null
 const invalidatedSignedSessions = new Map<string, number>()
 const invalidatedUserTokens = new Map<string, number>()
 
+/**
+ * 失效表的条目寿命：超过该时长的失效时间戳已无判定价值——
+ * 会话缓存 TTL 只有 5s，落库的 revoked_at 才是跨 isolate 的事实源，
+ * 本 map 只是「同一 isolate 内立即生效」的加速层。
+ */
+const INVALIDATION_RETENTION_MS = 10 * 60 * 1000
+
+/**
+ * 淘汰与「最旧」有关的两类条目，而不是盲删最早插入的一条：
+ *
+ * 1. 已过期条目（时间戳早于保留窗口）先清掉，它们已不参与任何判定；
+ * 2. 仍存活但超出容量时，淘汰时间戳最小的一条——该条对「issuedAtMs <= 失效时间戳」
+ *    的拦截范围最小，删它造成的失效窗口最短。
+ *
+ * 先前的 FIFO（删 map 中最早插入的 key）在「反复失效同一 sessionId」这类场景下
+ * 会误删刚更新的条目、留下更早的时间戳，使已撤销请求恢复通过。
+ */
 function setBoundedInvalidation(map: Map<string, number>, key: string, value: number): void {
+  const cutoff = value - INVALIDATION_RETENTION_MS
   if (map.size >= MAX_INVALIDATION_ENTRIES && !map.has(key)) {
-    const oldestKey = map.keys().next().value
-    if (oldestKey) {
+    for (const [entryKey, entryValue] of map) {
+      if (entryValue < cutoff) {
+        map.delete(entryKey)
+      }
+    }
+    while (map.size >= MAX_INVALIDATION_ENTRIES) {
+      let oldestKey: string | null = null
+      let oldestValue = Infinity
+      for (const [entryKey, entryValue] of map) {
+        if (entryValue < oldestValue) {
+          oldestValue = entryValue
+          oldestKey = entryKey
+        }
+      }
+      if (oldestKey === null) break
       map.delete(oldestKey)
     }
   }
@@ -219,11 +250,15 @@ async function loadSession(env: Env, tokenHash: string): Promise<SessionLookupRe
     return pending
   }
 
-  const lookupStartedAtMs = Date.now()
+  // 结果是纯 `sessions` 行读取，与 invalidatedUserTokens 无关，因此缓存写入只受
+  // 容量约束：先前按 `invalidatedUserTokens.get(userId)` 跳过缓存的做法，在
+  // 「用户从未有过用户级失效」与「失效表满载淘汰条目」两种情况下都会永久停写缓存
+  // （前者的整型时间戳恒为真值、后者的失效时间戳落入未来），使每次请求都多打一次 D1。
+  // 失效后的正确性由失效时间戳本身保证：中间件先查 `isSignedSessionLocallyInvalidated`
+  // （毫秒级），随后仍有 `sessions.revoked_at` 兜底，缓存只影响收敛速度。
   const promise = querySession(env, tokenHash)
     .then((session) => {
-      const invalidatedAtMs = session ? invalidatedUserTokens.get(session.user.id) : undefined
-      if (session && (!invalidatedAtMs || lookupStartedAtMs > invalidatedAtMs)) {
+      if (session) {
         cacheSession(tokenHash, session)
       }
       return session

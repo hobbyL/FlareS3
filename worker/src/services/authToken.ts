@@ -16,7 +16,13 @@ type SignedAuthTokenPayload = {
   role: 'admin' | 'user'
   status: 'active' | 'disabled' | 'deleted'
   quota_bytes: number
+  /**
+   * 秒级签发时间。仅取整到秒：签发与失效都在同一 isolate 内用毫秒比较
+   * （见 `VerifiedAuthToken.issuedAtMs`），秒精度会把同一秒内的
+   * 「先签发、后撤销」误判成已失效。
+   */
   iat: number
+  /** 毫秒级签发时间，是失效判定的唯一依据（D1 无法直接解析毫秒字符串）。 */
   iat_ms: number
   exp: number
 }
@@ -184,8 +190,13 @@ export async function verifySignedAuthToken(
       return null
     }
 
-    const issuedAtMs = Number.isFinite(payload.iat_ms) ? payload.iat_ms : payload.iat * 1000
-    if (!Number.isFinite(issuedAtMs) || issuedAtMs <= 0) {
+    const issuedAtMsRaw = Number.isFinite(payload.iat_ms) ? payload.iat_ms : payload.iat * 1000
+    // 毫秒必须是整数：`Number.isFinite` 对 1.5 / 1e-7 同样放行，而这类值经
+    // `datetime(? / 1000, 'unixepoch')` 落库会得到 NULL，使该会话的失效时间戳
+    // 变成 NULL，`julianday(revoked_at)` 随之返回 NULL、比较结果恒为假——
+    // 撤销的会话在跨 isolate（缓存 TTL 之后）不再被拦截。
+    const issuedAtMs = Math.floor(issuedAtMsRaw)
+    if (!Number.isSafeInteger(issuedAtMsRaw) || issuedAtMs <= 0) {
       return null
     }
 
