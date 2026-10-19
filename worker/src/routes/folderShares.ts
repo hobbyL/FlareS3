@@ -5,7 +5,7 @@ import { getUser, invalidJsonBodyResponse, jsonResponse, parseJson } from './uti
 import { hashPassword } from '../services/password'
 import { createProvider } from '../services/storage/factory'
 import { normalizeStoragePath } from '../services/storage/pathPolicy'
-import { logAudit } from '../services/audit'
+import { logAudit, prepareAuditLogInsert } from '../services/audit'
 import { getClientIp } from '../middleware/rateLimit'
 import {
   findFolderShareByCode,
@@ -349,24 +349,33 @@ export async function deleteFolderShare(request: Request, env: Env): Promise<Res
     return ownershipError
   }
 
-  const result = await withD1Retry(env.DB)
-    .prepare('DELETE FROM folder_shares WHERE id = ?')
-    .bind(share.id)
-    .run()
+  // 删除与审计同 batch：D1 batch 在一个事务内执行，若审计写入失败则整批回滚，
+  // 不会留下「分享已撤销但无审计记录」的静默窗口（撤销本身未成功，可安全重试）。
+  const nowIso = new Date().toISOString()
+  const results = await withD1Retry(env.DB).batch([
+    withD1Retry(env.DB).prepare('DELETE FROM folder_shares WHERE id = ?').bind(share.id),
+    prepareAuditLogInsert(
+      env.DB,
+      {
+        actorUserId: user.id,
+        action: 'FOLDER_SHARE_DELETE',
+        targetType: 'folder_share',
+        targetId: share.share_code,
+        ip: getClientIp(request),
+        userAgent: request.headers.get('User-Agent') || undefined,
+        metadata: { configId: share.config_id, prefix: share.prefix },
+      },
+      nowIso
+    ),
+  ])
 
-  if (result.error) {
+  const deleteResult = results[0] as { error?: string } | undefined
+  if (deleteResult?.error) {
     return jsonResponse({ error: '撤销分享失败' }, 400)
   }
 
-  await logAudit(env.DB, {
-    actorUserId: user.id,
-    action: 'FOLDER_SHARE_DELETE',
-    targetType: 'folder_share',
-    targetId: share.share_code,
-    ip: getClientIp(request),
-    userAgent: request.headers.get('User-Agent') || undefined,
-    metadata: { configId: share.config_id, prefix: share.prefix },
-  })
-
-  return jsonResponse({ success: true, deleted: true })
+  // 幂等：并发撤销已把该行删掉时，按「无此分享」成功返回
+  const deleted =
+    Number((deleteResult as { meta?: { changes?: number } } | undefined)?.meta?.changes ?? 0) > 0
+  return jsonResponse({ success: true, deleted })
 }

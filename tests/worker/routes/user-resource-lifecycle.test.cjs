@@ -53,7 +53,10 @@ function createDb({ firstHandlers = [], allHandlers = [], runHandlers = [] }) {
         `unexpected ${kind} SQL: ${sql} / ${JSON.stringify(args)}`,
       );
     }
-    const [handler] = list.splice(index, 1);
+    const handler = list[index];
+    // 一次性的 handler 用后即移除；标记 reusable 的保留（同一条 SQL 会随分片
+    // 分批重复执行，如每个文件的预约释放 / 入队）
+    if (!handler.reusable) list.splice(index, 1);
     return typeof handler.value === "function"
       ? handler.value(args, sql, state)
       : handler.value;
@@ -333,6 +336,10 @@ test("deleteUser deactivates texts and deletes public share records", async () =
         match: /DELETE FROM file_shares WHERE owner_id = \?/,
         value: { meta: { changes: 1 } },
       },
+      {
+        match: /DELETE FROM folder_shares WHERE owner_id = \?/,
+        value: { meta: { changes: 1 } },
+      },
     ],
   });
 
@@ -343,6 +350,7 @@ test("deleteUser deactivates texts and deletes public share records", async () =
   );
 
   assert.equal(response.status, 200);
+  // 无活跃文件：仅一个收口批次
   assert.equal(state.batches.length, 1);
   assert.ok(
     state.runs.some((entry) =>
@@ -365,6 +373,12 @@ test("deleteUser deactivates texts and deletes public share records", async () =
     state.runs.some((entry) =>
       /DELETE FROM file_shares WHERE owner_id = \?/.test(entry.sql),
     ),
+  );
+  assert.ok(
+    state.runs.some((entry) =>
+      /DELETE FROM folder_shares WHERE owner_id = \?/.test(entry.sql),
+    ),
+    "删除用户必须清理 folder_shares，避免孤儿行与账号重新启用后分享复活",
   );
 });
 
@@ -417,6 +431,10 @@ test("deleteUser releases active upload reservations for queued files immediatel
         value: { meta: { changes: 1 } },
       },
       {
+        match: /DELETE FROM folder_shares WHERE owner_id = \?/,
+        value: { meta: { changes: 1 } },
+      },
+      {
         match:
           /UPDATE files SET upload_status = 'deleted', deleted_at = \?, multipart_upload_id = NULL WHERE owner_id = \? AND deleted_at IS NULL/,
         value: { meta: { changes: 2 } },
@@ -455,7 +473,8 @@ test("deleteUser releases active upload reservations for queued files immediatel
   );
 
   assert.equal(response.status, 200);
-  assert.equal(state.batches.length, 1);
+  // 分批执行：用户状态/会话/公开资源、文件状态、文件队列共 3 批
+  assert.equal(state.batches.length, 3);
   const reservationRuns = state.runs.filter((entry) =>
     /UPDATE upload_reservations SET status = \?, updated_at = \? WHERE file_id = \? AND status = 'active'/.test(
       entry.sql,
@@ -466,6 +485,99 @@ test("deleteUser releases active upload reservations for queued files immediatel
     reservationRuns.map((entry) => entry.args[2]),
     ["file-pending-1", "file-pending-2"],
   );
+});
+
+test("deleteUser caps statements per batch when the owner has many files", async () => {
+  const { deleteUser } = loadModule("routes/users.js");
+  const fileCount = 60;
+  const files = Array.from({ length: fileCount }, (_, index) => ({
+    id: `file-${index}`,
+    r2_key: `flares3/cfg-1/file-${index}.bin`,
+  }));
+  const { db, state } = createDb({
+    firstHandlers: [
+      {
+        match: /SELECT role FROM users WHERE id = \? LIMIT 1/,
+        value: { role: "user" },
+      },
+    ],
+    allHandlers: [
+      {
+        match:
+          /SELECT id, r2_key FROM files WHERE owner_id = \? AND deleted_at IS NULL/,
+        value: { results: files },
+      },
+    ],
+    runHandlers: [
+      {
+        match: /UPDATE users SET status = \?/,
+        value: { meta: { changes: 1 } },
+      },
+      {
+        match: /UPDATE sessions SET revoked_at = \?/,
+        value: { meta: { changes: 1 } },
+      },
+      { match: /UPDATE texts SET deleted_at/, value: { meta: { changes: 1 } } },
+      { match: /DELETE FROM text_shares/, value: { meta: { changes: 1 } } },
+      {
+        match: /DELETE FROM text_one_time_shares/,
+        value: { meta: { changes: 1 } },
+      },
+      { match: /DELETE FROM file_shares/, value: { meta: { changes: 1 } } },
+      { match: /DELETE FROM folder_shares/, value: { meta: { changes: 1 } } },
+      {
+        match: /UPDATE files SET upload_status = 'deleted'/,
+        value: { meta: { changes: fileCount } },
+      },
+      {
+        match: /UPDATE upload_reservations SET status = \?/,
+        reusable: true,
+        value: { meta: { changes: 1 } },
+      },
+      {
+        match: /INSERT INTO delete_queue/,
+        reusable: true,
+        value: { meta: { changes: 1 } },
+      },
+      {
+        match: /INSERT INTO audit_logs/,
+        reusable: true,
+        value: { meta: { changes: 1 } },
+      },
+    ],
+  });
+
+  const response = await deleteUser(
+    createAuthedJsonRequest("https://example.com/api/users/user-1/delete", {}),
+    { DB: db },
+    "user-1",
+  );
+
+  assert.equal(response.status, 200);
+  // 60 个文件必须被切成多个批次（每批 25 个文件 → 2 条语句/文件），
+  // 而不是一句「文件数 × 2 + 固定语句」的超大 batch
+  assert.ok(
+    state.batches.length >= 4,
+    `expected deleteUser to split work across batches, got ${state.batches.length}`,
+  );
+  // 单批语句数有界：文件批最多 25 × 2 = 50 条，加上固定语句也远低于 60×2+6
+  for (const batch of state.batches) {
+    assert.ok(
+      batch.length <= 50,
+      `batch too large: ${batch.length} statements`,
+    );
+  }
+  // 每个文件都必须释放预约并入队删除，一个都不能漏
+  const reservationRuns = state.runs.filter((entry) =>
+    /UPDATE upload_reservations SET status = \?, updated_at = \? WHERE file_id = \?/.test(
+      entry.sql,
+    ),
+  );
+  const queueRuns = state.runs.filter((entry) =>
+    /INSERT INTO delete_queue/.test(entry.sql),
+  );
+  assert.equal(reservationRuns.length, fileCount);
+  assert.equal(queueRuns.length, fileCount);
 });
 
 test("permanentlyDeleteFile avoids duplicate delete_queue records on retry", async () => {
@@ -664,4 +776,59 @@ test("shortlink blocks direct file redirect when owner is deleted", async () => 
   );
 
   assert.equal(response.status, 404);
+});
+
+test("shortlink blocks redirect for expired file", async () => {
+  const { shortlink } = loadModule("routes/shortlink.js");
+  const { db } = createDb({
+    firstHandlers: [
+      {
+        match: /FROM files f[\s\S]*WHERE f\.short_code = \?[\s\S]*LIMIT 1/,
+        value: {
+          id: "file-1",
+          require_login: 0,
+          upload_status: "completed",
+          deleted_at: null,
+          expires_at: "2020-01-01T00:00:00.000Z",
+          owner_status: "active",
+        },
+      },
+    ],
+  });
+
+  const response = await shortlink(
+    createGetRequest("https://example.com/s/abc123"),
+    { DB: db },
+    "abc123",
+  );
+
+  assert.equal(response.status, 404);
+});
+
+test("shortlink still redirects for never-expiring file", async () => {
+  const { shortlink } = loadModule("routes/shortlink.js");
+  const { db } = createDb({
+    firstHandlers: [
+      {
+        match: /FROM files f[\s\S]*WHERE f\.short_code = \?[\s\S]*LIMIT 1/,
+        value: {
+          id: "file-1",
+          require_login: 0,
+          upload_status: "completed",
+          deleted_at: null,
+          expires_at: "9999-12-31T23:59:59.999Z",
+          owner_status: "active",
+        },
+      },
+    ],
+  });
+
+  const response = await shortlink(
+    createGetRequest("https://example.com/s/abc123"),
+    { DB: db },
+    "abc123",
+  );
+
+  assert.equal(response.status, 302);
+  assert.equal(response.headers.get("Location"), "/api/files/file-1/download");
 });

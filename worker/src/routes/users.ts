@@ -44,6 +44,9 @@ function prepareDeactivateUserPublicResources(
     withD1Retry(db).prepare('DELETE FROM text_shares WHERE owner_id = ?').bind(userId),
     withD1Retry(db).prepare('DELETE FROM text_one_time_shares WHERE owner_id = ?').bind(userId),
     withD1Retry(db).prepare('DELETE FROM file_shares WHERE owner_id = ?').bind(userId),
+    // folder_shares 同属「公开资源」：用户删除后 owner_status 非 active 已使 /f/:code 返回 404，
+    // 但残留行会无界增长，且该账号日后被重新启用为 active 时旧分享码会静默复活，故一并清理
+    withD1Retry(db).prepare('DELETE FROM folder_shares WHERE owner_id = ?').bind(userId),
   ]
 }
 
@@ -481,6 +484,21 @@ export async function resetPassword(request: Request, env: Env, userId: string):
   }
 }
 
+const USER_DELETE_FILE_BATCH_SIZE = 25
+
+/**
+ * 按固定大小切块顺序执行 IO，避免单个 batch / 单次请求承载过多语句。
+ */
+async function runInBatches<T>(
+  items: T[],
+  size: number,
+  run: (chunk: T[]) => Promise<unknown>
+): Promise<void> {
+  for (let index = 0; index < items.length; index += size) {
+    await run(items.slice(index, index + size))
+  }
+}
+
 /**
  * 删除用户
  *
@@ -527,49 +545,58 @@ export async function deleteUser(request: Request, env: Env, userId: string): Pr
   }))
 
   const actor = getUser(request)
-  const statements: D1PreparedStatement[] = [
+  const actorId = actor?.id
+  const ip = getClientIp(request)
+  const userAgent = request.headers.get('User-Agent') || undefined
+
+  // 删除是「一次性收口 + 可重入清扫」的幂等操作：先在同一 batch 内落库用户状态、
+  // 会话吊销与公开资源清理，再分批把文件与删除队列补齐。
+  //
+  // 之所以不用单个 batch 承载全部语句：每个活跃文件要额外产出 2 条 SQL
+  //（释放预约 + 入删除队列），D1 对单次 batch 的语句数有上限，文件多的账号会让
+  // 整批失败。分批后即使中途失败，用户已被置为 deleted（后续请求全部拒绝），
+  // 重试或后台清扫继续处理余下文件即可，不会留下「仍可访问的活跃账号」。
+  await withD1Retry(env.DB).batch([
     withD1Retry(env.DB)
       .prepare('UPDATE users SET status = ?, updated_at = ? WHERE id = ?')
       .bind('deleted', now, userId),
     prepareRevokeUserSessions(env.DB, userId, now),
     ...prepareDeactivateUserPublicResources(env.DB, userId, now),
-  ]
+  ])
+  invalidateUserAuthTokens(userId, Date.parse(now) || Date.now())
 
   if (activeFiles.length) {
-    statements.push(
+    await withD1Retry(env.DB).batch([
       withD1Retry(env.DB)
         .prepare(
           `UPDATE files SET upload_status = 'deleted', deleted_at = ?, multipart_upload_id = NULL WHERE owner_id = ? AND deleted_at IS NULL`
         )
-        .bind(now, userId)
-    )
-    statements.push(
-      ...activeFiles.map((file) => prepareReleaseUploadReservation(env.DB, file.id, now)),
-      ...activeFiles.map((file) => prepareEnqueueFileDeletionIfNeeded(env.DB, file, now))
+        .bind(now, userId),
+    ])
+    await runInBatches(activeFiles, USER_DELETE_FILE_BATCH_SIZE, (chunk) =>
+      withD1Retry(env.DB).batch([
+        ...chunk.map((file) => prepareReleaseUploadReservation(env.DB, file.id, now)),
+        ...chunk.map((file) => prepareEnqueueFileDeletionIfNeeded(env.DB, file, now)),
+      ])
     )
   }
 
-  statements.push(
-    prepareAuditLogInsert(
-      env.DB,
-      {
-        actorUserId: actor?.id,
-        action: 'USER_DELETE',
-        targetType: 'user',
-        targetId: userId,
-        ip: getClientIp(request),
-        userAgent: request.headers.get('User-Agent') || undefined,
-        metadata: {
-          queuedFiles: activeFiles.length,
-          sessionsRevoked: true,
-        },
+  await prepareAuditLogInsert(
+    env.DB,
+    {
+      actorUserId: actorId,
+      action: 'USER_DELETE',
+      targetType: 'user',
+      targetId: userId,
+      ip,
+      userAgent,
+      metadata: {
+        queuedFiles: activeFiles.length,
+        sessionsRevoked: true,
       },
-      now
-    )
-  )
-
-  await withD1Retry(env.DB).batch(statements)
-  invalidateUserAuthTokens(userId, Date.parse(now) || Date.now())
+    },
+    now
+  ).run()
 
   return jsonResponse({ success: true, queued: true })
 }

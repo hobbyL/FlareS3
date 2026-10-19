@@ -51,7 +51,7 @@ function createDb({
   allHandlers = [],
   runHandlers = [],
 } = {}) {
-  const state = { runs: [], alls: [] };
+  const state = { runs: [], alls: [], batches: [] };
 
   function consume(list, sql, args, kind) {
     const index = list.findIndex((handler) => handler.match.test(sql));
@@ -84,9 +84,29 @@ function createDb({
                 state.runs.push({ sql, args });
                 return consume(runHandlers, sql, args, "run");
               },
+              __sql: sql,
+              __args: args,
             };
           },
         };
+      },
+      /**
+       * D1 batch 语义：顺序执行；任一条语句失败时整批回滚、后续语句不再执行。
+       * synthesized 语句由 prepare().bind() 产出，因此这里复用同一套 run handler，
+       * `state.runs` 的登记口径与单条 run 完全一致。consumer 抛错（未注册 SQL）
+       * 等价于 D1 返回错误 —— 事务已回滚，必须把异常继续抛给调用方。
+       */
+      async batch(statements) {
+        const entries = statements.map((statement) => ({
+          sql: statement.__sql,
+          args: statement.__args,
+        }));
+        state.batches.push(entries);
+        const results = [];
+        for (const statement of statements) {
+          results.push(await statement.run());
+        }
+        return results;
       },
     },
   };
@@ -456,6 +476,109 @@ test("deleteFolderShare removes by share_code or scope and audits FOLDER_SHARE_D
     /INSERT INTO audit_logs/.test(entry.sql),
   );
   assert.equal(audit.args[2], "FOLDER_SHARE_DELETE");
+  // 删除与审计必须在同一 batch（同一事务）内提交：
+  // 否则审计写入失败会留下「分享已撤销但无审计记录」的静默窗口
+  assert.equal(state.batches.length, 1, "DELETE 与审计只允许一次 batch");
+  assert.deepEqual(
+    state.batches[0].map((entry) => entry.sql.replace(/\s+/g, " ").trim()),
+    [
+      "DELETE FROM folder_shares WHERE id = ?",
+      "INSERT INTO audit_logs (id, actor_user_id, action, target_type, target_id, ip, user_agent, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ],
+  );
+});
+
+test("deleteFolderShare fails closed when the batched audit insert fails", async () => {
+  const folderShareRoutes = freshFolderShareRoutes();
+  const shareRow = {
+    id: "share-1",
+    config_id: "r2-main",
+    prefix: "docs/",
+    owner_id: "user-1",
+    share_code: "code00000001",
+    password_hash: null,
+    expires_in: 0,
+    expires_at: null,
+    max_views: 0,
+    views: 0,
+    created_at: "2026-10-01T00:00:00.000Z",
+    updated_at: "2026-10-01T00:00:00.000Z",
+  };
+  const { db, state } = createDb({
+    firstHandlers: [
+      {
+        match: /FROM folder_shares\s+WHERE share_code = \? LIMIT 1/i,
+        value: shareRow,
+      },
+    ],
+    runHandlers: [
+      // 审计插入失败：D1 batch 整批回滚，DELETE 不生效
+      {
+        match: /INSERT INTO audit_logs/,
+        value: () => {
+          throw new Error("audit unavailable");
+        },
+      },
+      { match: /DELETE FROM folder_shares/, value: { meta: { changes: 1 } } },
+    ],
+  });
+
+  await assert.rejects(
+    folderShareRoutes.deleteFolderShare(
+      createAuthedRequest("https://example.com/api/mount/folder-share", {
+        method: "DELETE",
+        body: { share_code: "code00000001" },
+      }),
+      { DB: db },
+    ),
+    /audit unavailable/,
+  );
+
+  // 审计失败时不得返回成功响应；DELETE 已被事务回滚
+  assert.equal(
+    state.runs.some((entry) => /DELETE FROM folder_shares/.test(entry.sql)),
+    true,
+  );
+});
+
+test("deleteFolderShare reports deleted:false when a concurrent revoke already removed the row", async () => {
+  const folderShareRoutes = freshFolderShareRoutes();
+  const { db } = createDb({
+    firstHandlers: [
+      {
+        match: /FROM folder_shares\s+WHERE share_code = \? LIMIT 1/i,
+        value: {
+          id: "share-1",
+          config_id: "r2-main",
+          prefix: "docs/",
+          owner_id: "user-1",
+          share_code: "code00000001",
+          password_hash: null,
+          expires_in: 0,
+          expires_at: null,
+          max_views: 0,
+          views: 0,
+          created_at: "2026-10-01T00:00:00.000Z",
+          updated_at: "2026-10-01T00:00:00.000Z",
+        },
+      },
+    ],
+    runHandlers: [
+      { match: /DELETE FROM folder_shares/, value: { meta: { changes: 0 } } },
+      { match: /INSERT INTO audit_logs/, value: { meta: { changes: 1 } } },
+    ],
+  });
+
+  const response = await folderShareRoutes.deleteFolderShare(
+    createAuthedRequest("https://example.com/api/mount/folder-share", {
+      method: "DELETE",
+      body: { share_code: "code00000001" },
+    }),
+    { DB: db },
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { success: true, deleted: false });
 });
 
 test("deleteFolderShare enforces ownership and tolerates missing shares", async () => {
