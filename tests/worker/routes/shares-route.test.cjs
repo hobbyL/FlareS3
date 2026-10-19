@@ -108,8 +108,8 @@ test("listShares limits records to current user for non-admin requests", async (
               views: 2,
               created_at: "2026-04-10T00:00:00.000Z",
               updated_at: "2026-04-12T10:00:00.000Z",
-              filename: "alpha.txt",
-              file_deleted_at: null,
+              resource_name: "alpha.txt",
+              resource_deleted_at: null,
               owner_status: "active",
             },
             {
@@ -123,8 +123,8 @@ test("listShares limits records to current user for non-admin requests", async (
               views: 1,
               created_at: "2026-04-10T00:00:00.000Z",
               updated_at: "2026-04-12T09:00:00.000Z",
-              filename: "beta.txt",
-              file_deleted_at: null,
+              resource_name: "beta.txt",
+              resource_deleted_at: null,
               owner_status: "active",
             },
           ],
@@ -145,8 +145,8 @@ test("listShares limits records to current user for non-admin requests", async (
               views: 1,
               created_at: "2026-04-10T00:00:00.000Z",
               updated_at: "2026-04-12T11:00:00.000Z",
-              text_title: "Doc A",
-              text_deleted_at: null,
+              resource_name: "Doc A",
+              resource_deleted_at: null,
               owner_status: "active",
             },
             {
@@ -160,8 +160,8 @@ test("listShares limits records to current user for non-admin requests", async (
               views: 0,
               created_at: "2026-04-10T00:00:00.000Z",
               updated_at: "2026-04-12T08:00:00.000Z",
-              text_title: "Doc B",
-              text_deleted_at: null,
+              resource_name: "Doc B",
+              resource_deleted_at: null,
               owner_status: "active",
             },
           ],
@@ -180,8 +180,8 @@ test("listShares limits records to current user for non-admin requests", async (
               consumed_at: null,
               created_at: "2026-04-10T00:00:00.000Z",
               updated_at: "2026-04-12T12:00:00.000Z",
-              text_title: "One Time A",
-              text_deleted_at: null,
+              resource_name: "One Time A",
+              resource_deleted_at: null,
               owner_status: "active",
             },
             {
@@ -193,8 +193,8 @@ test("listShares limits records to current user for non-admin requests", async (
               consumed_at: null,
               created_at: "2026-04-10T00:00:00.000Z",
               updated_at: "2026-04-12T07:00:00.000Z",
-              text_title: "One Time B",
-              text_deleted_at: null,
+              resource_name: "One Time B",
+              resource_deleted_at: null,
               owner_status: "active",
             },
           ],
@@ -252,8 +252,8 @@ test("listShares applies admin owner, type and status filters", async () => {
               views: 0,
               created_at: "2026-04-10T00:00:00.000Z",
               updated_at: "2026-04-12T10:00:00.000Z",
-              filename: "alpha.txt",
-              file_deleted_at: null,
+              resource_name: "alpha.txt",
+              resource_deleted_at: null,
               owner_status: "active",
             },
           ],
@@ -274,8 +274,8 @@ test("listShares applies admin owner, type and status filters", async () => {
               views: 0,
               created_at: "2026-04-10T00:00:00.000Z",
               updated_at: "2026-04-12T11:00:00.000Z",
-              text_title: "Doc A",
-              text_deleted_at: null,
+              resource_name: "Doc A",
+              resource_deleted_at: null,
               owner_status: "active",
             },
           ],
@@ -294,8 +294,8 @@ test("listShares applies admin owner, type and status filters", async () => {
               consumed_at: "2026-04-12T09:00:00.000Z",
               created_at: "2026-04-10T00:00:00.000Z",
               updated_at: "2026-04-12T12:00:00.000Z",
-              text_title: "One Time A",
-              text_deleted_at: null,
+              resource_name: "One Time A",
+              resource_deleted_at: null,
               owner_status: "active",
             },
             {
@@ -307,8 +307,8 @@ test("listShares applies admin owner, type and status filters", async () => {
               consumed_at: null,
               created_at: "2026-04-10T00:00:00.000Z",
               updated_at: "2026-04-12T13:00:00.000Z",
-              text_title: "One Time B",
-              text_deleted_at: null,
+              resource_name: "One Time B",
+              resource_deleted_at: null,
               owner_status: "active",
             },
           ],
@@ -363,8 +363,8 @@ test("listShares applies q search for non-admin resource names and share codes w
                 views: 2,
                 created_at: "2026-04-10T00:00:00.000Z",
                 updated_at: "2026-04-12T10:00:00.000Z",
-                filename: "alpha.txt",
-                file_deleted_at: null,
+                resource_name: "alpha.txt",
+                resource_deleted_at: null,
                 owner_status: "active",
               },
               {
@@ -378,8 +378,8 @@ test("listShares applies q search for non-admin resource names and share codes w
                 views: 1,
                 created_at: "2026-04-10T00:00:00.000Z",
                 updated_at: "2026-04-12T09:00:00.000Z",
-                filename: "alpha-secret.txt",
-                file_deleted_at: null,
+                resource_name: "alpha-secret.txt",
+                resource_deleted_at: null,
                 owner_status: "active",
               },
             ],
@@ -400,8 +400,8 @@ test("listShares applies q search for non-admin resource names and share codes w
                 views: 0,
                 created_at: "2026-04-10T00:00:00.000Z",
                 updated_at: "2026-04-12T08:00:00.000Z",
-                text_title: "Release Notes",
-                text_deleted_at: null,
+                resource_name: "Release Notes",
+                resource_deleted_at: null,
                 owner_status: "active",
               },
             ],
@@ -420,8 +420,8 @@ test("listShares applies q search for non-admin resource names and share codes w
                 consumed_at: null,
                 created_at: "2026-04-10T00:00:00.000Z",
                 updated_at: "2026-04-12T07:00:00.000Z",
-                text_title: "Onboarding",
-                text_deleted_at: null,
+                resource_name: "Onboarding",
+                resource_deleted_at: null,
                 owner_status: "active",
               },
             ],
@@ -484,8 +484,8 @@ test("listShares lets admin search owner metadata and combine q with existing fi
                 views: 0,
                 created_at: "2026-04-10T00:00:00.000Z",
                 updated_at: "2026-04-12T10:00:00.000Z",
-                filename: "alpha.txt",
-                file_deleted_at: null,
+                resource_name: "alpha.txt",
+                resource_deleted_at: null,
                 owner_status: "active",
               },
               {
@@ -499,8 +499,8 @@ test("listShares lets admin search owner metadata and combine q with existing fi
                 views: 0,
                 created_at: "2026-04-10T00:00:00.000Z",
                 updated_at: "2026-04-12T09:00:00.000Z",
-                filename: "beta.txt",
-                file_deleted_at: null,
+                resource_name: "beta.txt",
+                resource_deleted_at: null,
                 owner_status: "active",
               },
             ],
@@ -521,8 +521,8 @@ test("listShares lets admin search owner metadata and combine q with existing fi
                 views: 0,
                 created_at: "2026-04-10T00:00:00.000Z",
                 updated_at: "2026-04-12T11:00:00.000Z",
-                text_title: "Doc A",
-                text_deleted_at: null,
+                resource_name: "Doc A",
+                resource_deleted_at: null,
                 owner_status: "active",
               },
             ],
@@ -541,8 +541,8 @@ test("listShares lets admin search owner metadata and combine q with existing fi
                 consumed_at: "2026-04-12T09:00:00.000Z",
                 created_at: "2026-04-10T00:00:00.000Z",
                 updated_at: "2026-04-12T12:00:00.000Z",
-                text_title: "One Time A",
-                text_deleted_at: null,
+                resource_name: "One Time A",
+                resource_deleted_at: null,
                 owner_status: "active",
               },
               {
@@ -554,8 +554,8 @@ test("listShares lets admin search owner metadata and combine q with existing fi
                 consumed_at: null,
                 created_at: "2026-04-10T00:00:00.000Z",
                 updated_at: "2026-04-12T13:00:00.000Z",
-                text_title: "One Time B",
-                text_deleted_at: null,
+                resource_name: "One Time B",
+                resource_deleted_at: null,
                 owner_status: "active",
               },
             ],
@@ -629,8 +629,8 @@ test("listShares filters by expires range and excludes records without expires_a
               views: 0,
               created_at: "2026-04-10T00:00:00.000Z",
               updated_at: "2026-04-12T10:00:00.000Z",
-              filename: "alpha.txt",
-              file_deleted_at: null,
+              resource_name: "alpha.txt",
+              resource_deleted_at: null,
               owner_status: "active",
             },
           ],
@@ -651,8 +651,8 @@ test("listShares filters by expires range and excludes records without expires_a
               views: 0,
               created_at: "2026-04-10T00:00:00.000Z",
               updated_at: "2026-04-12T11:00:00.000Z",
-              text_title: "Doc A",
-              text_deleted_at: null,
+              resource_name: "Doc A",
+              resource_deleted_at: null,
               owner_status: "active",
             },
           ],
@@ -671,8 +671,8 @@ test("listShares filters by expires range and excludes records without expires_a
               consumed_at: null,
               created_at: "2026-04-10T00:00:00.000Z",
               updated_at: "2026-04-12T12:00:00.000Z",
-              text_title: "One Time A",
-              text_deleted_at: null,
+              resource_name: "One Time A",
+              resource_deleted_at: null,
               owner_status: "active",
             },
           ],
@@ -717,8 +717,8 @@ test("listShares supports expires_from-only filtering", async () => {
               views: 0,
               created_at: "2026-04-10T00:00:00.000Z",
               updated_at: "2026-04-12T09:00:00.000Z",
-              filename: "early.txt",
-              file_deleted_at: null,
+              resource_name: "early.txt",
+              resource_deleted_at: null,
               owner_status: "active",
             },
             {
@@ -732,8 +732,8 @@ test("listShares supports expires_from-only filtering", async () => {
               views: 0,
               created_at: "2026-04-10T00:00:00.000Z",
               updated_at: "2026-04-12T10:00:00.000Z",
-              filename: "boundary.txt",
-              file_deleted_at: null,
+              resource_name: "boundary.txt",
+              resource_deleted_at: null,
               owner_status: "active",
             },
           ],
@@ -754,8 +754,8 @@ test("listShares supports expires_from-only filtering", async () => {
               views: 0,
               created_at: "2026-04-10T00:00:00.000Z",
               updated_at: "2026-04-12T11:00:00.000Z",
-              text_title: "Doc A",
-              text_deleted_at: null,
+              resource_name: "Doc A",
+              resource_deleted_at: null,
               owner_status: "active",
             },
           ],
@@ -774,8 +774,8 @@ test("listShares supports expires_from-only filtering", async () => {
               consumed_at: null,
               created_at: "2026-04-10T00:00:00.000Z",
               updated_at: "2026-04-12T12:00:00.000Z",
-              text_title: "One Time A",
-              text_deleted_at: null,
+              resource_name: "One Time A",
+              resource_deleted_at: null,
               owner_status: "active",
             },
           ],
@@ -819,8 +819,8 @@ test("listShares sorts by expires_at ascending and keeps null expires_at records
               views: 0,
               created_at: "2026-04-10T00:00:00.000Z",
               updated_at: "2026-04-12T12:00:00.000Z",
-              filename: "Late File",
-              file_deleted_at: null,
+              resource_name: "Late File",
+              resource_deleted_at: null,
               owner_status: "active",
             },
           ],
@@ -841,8 +841,8 @@ test("listShares sorts by expires_at ascending and keeps null expires_at records
               views: 0,
               created_at: "2026-04-10T00:00:00.000Z",
               updated_at: "2026-04-12T13:00:00.000Z",
-              text_title: "No Expire Doc",
-              text_deleted_at: null,
+              resource_name: "No Expire Doc",
+              resource_deleted_at: null,
               owner_status: "active",
             },
           ],
@@ -861,8 +861,8 @@ test("listShares sorts by expires_at ascending and keeps null expires_at records
               consumed_at: null,
               created_at: "2026-04-10T00:00:00.000Z",
               updated_at: "2026-04-12T11:00:00.000Z",
-              text_title: "Soon Expire",
-              text_deleted_at: null,
+              resource_name: "Soon Expire",
+              resource_deleted_at: null,
               owner_status: "active",
             },
           ],
@@ -912,8 +912,8 @@ test("listShares sorts by expires_at descending and still keeps null expires_at 
               views: 0,
               created_at: "2026-04-10T00:00:00.000Z",
               updated_at: "2026-04-12T13:00:00.000Z",
-              filename: "Early File",
-              file_deleted_at: null,
+              resource_name: "Early File",
+              resource_deleted_at: null,
               owner_status: "active",
             },
           ],
@@ -934,8 +934,8 @@ test("listShares sorts by expires_at descending and still keeps null expires_at 
               views: 0,
               created_at: "2026-04-10T00:00:00.000Z",
               updated_at: "2026-04-12T11:00:00.000Z",
-              text_title: "Late Doc",
-              text_deleted_at: null,
+              resource_name: "Late Doc",
+              resource_deleted_at: null,
               owner_status: "active",
             },
           ],
@@ -954,8 +954,8 @@ test("listShares sorts by expires_at descending and still keeps null expires_at 
               consumed_at: null,
               created_at: "2026-04-10T00:00:00.000Z",
               updated_at: "2026-04-12T14:00:00.000Z",
-              text_title: "No Expire One Time",
-              text_deleted_at: null,
+              resource_name: "No Expire One Time",
+              resource_deleted_at: null,
               owner_status: "active",
             },
           ],
@@ -1209,4 +1209,144 @@ test("listShareAccesses keeps folder 404 when the share row is absent", async ()
 
   assert.equal(response.status, 404);
   assert.deepEqual(body, { error: "分享不存在" });
+});
+
+test("listShares pushes owner scope, expires range and q search down to SQL", async () => {
+  const { listShares } = loadModule("routes/shares.js");
+  const { db, state } = createDb({
+    allHandlers: [
+      { match: /FROM file_shares/i, value: { results: [] } },
+      { match: /FROM text_shares/i, value: { results: [] } },
+      { match: /FROM text_one_time_shares/i, value: { results: [] } },
+      { match: /FROM folder_shares/i, value: { results: [] } },
+    ],
+  });
+
+  const response = await listShares(
+    createAuthedRequest(
+      "https://example.com/api/shares?q=Alpha&expires_from=2026-04-15T00:00:00.000Z&expires_to=2026-04-16T00:00:00.000Z",
+    ),
+    { DB: db },
+  );
+
+  assert.equal(response.status, 200);
+
+  const shareQueries = state.alls.filter(({ sql }) =>
+    /FROM (file_shares|text_shares|text_one_time_shares|folder_shares)/.test(
+      sql,
+    ),
+  );
+  assert.equal(shareQueries.length, 4);
+
+  for (const { sql, args } of shareQueries) {
+    // 非 admin 必须把 owner 限界下推到 SQL，避免全表载入后在内存里丢弃他人记录
+    assert.match(sql, /WHERE .*s\.owner_id = \?/);
+    // 扫描上限 + 1 用于探测截断（多取一条即判定超限）
+    assert.equal(args[args.length - 1], 2001);
+    // 时间条件用 julianday 比较，规避带时区偏移的字符串字典序不可靠
+    assert.match(
+      sql,
+      /julianday\(NULLIF\(s\.expires_at, ''\)\) >= julianday\(\?\)/,
+    );
+    assert.match(
+      sql,
+      /julianday\(NULLIF\(s\.expires_at, ''\)\) < julianday\(\?\)/,
+    );
+    // 永不过期哨兵不参与范围过滤
+    assert.match(sql, /julianday\(NULLIF\(s\.expires_at, ''\), '\+1 day'\)/);
+    // q 经 lowercase 比较 + LIKE 转义，匹配大小写不敏感且无通配注入
+    assert.match(
+      sql,
+      /LOWER\(COALESCE\(s\.share_code, ''\)\) LIKE \? ESCAPE '\\'/,
+    );
+    assert.match(
+      sql,
+      /LOWER\(COALESCE\(s\.resource_name, ''\)\) LIKE \? ESCAPE '\\'/,
+    );
+  }
+
+  const fileQuery = shareQueries.find(({ sql }) =>
+    /FROM file_shares/.test(sql),
+  );
+  // 非 admin 不得把 owner 元数据下推为搜索条件（admin 才允许搜 owner 用户名 / ID）；
+  // SELECT 列表中的 `u.username AS owner_username` 属正常投影，只断言 WHERE 子句
+  const fileWhere = fileQuery.sql.slice(fileQuery.sql.indexOf("WHERE"));
+  assert.doesNotMatch(fileWhere, /COALESCE\(u\.username/);
+  assert.doesNotMatch(fileWhere, /COALESCE\(s\.owner_id, ''\)\) LIKE/);
+  assert.ok(fileQuery.args.includes("%alpha%"), "q 应转小写后作为 LIKE 参数");
+
+  const folderQuery = shareQueries.find(({ sql }) =>
+    /FROM folder_shares/.test(sql),
+  );
+  // folder 表不 JOIN users，owner 搜索条件不得出现在其 SQL 中
+  assert.doesNotMatch(folderQuery.sql, /COALESCE\(u\.username/);
+});
+
+test("listShares lets admin search owner metadata in SQL too", async () => {
+  const { listShares } = loadModule("routes/shares.js");
+  const { db, state } = createDb({
+    allHandlers: [
+      { match: /FROM file_shares/i, value: { results: [] } },
+      { match: /FROM text_shares/i, value: { results: [] } },
+      { match: /FROM text_one_time_shares/i, value: { results: [] } },
+      { match: /FROM folder_shares/i, value: { results: [] } },
+    ],
+  });
+
+  const response = await listShares(
+    createAuthedRequest("https://example.com/api/shares?q=bob", {
+      user: {
+        id: "admin-1",
+        username: "admin",
+        role: "admin",
+        status: "active",
+        quota_bytes: 1024,
+      },
+    }),
+    { DB: db },
+  );
+
+  assert.equal(response.status, 200);
+
+  const fileQuery = state.alls.find(({ sql }) => /FROM file_shares/.test(sql));
+  // admin 不受 owner 限界约束，但可搜 owner 用户名 / owner_id
+  assert.doesNotMatch(fileQuery.sql, /s\.owner_id = \?/);
+  assert.match(
+    fileQuery.sql,
+    /LOWER\(COALESCE\(u\.username, ''\)\) LIKE \? ESCAPE '\\'/,
+  );
+  assert.match(
+    fileQuery.sql,
+    /LOWER\(COALESCE\(s\.owner_id, ''\)\) LIKE \? ESCAPE '\\'/,
+  );
+
+  // folder 表不 JOIN users，admin 搜索下推时不得把 owner 元数据加入 WHERE
+  const folderQuery = state.alls.find(({ sql }) =>
+    /FROM folder_shares/.test(sql),
+  );
+  const folderWhere = folderQuery.sql.slice(folderQuery.sql.indexOf("WHERE"));
+  assert.doesNotMatch(folderWhere, /COALESCE\(u\.username/);
+  assert.doesNotMatch(folderWhere, /COALESCE\(s\.owner_id, ''\)\) LIKE/);
+});
+
+test("listShares requests one extra row per share table to detect scan truncation", async () => {
+  const { listShares } = loadModule("routes/shares.js");
+  const { db, state } = createDb({
+    allHandlers: [
+      { match: /FROM file_shares/i, value: { results: [] } },
+      { match: /FROM text_shares/i, value: { results: [] } },
+      { match: /FROM text_one_time_shares/i, value: { results: [] } },
+      { match: /FROM folder_shares/i, value: { results: [] } },
+    ],
+  });
+
+  await listShares(createAuthedRequest("https://example.com/api/shares"), {
+    DB: db,
+  });
+
+  for (const { sql, args } of state.alls) {
+    assert.match(sql, /LIMIT \?$/);
+    assert.equal(typeof args[args.length - 1], "number");
+    assert.ok(args[args.length - 1] > 0);
+  }
 });

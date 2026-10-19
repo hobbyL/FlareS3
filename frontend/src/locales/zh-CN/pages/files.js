@@ -154,6 +154,7 @@ export default {
     messages: {
       loadUsersFailed: '加载用户失败',
       loadFilesFailed: '加载文件失败',
+      dirsTruncated: '目录数量超出扫描上限，当前目录列表可能不完整',
       deleteSuccess: '文件已移入回收站',
       deleteFailed: '删除文件失败',
       deletePermanentSuccess: '文件已彻底删除',

@@ -21,8 +21,37 @@ const CONFIG_ID_LIKE_EXPR =
 // 已知存储前缀：目录信息藏于 `<prefix>/<configId>/<dir...>/<filename>`。
 const DIR_FILTER_PREFIXES = ['flares3', 'storage'] as const
 
-// `/api/files/dirs` 内存聚合的扫描上限；大目录集（>此值）非 P0，可能截断。
+// `/api/files/dirs` 内存聚合的扫描上限。目录信息只能由 r2_key 在内存派生，
+// 无法在 SQL 里聚合，因此扫描必须设界；超限时按扫描到的前 N 行派生目录，
+// 并通过 `truncated` 显式告知调用方，避免静默返回不完整目录树。
 const DIRS_SCAN_MAX_ROWS = 5000
+
+/**
+ * 探测 rows / file_dirs 两张表是否超出扫描上限。
+ *
+ * 与内存聚合使用完全相同的 WHERE / owner 过滤，只多取一行回来判存在：命中即说明
+ * 来源被截断，此时派生出的目录集可能不完整（并非「目录数」超限）。
+ * 探测失败时返回 false——目录列表本身的主流程已经成功，不能因为附加提示查询
+ * 的偶发错误把整个接口打成 5xx。
+ */
+async function detectDirScanTruncation(
+  db: D1Database,
+  sources: Array<{ sql: string; params: unknown[] }>
+): Promise<boolean> {
+  try {
+    const probes = await Promise.all(
+      sources.map((source) =>
+        withD1Retry(db)
+          .prepare(source.sql)
+          .bind(...source.params, 1, DIRS_SCAN_MAX_ROWS)
+          .first('hit')
+      )
+    )
+    return probes.some((probe) => Number(probe || 0) > 0)
+  } catch {
+    return false
+  }
+}
 
 /**
  * 构造精确目录过滤的 SQL 片段与绑定值。
@@ -415,12 +444,13 @@ export async function listTrashFiles(request: Request, env: Env): Promise<Respon
  *
  * 目录信息来自 r2_key + config_id（见 utils/r2Dir 口径）；轻量实现：
  * 单查询取 r2_key/config_id，内存聚合，不触碰 presigned 签名路径。
- * 大目录集（> DIRS_SCAN_MAX_ROWS）非 P0，可能截断。
+ * 两张来源表（files / file_dirs）各自受 DIRS_SCAN_MAX_ROWS 限制，扫描被截断时
+ * 返回的目录集可能不完整，此时响应带 `truncated: true`。
  *
  * @route GET /api/files/dirs
  * @param request - HTTP 请求对象（需要认证）
  * @param env - Cloudflare Workers 环境变量
- * @returns JSON 响应 `{ dirs: string[] }`
+ * @returns JSON 响应 `{ dirs: string[], truncated: boolean }`
  *
  * @example
  * // 查询参数
@@ -428,7 +458,7 @@ export async function listTrashFiles(request: Request, env: Env): Promise<Respon
  * // owner_id: 所有者 ID 过滤（仅管理员可用）
  * //
  * // 响应：
- * // { "dirs": ["a", "a/b", "backup"] }
+ * // { "dirs": ["a", "a/b", "backup"], "truncated": false }
  */
 export async function listFileDirs(request: Request, env: Env): Promise<Response> {
   const user = getUser(request)
@@ -492,5 +522,18 @@ export async function listFileDirs(request: Request, env: Env): Promise<Response
   }
 
   const dirs = Array.from(dirSet).sort((a, b) => a.localeCompare(b))
-  return jsonResponse({ dirs })
+
+  // 截断探测与目录聚合口径一致：同一 WHERE / owner 过滤，只多取一行
+  const truncated = await detectDirScanTruncation(env.DB, [
+    {
+      sql: `SELECT 1 AS hit FROM files f ${whereClause} LIMIT ? OFFSET ?`,
+      params: [...params, DIRS_SCAN_MAX_ROWS],
+    },
+    {
+      sql: `SELECT 1 AS hit FROM file_dirs ${dirWhere} LIMIT ? OFFSET ?`,
+      params: [...dirParams, DIRS_SCAN_MAX_ROWS],
+    },
+  ])
+
+  return jsonResponse({ dirs, truncated })
 }

@@ -154,6 +154,7 @@ export default {
     messages: {
       loadUsersFailed: 'Failed to load users',
       loadFilesFailed: 'Failed to load files',
+      dirsTruncated: 'Too many directories to scan; this directory list may be incomplete',
       deleteSuccess: 'File moved to trash',
       deleteFailed: 'Failed to delete file',
       deletePermanentSuccess: 'File permanently deleted',

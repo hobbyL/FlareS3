@@ -63,6 +63,15 @@
           </template>
         </FilesDirBreadcrumb>
 
+        <Alert
+          v-if="fileDirsTruncated"
+          type="warning"
+          :show-icon="true"
+          class="files-dir-truncated-alert"
+        >
+          {{ t('files.messages.dirsTruncated') }}
+        </Alert>
+
         <FilesBatchActionBar
           :count="selectedFilesCount"
           :is-trash-mode="isTrashMode"
@@ -268,6 +277,7 @@ import FilesDirBreadcrumb from '../components/files/FilesDirBreadcrumb.vue'
 import { buildFilesTableColumns } from '../components/files/fileTableColumns.js'
 import FilesTableView from '../components/files/FilesTableView.vue'
 import Button from '../components/ui/button/Button.vue'
+import Alert from '../components/ui/alert/Alert.vue'
 import Input from '../components/ui/input/Input.vue'
 import Modal from '../components/ui/modal/Modal.vue'
 import PageSkeleton from '../components/ui/skeleton/PageSkeleton.vue'
@@ -562,6 +572,8 @@ const filters = ref({
 
 // 当前文件集中出现的全部目录（含祖先），供面包屑子目录导航
 const fileDirs = ref([])
+// 服务端目录扫描被截断（超出扫描上限）时目录集不完整
+const fileDirsTruncated = ref(false)
 
 const isTrashMode = computed(() => filesStore.mode === 'trash')
 const showAdvancedFilters = ref(false)
@@ -749,6 +761,7 @@ const loadFiles = async ({
 const loadFileDirs = async () => {
   if (filesStore.mode === 'trash') {
     fileDirs.value = []
+    fileDirsTruncated.value = false
     return
   }
   try {
@@ -758,8 +771,11 @@ const loadFileDirs = async () => {
     }
     const data = await api.getFileDirs(params)
     fileDirs.value = Array.isArray(data?.dirs) ? data.dirs : []
+    // 服务端扫描超限：目录集不完整，提示而非静默
+    fileDirsTruncated.value = data?.truncated === true
   } catch (error) {
     fileDirs.value = []
+    fileDirsTruncated.value = false
   }
 }
 
@@ -1186,6 +1202,10 @@ watch(
 .files-delete-confirm {
   margin: 0;
   color: var(--nb-muted-foreground, var(--nb-gray-600));
+}
+
+.files-dir-truncated-alert {
+  margin: 0;
 }
 
 .files-dir-actions-label {
