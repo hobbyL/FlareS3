@@ -54,6 +54,11 @@ function createDb({ firstHandlers = [], runHandlers = [] }) {
   return {
     state,
     db: {
+      async batch(statements) {
+        const results = [];
+        for (const statement of statements) results.push(await statement.run());
+        return results;
+      },
       prepare(sql) {
         return {
           bind(...args) {

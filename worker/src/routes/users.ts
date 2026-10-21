@@ -1,8 +1,14 @@
 import { withD1Retry } from '../utils/db'
 import { escapeLike } from '../utils/escapeLike'
 import type { Env } from '../config/env'
-import { jsonResponse, parseJson, getUser, requestBodyPolicyErrorResponse } from './utils'
-import { hashPassword } from '../services/password'
+import {
+  jsonResponse,
+  parseJson,
+  getUser,
+  requestBodyPolicyErrorResponse,
+  patForbiddenResponse,
+} from './utils'
+import { hashPassword, isPasswordWithinByteLimit } from '../services/password'
 import { logAudit, prepareAuditLogInsert } from '../services/audit'
 import { prepareEnqueueFileDeletionIfNeeded } from '../services/deleteQueue'
 import { getClientIp } from '../middleware/rateLimit'
@@ -23,11 +29,6 @@ function prepareRevokeUserSessions(
   return withD1Retry(db)
     .prepare('UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL')
     .bind(revokedAt, userId)
-}
-
-async function revokeUserSessions(db: D1Database, userId: string): Promise<void> {
-  await prepareRevokeUserSessions(db, userId).run()
-  invalidateUserAuthTokens(userId)
 }
 
 function prepareDeactivateUserPublicResources(
@@ -213,6 +214,8 @@ const USERNAME_PATTERN = /^[\w.-]{1,64}$/
  * { "error": "配额无效" }
  */
 export async function createUser(request: Request, env: Env): Promise<Response> {
+  const patError = patForbiddenResponse(request)
+  if (patError) return patError
   try {
     const body = await parseJson<{
       username: string
@@ -229,6 +232,8 @@ export async function createUser(request: Request, env: Env): Promise<Response> 
     if (String(body.password).length < 8) {
       return jsonResponse({ error: '密码长度至少为 8 位' }, 400)
     }
+    if (!isPasswordWithinByteLimit(body.password))
+      return jsonResponse({ error: '密码必须为字符串且 UTF-8 长度不能超过 72 字节' }, 400)
     const existing = await withD1Retry(env.DB)
       .prepare('SELECT id FROM users WHERE username = ?')
       .bind(body.username)
@@ -299,6 +304,8 @@ export async function createUser(request: Request, env: Env): Promise<Response> 
  * { "error": "必须保留至少一个启用中的管理员" }
  */
 export async function updateUser(request: Request, env: Env, userId: string): Promise<Response> {
+  const patError = patForbiddenResponse(request)
+  if (patError) return patError
   try {
     const body = await parseJson<{
       status?: 'active' | 'disabled' | 'deleted'
@@ -380,15 +387,6 @@ export async function updateUser(request: Request, env: Env, userId: string): Pr
     updates.push('updated_at = ?')
     params.push(new Date().toISOString())
     params.push(userId)
-    await withD1Retry(env.DB)
-      .prepare(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`)
-      .bind(...params)
-      .run()
-
-    if (shouldRevokeSessions) {
-      await revokeUserSessions(env.DB, userId)
-    }
-
     const auditAction =
       body.status === 'disabled'
         ? 'USER_DISABLE'
@@ -397,21 +395,31 @@ export async function updateUser(request: Request, env: Env, userId: string): Pr
           : body.status === 'deleted'
             ? 'USER_DELETE'
             : 'USER_UPDATE'
-    await logAudit(env.DB, {
-      actorUserId: actor?.id,
-      action: auditAction,
-      targetType: 'user',
-      targetId: userId,
-      ip: getClientIp(request),
-      userAgent: request.headers.get('User-Agent') || undefined,
-      metadata: {
-        ...body,
-        sessionsRevoked: shouldRevokeSessions,
-      },
-    })
+    await withD1Retry(env.DB).batch([
+      withD1Retry(env.DB)
+        .prepare(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`)
+        .bind(...params),
+      ...(shouldRevokeSessions ? [prepareRevokeUserSessions(env.DB, userId)] : []),
+      prepareAuditLogInsert(env.DB, {
+        actorUserId: actor?.id,
+        action: auditAction,
+        targetType: 'user',
+        targetId: userId,
+        ip: getClientIp(request),
+        userAgent: request.headers.get('User-Agent') || undefined,
+        metadata: {
+          ...body,
+          sessionsRevoked: shouldRevokeSessions,
+        },
+      }),
+    ])
+    if (shouldRevokeSessions) invalidateUserAuthTokens(userId)
 
     return jsonResponse({ success: true })
   } catch (error) {
+    if (error instanceof Error && error.message.includes('last_active_admin')) {
+      return jsonResponse({ error: '必须保留至少一个启用中的管理员' }, 400)
+    }
     const bodyError = requestBodyPolicyErrorResponse(error)
     if (bodyError) return bodyError
     return jsonResponse({ error: '更新用户失败' }, 500)
@@ -443,6 +451,8 @@ export async function updateUser(request: Request, env: Env, userId: string): Pr
  * { "error": "用户不存在" }
  */
 export async function resetPassword(request: Request, env: Env, userId: string): Promise<Response> {
+  const patError = patForbiddenResponse(request)
+  if (patError) return patError
   try {
     const body = await parseJson<{ password: string }>(request)
     if (!body.password) {
@@ -451,6 +461,8 @@ export async function resetPassword(request: Request, env: Env, userId: string):
     if (String(body.password).length < 8) {
       return jsonResponse({ error: '密码长度至少为 8 位' }, 400)
     }
+    if (!isPasswordWithinByteLimit(body.password))
+      return jsonResponse({ error: '密码必须为字符串且 UTF-8 长度不能超过 72 字节' }, 400)
     // 对齐 updateUser 的 404 语义：目标不存在时明确报错，而非静默成功
     const target = await withD1Retry(env.DB)
       .prepare('SELECT id FROM users WHERE id = ? LIMIT 1')
@@ -459,25 +471,30 @@ export async function resetPassword(request: Request, env: Env, userId: string):
     if (!target) {
       return jsonResponse({ error: '用户不存在' }, 404)
     }
-    await withD1Retry(env.DB)
-      .prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?')
-      .bind(hashPassword(body.password), new Date().toISOString(), userId)
-      .run()
-
-    await revokeUserSessions(env.DB, userId)
-
     const actor = getUser(request)
-    await logAudit(env.DB, {
-      actorUserId: actor?.id,
-      action: 'USER_RESET_PASSWORD',
-      targetType: 'user',
-      targetId: userId,
-      ip: getClientIp(request),
-      userAgent: request.headers.get('User-Agent') || undefined,
-      metadata: {
-        sessionsRevoked: true,
-      },
-    })
+    const now = new Date().toISOString()
+    await withD1Retry(env.DB).batch([
+      withD1Retry(env.DB)
+        .prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?')
+        .bind(hashPassword(body.password), now, userId),
+      prepareRevokeUserSessions(env.DB, userId, now),
+      prepareAuditLogInsert(
+        env.DB,
+        {
+          actorUserId: actor?.id,
+          action: 'USER_RESET_PASSWORD',
+          targetType: 'user',
+          targetId: userId,
+          ip: getClientIp(request),
+          userAgent: request.headers.get('User-Agent') || undefined,
+          metadata: {
+            sessionsRevoked: true,
+          },
+        },
+        now
+      ),
+    ])
+    invalidateUserAuthTokens(userId)
 
     return jsonResponse({ success: true })
   } catch (error) {

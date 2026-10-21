@@ -2,7 +2,7 @@ import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
 import type { AuthUser } from '../middleware/authSession'
 import { getUser, invalidJsonBodyResponse, jsonResponse, parseJson } from './utils'
-import { hashPassword, verifyPassword } from '../services/password'
+import { hashPassword, verifyPassword, isPasswordWithinByteLimit } from '../services/password'
 import {
   clearSharePasswordFailedAttempts,
   getClientIp,
@@ -284,7 +284,11 @@ export async function upsertFileShare(
 
   const maxViewsRaw = body.max_views
   const maxViews = Number(maxViewsRaw ?? 0)
-  if (!Number.isFinite(maxViews) || maxViews < 0) {
+  if (
+    !Number.isSafeInteger(maxViews) ||
+    maxViews < 0 ||
+    (maxViewsRaw != null && typeof maxViewsRaw !== 'number')
+  ) {
     return jsonResponse({ error: 'max_views 无效' }, 400)
   }
 
@@ -319,6 +323,8 @@ export async function upsertFileShare(
 
   const passwordValue = body.password
   const passwordString = typeof passwordValue === 'string' ? passwordValue.trim() : ''
+  if (!isPasswordWithinByteLimit(passwordString))
+    return jsonResponse({ error: '分享密码 UTF-8 长度不能超过 72 字节' }, 400)
   const shouldClearPassword = passwordValue === null
   const shouldUpdatePassword = typeof passwordValue === 'string' && passwordString.length > 0
 

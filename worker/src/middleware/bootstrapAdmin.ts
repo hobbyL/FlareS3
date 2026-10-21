@@ -1,7 +1,7 @@
 import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
 import { getTotalStorage } from '../config/env'
-import { hashPassword } from '../services/password'
+import { hashPassword, isPasswordWithinByteLimit } from '../services/password'
 import { logAudit } from '../services/audit'
 import { getClientIp } from './rateLimit'
 import { jsonResponse } from '../utils/response'
@@ -38,6 +38,9 @@ async function doBootstrap(request: Request, env: Env): Promise<Response | undef
   }
 
   const now = new Date().toISOString()
+  if (!isPasswordWithinByteLimit(env.BOOTSTRAP_ADMIN_PASS) || env.BOOTSTRAP_ADMIN_PASS.length < 8) {
+    return jsonResponse({ error: '管理员初始密码须至少 8 位且 UTF-8 长度不能超过 72 字节' }, 500)
+  }
   const userId = crypto.randomUUID()
   const quota = getTotalStorage(env)
   const result = await withD1Retry(env.DB)

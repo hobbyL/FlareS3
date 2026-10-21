@@ -9,6 +9,7 @@ import {
   listSessions,
   revokeSession,
   revokeOtherSessions,
+  revokeAllCredentials,
 } from './routes/auth'
 import { listUsers, createUser, updateUser, resetPassword, deleteUser } from './routes/users'
 import { shortlink } from './routes/shortlink'
@@ -73,6 +74,10 @@ export const router = Router()
 // ── Auth ──
 router.post('/api/auth/login', (request, env: Env) => login(request, env))
 router.post('/api/auth/logout', (request, env: Env) => logout(request, env))
+router.post(
+  '/api/auth/revoke-all',
+  withAuth((request, env: Env) => revokeAllCredentials(request, env))
+)
 router.post(
   '/api/auth/change-password',
   withAuth((request, env: Env) => changePassword(request, env))

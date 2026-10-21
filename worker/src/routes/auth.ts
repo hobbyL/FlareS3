@@ -8,7 +8,7 @@ import {
   patForbiddenResponse,
 } from './utils'
 import bcrypt from 'bcryptjs'
-import { hashPassword, verifyPassword } from '../services/password'
+import { hashPassword, verifyPassword, isPasswordWithinByteLimit } from '../services/password'
 import {
   recordFailedAttempt,
   recordFailedAttemptForUsername,
@@ -308,6 +308,8 @@ export async function changePassword(request: Request, env: Env): Promise<Respon
     if (!currentPassword || !newPassword) {
       return jsonResponse({ error: '请填写当前密码和新密码' }, 400)
     }
+    if (!isPasswordWithinByteLimit(body.new_password))
+      return jsonResponse({ error: '新密码必须为字符串且 UTF-8 长度不能超过 72 字节' }, 400)
     if (newPassword.length < 8) {
       return jsonResponse({ error: '新密码至少 8 位' }, 400)
     }
@@ -626,4 +628,50 @@ export async function revokeOtherSessions(request: Request, env: Env): Promise<R
   }
 
   return jsonResponse({ success: true, revoked: revokedIds.length })
+}
+
+/**
+ * 撤销当前用户的全部会话与 API Token，包含当前设备。
+ * @route POST /api/auth/revoke-all
+ * @param request - 需要会话登录的请求
+ * @param env - Worker 环境
+ * @returns JSON 撤销结果；跨实例会话缓存至多 5 秒收敛
+ * @example
+ * // 成功 (200)
+ * { "success": true, "sessions_revoked": 2, "tokens_revoked": 1, "propagation_seconds": 5 }
+ * // 未登录 (401)：{ "error": "未授权" }
+ * // PAT 认证 (403)：需要会话登录
+ */
+export async function revokeAllCredentials(request: Request, env: Env): Promise<Response> {
+  const user = getUser(request)
+  if (!user) return jsonResponse({ error: '未授权' }, 401)
+  const blocked = patForbiddenResponse(request)
+  if (blocked) return blocked
+  const now = new Date().toISOString()
+  const [sessions, tokens] = await withD1Retry(env.DB).batch([
+    withD1Retry(env.DB)
+      .prepare('UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL')
+      .bind(now, user.id),
+    withD1Retry(env.DB)
+      .prepare('UPDATE api_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL')
+      .bind(now, user.id),
+    prepareAuditLogInsert(
+      env.DB,
+      {
+        actorUserId: user.id,
+        action: 'CREDENTIALS_REVOKE_ALL',
+        targetType: 'user',
+        targetId: user.id,
+        ip: getClientIp(request),
+      },
+      now
+    ),
+  ])
+  invalidateUserAuthTokens(user.id)
+  return jsonResponse({
+    success: true,
+    sessions_revoked: Number(sessions.meta?.changes || 0),
+    tokens_revoked: Number(tokens.meta?.changes || 0),
+    propagation_seconds: 5,
+  })
 }

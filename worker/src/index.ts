@@ -1,6 +1,6 @@
 import { withD1Retry } from './utils/db'
 import type { Env } from './config/env'
-import { validateEnvOrWarn } from './config/envValidation'
+import { validateEnvOrWarn, hasSecureAuthSecret } from './config/envValidation'
 import { refreshUpstreamTimeoutConfig } from './config/upstreamTimeout'
 import { requestIdMiddleware } from './middleware/requestId'
 import { originGuardMiddleware } from './middleware/originGuard'
@@ -212,6 +212,12 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
       )
       if (!response) {
         response = await measure(timings, 'rateLimit', () => rateLimitMiddleware(request, env))
+      }
+      if (!response && pathname !== '/api/auth/logout' && !hasSecureAuthSecret(env)) {
+        response = new Response(JSON.stringify({ error: '认证安全配置无效，请联系管理员' }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' },
+        })
       }
       if (!response) {
         response = await measure(timings, 'bootstrap', () =>

@@ -56,7 +56,7 @@ const validationRules: ValidationRule[] = [
       if (typeof value !== 'string' || value.trim().length === 0) {
         return 'AUTH_TOKEN_SECRET 必须是非空字符串'
       }
-      if (value.length < AUTH_TOKEN_SECRET_MIN_LENGTH) {
+      if (value.trim().length < AUTH_TOKEN_SECRET_MIN_LENGTH) {
         return `AUTH_TOKEN_SECRET 长度至少为 ${AUTH_TOKEN_SECRET_MIN_LENGTH} 字符（当前: ${value.length}）`
       }
       return null
@@ -163,6 +163,13 @@ export function validateEnv(env: Env): void {
     )
     throw new Error(message)
   }
+}
+
+export function hasSecureAuthSecret(env: Env): boolean {
+  return (
+    typeof env.AUTH_TOKEN_SECRET === 'string' &&
+    env.AUTH_TOKEN_SECRET.trim().length >= AUTH_TOKEN_SECRET_MIN_LENGTH
+  )
 }
 
 export function validateEnvOrWarn(env: Env): boolean {

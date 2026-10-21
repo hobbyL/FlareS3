@@ -184,6 +184,7 @@ test("worker rejects cross-origin unsafe backend requests before D1 access", asy
       },
     }),
     {
+      AUTH_TOKEN_SECRET: "test-auth-secret-at-least-32-characters",
       DB: {
         prepare() {
           throw new Error(
@@ -211,6 +212,7 @@ test("worker allows same-origin unsafe backend requests through origin guard", a
       },
     }),
     {
+      AUTH_TOKEN_SECRET: "test-auth-secret-at-least-32-characters",
       DB: {
         prepare() {
           throw new Error("logout without a session should not touch D1");
@@ -234,6 +236,7 @@ test("worker allows loopback dev proxy unsafe backend requests with different po
       },
     }),
     {
+      AUTH_TOKEN_SECRET: "test-auth-secret-at-least-32-characters",
       DB: {
         prepare() {
           throw new Error("logout without a session should not touch D1");
@@ -257,6 +260,7 @@ test("worker still rejects same-site browser metadata on loopback unsafe request
       },
     }),
     {
+      AUTH_TOKEN_SECRET: "test-auth-secret-at-least-32-characters",
       DB: {
         prepare() {
           throw new Error(
@@ -280,6 +284,7 @@ test("worker rejects unsafe requests without origin metadata", async () => {
       method: "POST",
     }),
     {
+      AUTH_TOKEN_SECRET: "test-auth-secret-at-least-32-characters",
       DB: {
         prepare() {
           throw new Error("logout without a session should not touch D1");

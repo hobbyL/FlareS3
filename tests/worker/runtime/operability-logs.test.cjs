@@ -113,7 +113,10 @@ test("worker emits structured request error logs for 5xx responses", async () =>
         method: "POST",
         headers: { Origin: "https://example.com" },
       }),
-      { DB: createDb() },
+      {
+        DB: createDb(),
+        AUTH_TOKEN_SECRET: "test-auth-secret-at-least-32-characters",
+      },
       {},
     );
 

@@ -2,7 +2,7 @@ import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
 import type { AuthUser } from '../middleware/authSession'
 import { getUser, invalidJsonBodyResponse, jsonResponse, parseJson } from './utils'
-import { hashPassword } from '../services/password'
+import { hashPassword, isPasswordWithinByteLimit } from '../services/password'
 import { createProvider } from '../services/storage/factory'
 import { normalizeStoragePath } from '../services/storage/pathPolicy'
 import { logAudit, prepareAuditLogInsert } from '../services/audit'
@@ -129,7 +129,11 @@ export async function createFolderShare(request: Request, env: Env): Promise<Res
   const prefix = prefixResult.prefix
 
   const maxViews = Number(body.max_views ?? 0)
-  if (!Number.isFinite(maxViews) || maxViews < 0) {
+  if (
+    !Number.isSafeInteger(maxViews) ||
+    maxViews < 0 ||
+    (body.max_views != null && typeof body.max_views !== 'number')
+  ) {
     return jsonResponse({ error: 'max_views 无效' }, 400)
   }
 
@@ -149,6 +153,9 @@ export async function createFolderShare(request: Request, env: Env): Promise<Res
     expiresIn = Math.max(1, Math.ceil((time - Date.now()) / 1000))
   }
 
+  const passwordString = typeof body.password === 'string' ? body.password.trim() : ''
+  if (!isPasswordWithinByteLimit(passwordString))
+    return jsonResponse({ error: '分享密码 UTF-8 长度不能超过 72 字节' }, 400)
   const provider = await createProvider(env, configId)
   if (!provider) {
     return jsonResponse({ error: '配置不存在或不可用' }, 404)
@@ -159,7 +166,6 @@ export async function createFolderShare(request: Request, env: Env): Promise<Res
     return jsonResponse({ error: '该目录已存在分享' }, 409)
   }
 
-  const passwordString = typeof body.password === 'string' ? body.password.trim() : ''
   const passwordHash = passwordString ? hashPassword(passwordString) : null
 
   const now = new Date().toISOString()

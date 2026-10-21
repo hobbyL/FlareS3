@@ -284,9 +284,9 @@ export async function tryViewTextOneTimeShare(
     .prepare(
       `UPDATE text_one_time_shares
      SET consumed_at = ?, updated_at = ?
-     WHERE id = ? AND consumed_at IS NULL AND expires_at > ?`
+     WHERE id = ? AND consumed_at IS NULL AND expires_at > ? AND share_code = ?`
     )
-    .bind(nowIso, nowIso, shareId, nowIso)
+    .bind(nowIso, nowIso, shareId, nowIso, code)
     .run()
 
   if (update.error) {
