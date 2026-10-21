@@ -5,11 +5,7 @@ import Card from '../ui/card/Card.vue'
 import Alert from '../ui/alert/Alert.vue'
 import Tag from '../ui/tag/Tag.vue'
 import Button from '../ui/button/Button.vue'
-import {
-  formatJobRunDuration,
-  getJobRunStatusTagType,
-  listJobRunSummaryEntries,
-} from '../../utils/adminDashboard.js'
+import { formatJobRunDuration, getJobRunStatusTagType } from '../../utils/adminDashboard.js'
 
 const props = defineProps({
   items: { type: Array, default: () => [] },
@@ -116,25 +112,6 @@ const formatDateTime = (value) => {
               <dd>{{ formatJobRunDuration(run.durationMs) }}</dd>
             </div>
           </dl>
-
-          <div class="job-run-summary-block">
-            <div class="job-run-summary-title">{{ t('dashboard.jobs.labels.summary') }}</div>
-            <div class="job-run-summary-list">
-              <span
-                v-for="entry in listJobRunSummaryEntries(run.summary)"
-                :key="`${run.id}:${entry.key}`"
-                class="job-run-summary-chip"
-              >
-                {{ entry.key }}: {{ entry.value }}
-              </span>
-              <span
-                v-if="!listJobRunSummaryEntries(run.summary).length"
-                class="job-run-summary-empty"
-              >
-                {{ t('dashboard.jobs.summaryEmpty') }}
-              </span>
-            </div>
-          </div>
 
           <Alert v-if="run.errorMessage" type="error" :title="t('dashboard.jobs.labels.error')">
             {{ run.errorMessage }}
@@ -267,37 +244,6 @@ const formatDateTime = (value) => {
   margin: 0;
   font-size: 14px;
   word-break: break-word;
-}
-
-.job-run-summary-block {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.job-run-summary-title {
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.job-run-summary-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.job-run-summary-chip {
-  border: var(--nb-border);
-  border-radius: var(--nb-radius);
-  background: var(--nb-bg);
-  font-family: var(--nb-font-ui, var(--nb-font-mono));
-  font-size: 12px;
-  padding: 4px 8px;
-}
-
-.job-run-summary-empty {
-  color: var(--nb-muted-foreground, var(--nb-gray-500));
-  font-size: 13px;
 }
 
 @media (max-width: 768px) {
