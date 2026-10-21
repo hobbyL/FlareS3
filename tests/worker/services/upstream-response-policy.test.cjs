@@ -55,3 +55,45 @@ test("readBoundedResponseJson uses the same upstream size guard", async () => {
       /JSON 响应大小超过限制/.test(error.message),
   );
 });
+
+test("binary size guard cancels a streamed body with missing or misleading content-length", async () => {
+  const { readBoundedResponseBytes, UpstreamResponseBodyLimitError } =
+    loadModule("services/upstreamResponsePolicy.js");
+  for (const headers of [{}, { "content-length": "1" }]) {
+    let cancelled = false;
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2, 3]));
+        controller.enqueue(new Uint8Array([4, 5, 6]));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    await assert.rejects(
+      () => readBoundedResponseBytes(new Response(stream, { headers }), 5),
+      UpstreamResponseBodyLimitError,
+    );
+    assert.equal(cancelled, true);
+  }
+});
+test("binary size guard returns exactly the received bytes at and below its limit", async () => {
+  const { readBoundedResponseBytes } = loadModule(
+    "services/upstreamResponsePolicy.js",
+  );
+  assert.deepEqual(
+    Array.from(
+      await readBoundedResponseBytes(
+        new Response(new Uint8Array([1, 2, 3])),
+        3,
+      ),
+    ),
+    [1, 2, 3],
+  );
+  assert.deepEqual(
+    Array.from(
+      await readBoundedResponseBytes(new Response(new Uint8Array([1, 2])), 3),
+    ),
+    [1, 2],
+  );
+});

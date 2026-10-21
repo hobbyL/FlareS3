@@ -1,5 +1,9 @@
 import type { Env } from '../config/env'
 import {
+  readBoundedResponseBytes,
+  UpstreamResponseBodyLimitError,
+} from '../services/upstreamResponsePolicy'
+import {
   invalidJsonBodyResponse,
   jsonResponse,
   redirect,
@@ -1022,10 +1026,13 @@ const MAX_CROSS_CONFIG_COPY_BYTES = MAX_MOUNT_UPLOAD_BYTES
  * redirect 形态（R2 预签名）：Worker 出网 GET 拉回 body；
  * proxy 形态（WebDAV/Koofr）：直接取响应 body。
  */
-async function readObjectBody(provider: StorageProvider, key: string): Promise<ArrayBuffer> {
+async function readObjectBody(
+  provider: StorageProvider,
+  key: string
+): Promise<Uint8Array<ArrayBuffer>> {
   const result = await provider.download(key, 'download', 3600)
   if (result.kind === 'proxy') {
-    return result.response.arrayBuffer()
+    return readBoundedResponseBytes(result.response, MAX_CROSS_CONFIG_COPY_BYTES, '跨存储复制')
   }
   const response = await fetchWithUpstreamTimeout(result.url, { method: 'GET' })
   if (!response.ok) {
@@ -1035,7 +1042,7 @@ async function readObjectBody(provider: StorageProvider, key: string): Promise<A
       response.status === 404 ? 404 : 502
     )
   }
-  return response.arrayBuffer()
+  return readBoundedResponseBytes(response, MAX_CROSS_CONFIG_COPY_BYTES, '跨存储复制')
 }
 
 /**
@@ -1046,18 +1053,20 @@ async function readObjectBody(provider: StorageProvider, key: string): Promise<A
 async function writeObjectBody(
   provider: StorageProvider,
   key: string,
-  body: ArrayBuffer,
+  body: ArrayBuffer | Uint8Array<ArrayBuffer>,
   contentType: string,
   size: number
 ): Promise<void> {
-  const result = await provider.upload(key, body, contentType, size)
+  const result = await provider.upload(key, body, contentType, size, { ifNoneMatch: '*' })
   if (result.kind === 'consumed') return
   const response = await fetchWithUpstreamTimeout(result.url, {
     method: 'PUT',
-    headers: { 'Content-Type': contentType },
+    headers: { 'Content-Type': contentType, 'If-None-Match': '*' },
     body,
   })
   if (!response.ok) {
+    if (response.status === 412 || response.status === 409)
+      throw new StorageError('目标文件已存在', 'TargetExists', 409)
     throw new StorageError(`写入目标对象失败（HTTP ${response.status}）`, undefined, 502)
   }
 }
@@ -1216,10 +1225,12 @@ export async function crossConfigCopyObject(request: Request, env: Env): Promise
   }
 
   // 中转：拉回 → 写出；写出失败 best-effort 清理目标，不留半写
-  let body: ArrayBuffer
+  let body: Uint8Array<ArrayBuffer>
   try {
     body = await readObjectBody(sourceProvider, sourceKey)
   } catch (error) {
+    if (error instanceof UpstreamResponseBodyLimitError)
+      return jsonResponse({ error: '文件过大，跨存储复制上限为 100MB' }, 413)
     const formatted = formatStorageError(error, 'copy_read_source')
     if (formatted.status === 404) {
       return jsonResponse({ error: '对象不存在' }, 404)
@@ -1240,6 +1251,8 @@ export async function crossConfigCopyObject(request: Request, env: Env): Promise
     )
   } catch (error) {
     // best-effort 清理可能的目标半写；清理失败仅 warn（下次复制会先 409 拦截）
+    if (error instanceof StorageError && error.code === 'TargetExists')
+      return jsonResponse({ error: '目标文件已存在' }, 409)
     await Promise.allSettled([destProvider.delete(destKey)])
     const formatted = formatStorageError(error, 'copy_write_target')
     return jsonResponse({ error: `复制失败` }, formatted.status)

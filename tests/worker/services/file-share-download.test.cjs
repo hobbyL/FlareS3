@@ -68,6 +68,7 @@ test("buildSanitizedSharedDownloadResponse returns bounded upstream error text",
   assert.equal(result.ok, false);
   assert.equal(result.error.status, 503);
   assert.equal(result.error.message.length <= 65_536, true);
+  assert.equal(result.error.message, "文件下载失败，请稍后重试");
 });
 
 // 修复 B：file 分享下载的主路径（预签名 URL 拉取）必须走 fetchWithUpstreamTimeout，

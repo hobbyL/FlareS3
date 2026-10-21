@@ -9,6 +9,33 @@ export class UpstreamResponseBodyLimitError extends Error {
   }
 }
 
+export async function readBoundedResponseBytes(
+  response: Response,
+  maxBytes: number,
+  label = '上游响应体'
+): Promise<Uint8Array<ArrayBuffer>> {
+  if (!response.body) return new Uint8Array(0)
+  const reader = response.body.getReader()
+  // 单一有界缓冲区，避免收集全部分片后再次拼接导致峰值内存翻倍。
+  const bytes = new Uint8Array(maxBytes)
+  let size = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      size += value.byteLength
+      if (size > maxBytes) {
+        await reader.cancel().catch(() => undefined)
+        throw new UpstreamResponseBodyLimitError(`${label}大小超过限制`)
+      }
+      bytes.set(value, size - value.byteLength)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  return bytes.subarray(0, size)
+}
+
 export async function readBoundedResponseText(
   response: Response,
   maxBytes: number,

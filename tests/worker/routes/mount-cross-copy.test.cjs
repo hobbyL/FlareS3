@@ -104,6 +104,7 @@ function createStubProvider({
   uploadStatus = 200,
   deleteError = null,
   getSizeError = null,
+  uploadError = null,
 } = {}) {
   const calls = {
     getSize: [],
@@ -140,8 +141,10 @@ function createStubProvider({
         }),
       };
     },
-    async upload(key, body, contentType, sizeArg) {
+    async upload(key, body, contentType, sizeArg, options) {
       calls.upload.push({ key, body, contentType, size: sizeArg });
+      assert.deepEqual(options, { ifNoneMatch: "*" });
+      if (uploadError) throw uploadError;
       if (uploadKind === "redirect") {
         return {
           kind: "redirect",
@@ -160,6 +163,25 @@ function createStubProvider({
   };
   return provider;
 }
+
+test("conditional copy collision never compensates by deleting the occupied target", async () => {
+  const { mount, storageFactory } = loadMountRouteModules();
+  const source = createStubProvider();
+  const dest = createStubProvider({
+    uploadError: createStorageError("occupied", "TargetExists", 409),
+  });
+  storageFactory.createProvider = async (_env, id) =>
+    id === "a" ? source : dest;
+  const request = createAuthedCopyRequest({
+    source_config_id: "a",
+    source_key: "demo",
+    dest_config_id: "b",
+  });
+  const response = await mount.crossConfigCopyObject(request, { DB: {} });
+  assert.equal(response.status, 409);
+  assert.deepEqual(dest.calls.delete, []);
+  assert.deepEqual(source.calls.delete, []);
+});
 
 test("crossConfigCopyObject requires authentication", async () => {
   const { mount } = loadMountRouteModules();

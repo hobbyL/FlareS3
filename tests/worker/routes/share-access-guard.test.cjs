@@ -336,7 +336,8 @@ test("viewFileShare truncates oversized upstream download error body", async () 
     const body = await response.text();
 
     assert.equal(response.status, 502);
-    assert.match(body, /x{128}/);
+    assert.match(body, /文件下载失败，请稍后重试/);
+    assert.doesNotMatch(body, /x{128}/);
     assert.doesNotMatch(
       body,
       new RegExp(`x{${MAX_UPSTREAM_ERROR_TEXT_BYTES + 1}}`),

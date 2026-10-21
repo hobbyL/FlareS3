@@ -6,7 +6,12 @@ import {
   sanitizeContentDispositionFilename,
 } from './r2'
 import { createProvider } from './storage/factory'
-import { MAX_UPSTREAM_ERROR_TEXT_BYTES, readBoundedResponseText } from './upstreamResponsePolicy'
+import {
+  MAX_UPSTREAM_ERROR_TEXT_BYTES,
+  readBoundedResponseText,
+  readBoundedResponseBytes,
+  UpstreamResponseBodyLimitError,
+} from './upstreamResponsePolicy'
 import { calcPresignedDownloadUrlTtlSeconds } from './presignedUrlTtl'
 import { fetchWithUpstreamTimeout } from './upstreamFetch'
 
@@ -20,7 +25,7 @@ export const IMAGE_INLINE_MAX_BYTES = 5 * 1024 * 1024
 export const MAX_INLINE_TEXT_BYTES = 256 * 1024
 
 export type SharedPreviewBytesResult =
-  | { ok: true; bytes: ArrayBuffer; contentType: string }
+  | { ok: true; bytes: ArrayBuffer | Uint8Array<ArrayBuffer>; contentType: string }
   | { ok: false; error: { status: number; message: string } }
 
 export type SharedPreviewTextResult =
@@ -33,8 +38,8 @@ export type SharedPreviewTextResult =
  * `btoa(String.fromCharCode(...bytes))` 对大 buffer 会因展开参数过多栈溢出，
  * 故按固定 chunk 遍历累加后再 btoa。供图片内联拼 data: URI 使用。
  */
-export function encodeBase64Chunked(bytes: ArrayBuffer): string {
-  const view = new Uint8Array(bytes)
+export function encodeBase64Chunked(bytes: ArrayBuffer | Uint8Array<ArrayBuffer>): string {
+  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
   const chunkSize = 0x8000
   let binary = ''
   for (let offset = 0; offset < view.length; offset += chunkSize) {
@@ -55,9 +60,13 @@ export async function buildSanitizedSharedDownloadResponse(
       '共享文件下载错误响应',
       { truncate: true }
     ).catch(() => '')
+    console.error('[fileShareDownload] upstream download rejected', {
+      status: upstream.status,
+      detail: text,
+    })
     return {
       ok: false,
-      error: { status: upstream.status || 502, message: text || '文件下载失败，请稍后重试' },
+      error: { status: upstream.status || 502, message: '文件下载失败，请稍后重试' },
     }
   }
 
@@ -160,11 +169,14 @@ export async function buildSharedPreviewBytes(
     return { ok: false, error: { status: 413, message: '文件过大，无法在线预览' } }
   }
 
-  const bytes = await download.response.arrayBuffer()
-  if (bytes.byteLength > maxBytes) {
-    return { ok: false, error: { status: 413, message: '文件过大，无法在线预览' } }
+  try {
+    const bytes = await readBoundedResponseBytes(download.response, maxBytes, '共享图片')
+    return { ok: true, bytes, contentType }
+  } catch (error) {
+    if (error instanceof UpstreamResponseBodyLimitError)
+      return { ok: false, error: { status: 413, message: '文件过大，无法在线预览' } }
+    throw error
   }
-  return { ok: true, bytes, contentType }
 }
 
 /**
