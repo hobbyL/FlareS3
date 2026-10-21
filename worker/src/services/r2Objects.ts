@@ -1,4 +1,5 @@
 import {
+  CopyObjectCommand,
   DeleteObjectCommand,
   DeleteObjectsCommand,
   GetObjectCommand,
@@ -29,13 +30,17 @@ export async function generateUploadUrl(
   config: R2Config,
   key: string,
   contentType: string,
-  expiresInSeconds: number
+  expiresInSeconds: number,
+  declaredSize?: number,
+  options?: { ifNoneMatch?: '*' }
 ): Promise<string> {
   const client = createS3Client(config)
   const command = new PutObjectCommand({
     Bucket: config.bucketName,
     Key: key,
     ContentType: contentType,
+    ...(declaredSize ? { ContentLength: declaredSize } : {}),
+    ...(options?.ifNoneMatch ? { IfNoneMatch: options.ifNoneMatch } : {}),
   })
   return getSignedUrl(client, command, { expiresIn: expiresInSeconds })
 }
@@ -121,6 +126,27 @@ export async function getObjectSize(config: R2Config, key: string): Promise<numb
   return contentLength
 }
 
+export async function getObjectMetadata(
+  config: R2Config,
+  key: string
+): Promise<{ size: number; etag: string } | null> {
+  const response = await fetchSigned(
+    createS3Client(config),
+    new HeadObjectCommand({
+      Bucket: config.bucketName,
+      Key: key,
+    }),
+    { method: 'HEAD', expiresInSeconds: 60 }
+  )
+  if (response.status === 404) return null
+  if (!response.ok) throw buildS3HttpError(response.status, await readS3ErrorText(response))
+  const rawSize = response.headers.get('content-length')
+  const size = rawSize === null ? NaN : Number(rawSize)
+  const etag = response.headers.get('etag') || ''
+  if (!Number.isSafeInteger(size) || size < 0 || !etag) throw new Error('invalid_object_metadata')
+  return { size, etag }
+}
+
 export async function deleteObject(config: R2Config, key: string): Promise<void> {
   const client = createS3Client(config)
   const response = await fetchSigned(
@@ -146,27 +172,43 @@ export async function deleteObject(config: R2Config, key: string): Promise<void>
 export async function copyObject(
   config: R2Config,
   sourceKey: string,
-  destKey: string
+  destKey: string,
+  options?: { sourceEtag: string; createOnly: true }
 ): Promise<void> {
   const client = createS3Client(config)
   const encodedSourceKey = sourceKey
     .split('/')
     .map((segment) => encodeURIComponent(segment))
     .join('/')
-  const response = await fetchSigned(
-    client,
-    new PutObjectCommand({
-      Bucket: config.bucketName,
-      Key: destKey,
-    }),
-    {
-      method: 'PUT',
-      headers: {
-        'x-amz-copy-source': `/${config.bucketName}/${encodedSourceKey}`,
+  const command = new CopyObjectCommand({
+    Bucket: config.bucketName,
+    Key: destKey,
+    CopySource: `/${config.bucketName}/${encodedSourceKey}`,
+    ...(options ? { CopySourceIfMatch: options.sourceEtag } : {}),
+  })
+  if (options) {
+    command.middlewareStack.add(
+      (next) => async (args) => {
+        const request = args.request as { headers: Record<string, string> }
+        request.headers['cf-copy-destination-if-none-match'] = '*'
+        return next(args)
       },
-      expiresInSeconds: 60,
-    }
-  )
+      { step: 'build', name: 'r2CopyDestinationCondition' }
+    )
+  }
+  const response = await fetchSigned(client, command, {
+    method: 'PUT',
+    headers: {
+      'x-amz-copy-source': `/${config.bucketName}/${encodedSourceKey}`,
+      ...(options
+        ? {
+            'x-amz-copy-source-if-match': options.sourceEtag,
+            'cf-copy-destination-if-none-match': '*',
+          }
+        : {}),
+    },
+    expiresInSeconds: 60,
+  })
 
   if (!response.ok) {
     const text = await readS3ErrorText(response)

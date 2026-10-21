@@ -264,10 +264,51 @@ export async function initMultipart(request: Request, env: Env): Promise<Respons
       throw error
     }
 
-    await withD1Retry(env.DB)
-      .prepare('UPDATE files SET upload_status = ?, multipart_upload_id = ? WHERE id = ?')
-      .bind('uploading', uploadId, file.id)
-      .run()
+    try {
+      const result = await withD1Retry(env.DB)
+        .prepare(
+          "UPDATE files SET upload_status = ?, multipart_upload_id = ?, upload_updated_at = ? WHERE id = ? AND upload_status = 'pending' AND deleted_at IS NULL"
+        )
+        .bind('uploading', uploadId, new Date().toISOString(), file.id)
+        .run()
+      if (!result.meta?.changes) throw new Error('multipart_init_state_conflict')
+    } catch (error) {
+      // 保存已创建的分片 ID 后再补偿，abort 失败时清理队列仍能重试。
+      await withD1Retry(env.DB)
+        .batch([
+          withD1Retry(env.DB)
+            .prepare(
+              "UPDATE files SET multipart_upload_id = ? WHERE id = ? AND upload_status IN ('pending','uploading','deleted')"
+            )
+            .bind(uploadId, file.id),
+          withD1Retry(env.DB)
+            .prepare(
+              'UPDATE delete_queue SET multipart_upload_id = ? WHERE file_id = ? AND processed_at IS NULL'
+            )
+            .bind(uploadId, file.id),
+          withD1Retry(env.DB)
+            .prepare(
+              `INSERT INTO delete_queue (id, file_id, r2_key, created_at, config_id, multipart_upload_id, orphan_multipart)
+          VALUES (?, ?, ?, ?, ?, ?, 1)`
+            )
+            .bind(
+              crypto.randomUUID(),
+              file.id,
+              file.r2Key,
+              new Date().toISOString(),
+              loaded.id,
+              uploadId
+            ),
+        ])
+        .catch((persistError) =>
+          console.error('[multipart] init cleanup persistence failed', persistError)
+        )
+      await Promise.allSettled([
+        abortMultipartUpload(loaded.config, file.r2Key, uploadId),
+        markFileUploadDeleted(env, file.id),
+      ])
+      throw error
+    }
 
     // 自定义短码审计：仅在实际使用自定义码时记录，默认随机码行为不变（不新增审计行）
     if (customShortCode) {
@@ -380,6 +421,13 @@ export async function presignMultipart(request: Request, env: Env): Promise<Resp
       partNumber,
       3600
     )
+    const renewed = await withD1Retry(env.DB)
+      .prepare(
+        "UPDATE files SET upload_updated_at = ? WHERE id = ? AND upload_status = 'uploading' AND deleted_at IS NULL AND multipart_upload_id = ?"
+      )
+      .bind(new Date().toISOString(), file.id, storedUploadId)
+      .run()
+    if (!renewed.meta?.changes) return uploadErrorResponse(multipartUploadNotInProgressError())
 
     return jsonResponse({
       upload_url: uploadUrl,
@@ -466,6 +514,13 @@ export async function getMultipartParts(request: Request, env: Env): Promise<Res
     const loaded = await resolveR2ConfigForKey(env, String(file.r2_key))
     if (!loaded) return uploadErrorResponse(uploadConfigUnavailableError())
 
+    const renewed = await withD1Retry(env.DB)
+      .prepare(
+        "UPDATE files SET upload_updated_at = ? WHERE id = ? AND upload_status = 'uploading' AND deleted_at IS NULL AND multipart_upload_id = ?"
+      )
+      .bind(new Date().toISOString(), file.id, storedUploadId)
+      .run()
+    if (!renewed.meta?.changes) return uploadErrorResponse(multipartUploadNotInProgressError())
     const parts = await listParts(loaded.config, String(file.r2_key), storedUploadId)
 
     return jsonResponse({
@@ -582,8 +637,25 @@ export async function completeMultipart(request: Request, env: Env): Promise<Res
       return uploadErrorResponse(multipartPartNumberInvalidError())
     }
 
+    const renewed = await withD1Retry(env.DB)
+      .prepare(
+        "UPDATE files SET upload_updated_at = ? WHERE id = ? AND upload_status = 'uploading' AND deleted_at IS NULL AND multipart_upload_id = ?"
+      )
+      .bind(new Date().toISOString(), file.id, storedUploadId)
+      .run()
+    let alreadyCompleted = false
+    if (!renewed.meta?.changes) {
+      const current = await withD1Retry(env.DB)
+        .prepare('SELECT upload_status FROM files WHERE id = ? AND deleted_at IS NULL LIMIT 1')
+        .bind(String(file.id))
+        .first<{ upload_status: string }>()
+      alreadyCompleted = current?.upload_status === 'completed'
+      if (!alreadyCompleted) return uploadErrorResponse(multipartUploadNotInProgressError())
+    }
     try {
-      await completeMultipartUpload(loaded.config, String(file.r2_key), storedUploadId, parts)
+      if (!alreadyCompleted) {
+        await completeMultipartUpload(loaded.config, String(file.r2_key), storedUploadId, parts)
+      }
     } catch (error) {
       // NoSuchUpload 可能是并发 complete 的后到请求，或 R2 合并成功后 DB 落库
       // 失败的崩溃残留；两类场景走幂等收口，其余错误（InvalidPart 等）原样上抛
@@ -623,7 +695,7 @@ export async function completeMultipart(request: Request, env: Env): Promise<Res
     const [updateResult] = await withD1Retry(env.DB).batch([
       withD1Retry(env.DB)
         .prepare(
-          "UPDATE files SET size = ?, upload_status = 'completed', multipart_upload_id = NULL WHERE id = ? AND upload_status = 'uploading'"
+          "UPDATE files SET size = ?, upload_status = 'completed', multipart_upload_id = NULL WHERE id = ? AND upload_status = 'uploading' AND deleted_at IS NULL"
         )
         .bind(sizeValidation.actualSize, file.id),
       prepareConsumeUploadReservation(env.DB, String(file.id), now),
@@ -641,7 +713,7 @@ export async function completeMultipart(request: Request, env: Env): Promise<Res
       const currentStatus = String(
         (
           await withD1Retry(env.DB)
-            .prepare('SELECT upload_status FROM files WHERE id = ? LIMIT 1')
+            .prepare('SELECT upload_status FROM files WHERE id = ? AND deleted_at IS NULL LIMIT 1')
             .bind(String(file.id))
             .first<{ upload_status: string | null }>()
         )?.upload_status || ''

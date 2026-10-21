@@ -85,7 +85,7 @@ test("cleanupRetention enqueues expired trash files and cascades file_shares in 
   assert.equal(result.processed, 2);
 
   // 单轮内：入队 + 连带删分享必须在同一个 batch（原子边界）
-  assert.equal(state.batches.length, 1);
+  assert.equal(state.batches.length, 2);
   const batchSql = state.batches[0].map((statement) => statement.sql);
   const enqueueStatements = batchSql.filter((sql) =>
     /INSERT INTO delete_queue/.test(sql),
@@ -102,10 +102,10 @@ test("cleanupRetention enqueues expired trash files and cascades file_shares in 
   const enqueue = state.batches[0].find((statement) =>
     /INSERT INTO delete_queue/.test(statement.sql),
   );
-  assert.match(enqueue.sql, /WHERE NOT EXISTS/);
-  assert.equal(enqueue.args[1], "file-a");
-  assert.equal(enqueue.args[2], "flares3/config-1/a.bin");
-  assert.equal(enqueue.args[3], now.toISOString());
+  assert.match(enqueue.sql, /AND NOT EXISTS/);
+  assert.equal(enqueue.args[1], now.toISOString());
+  assert.equal(enqueue.args[2], "file-a");
+  assert.equal(enqueue.args[3], "flares3/config-1/a.bin");
   assert.equal(enqueue.args[4], "file-a");
 
   // file_shares 批量删除绑定了两行 id
@@ -137,7 +137,7 @@ test("cleanupRetention keeps recent soft-deleted files within retention window",
 
   assert.equal(result.status, "success");
   assert.equal(result.details.filesTrash, 0);
-  assert.equal(state.batches.length, 0, "无过期行时不产生任何 batch");
+  assert.equal(state.batches.length, 1, "无过期文件时只执行独立历史保留 batch");
 });
 
 test("cleanupRetention caps trash files processing per cron run and logs a warning", async () => {

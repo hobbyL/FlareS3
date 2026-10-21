@@ -13,6 +13,7 @@ import type {
   StoragePreviewResult,
   StorageProvider,
   StorageUploadResult,
+  StorageUploadOptions,
 } from './types'
 import { StorageError } from './types'
 import { sanitizeContentDispositionFilename } from '../r2'
@@ -508,7 +509,11 @@ export class WebDAVProvider implements StorageProvider {
 
     if (response.status === 404) return false
     if (response.status === 207 || response.ok) return true
-    return false
+    throw new StorageError(
+      'WebDAV 存在性检查失败',
+      'ExistenceCheckFailed',
+      response.status >= 500 ? 502 : response.status
+    )
   }
 
   // ── 获取大小 ──
@@ -634,9 +639,10 @@ export class WebDAVProvider implements StorageProvider {
 
   async upload(
     key: string,
-    body: ArrayBuffer,
+    body: ArrayBuffer | Uint8Array<ArrayBuffer>,
     contentType: string,
-    _size: number
+    _size: number,
+    options?: StorageUploadOptions
   ): Promise<StorageUploadResult> {
     const path = key.startsWith('/') ? key : `/${key}`
     let response: Response
@@ -644,6 +650,7 @@ export class WebDAVProvider implements StorageProvider {
       response = await this.webdavRequest('PUT', path, {
         headers: {
           'Content-Type': contentType,
+          ...(options?.ifNoneMatch ? { 'If-None-Match': options.ifNoneMatch } : {}),
         },
         body,
       })
@@ -652,6 +659,9 @@ export class WebDAVProvider implements StorageProvider {
     }
 
     if (!response.ok && response.status !== 201 && response.status !== 204) {
+      if (response.status === 412) {
+        throw new StorageError('目标文件已存在', 'TargetExists', 409)
+      }
       if (response.status === 409) {
         throw new StorageError('父目录不存在', 'Conflict', 409)
       }

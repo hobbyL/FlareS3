@@ -13,6 +13,15 @@ type ReserveUploadCapacityInput = {
 
 export const ORPHAN_UPLOAD_RESERVATION_GRACE_MS = 15 * 60 * 1000
 
+/** 配置归属与旧 R2 key 的系统映射一致；别让历史文件绕过容量统计。 */
+export function fileConfigIdSql(alias: 'files' | 'used'): string {
+  return `COALESCE(NULLIF(TRIM(${alias}.config_id), ''),
+    CASE WHEN ${alias}.r2_key LIKE 'flares3/%' OR ${alias}.r2_key LIKE 'storage/%'
+      THEN substr(${alias}.r2_key, 9, instr(substr(${alias}.r2_key, 9), '/') - 1)
+      ELSE COALESCE((SELECT value FROM system_config WHERE key = 'r2_legacy_files_config_id'),
+        (SELECT value FROM system_config WHERE key = 'r2_default_config_id'), 'legacy') END)`
+}
+
 function toNonNegativeNumber(value: unknown): number {
   const normalized = Number(value)
   return Number.isFinite(normalized) && normalized > 0 ? normalized : 0
@@ -51,19 +60,14 @@ export async function getCompletedConfigUsedSpace(
   db: D1Database,
   configId: string
 ): Promise<number> {
-  const prefix = `flares3/${configId}/%`
   const result = await withD1Retry(db)
     .prepare(
       `SELECT COALESCE(SUM(size), 0) AS completedUsed
          FROM files
-        WHERE upload_status = 'completed'
-          AND deleted_at IS NULL
-          AND (
-            config_id = ?
-            OR ((config_id IS NULL OR TRIM(config_id) = '') AND r2_key LIKE ?)
-          )`
+        WHERE upload_status IN ('completed', 'deleted')
+          AND ${fileConfigIdSql('files')} = ?`
     )
-    .bind(configId, prefix)
+    .bind(configId)
     .first('completedUsed')
   return toNonNegativeNumber(result)
 }
@@ -161,12 +165,8 @@ export async function reserveUploadCapacity(
          COALESCE(
            (
              SELECT SUM(size) FROM files
-             WHERE upload_status = 'completed'
-               AND deleted_at IS NULL
-               AND (
-                 config_id = ?
-                 OR ((config_id IS NULL OR TRIM(config_id) = '') AND r2_key LIKE ?)
-               )
+             WHERE upload_status IN ('completed', 'deleted')
+               AND ${fileConfigIdSql('files')} = ?
            ),
            0
          ) +
@@ -192,7 +192,6 @@ export async function reserveUploadCapacity(
       declaredSize,
       userQuotaBytes,
       r2ConfigId,
-      `flares3/${r2ConfigId}/%`,
       r2ConfigId,
       declaredSize,
       quotaBytes
@@ -233,7 +232,10 @@ export function prepareUploadReservationTransition(
 ): D1PreparedStatement {
   return withD1Retry(db)
     .prepare(
-      "UPDATE upload_reservations SET status = ?, updated_at = ? WHERE file_id = ? AND status = 'active'"
+      "UPDATE upload_reservations SET status = ?, updated_at = ? WHERE file_id = ? AND status = 'active'" +
+        (nextStatus === 'consumed'
+          ? " AND EXISTS (SELECT 1 FROM files WHERE files.id = upload_reservations.file_id AND upload_status = 'completed' AND deleted_at IS NULL)"
+          : '')
     )
     .bind(nextStatus, updatedAt, fileId)
 }

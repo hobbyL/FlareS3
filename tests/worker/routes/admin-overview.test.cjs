@@ -57,6 +57,7 @@ function createDb({ firstHandlers = [], allHandlers = [], runHandlers = [] }) {
   }
 
   return {
+    AUTH_TOKEN_SECRET: "test-auth-secret-at-least-32-characters",
     DB: {
       prepare(sql) {
         return {

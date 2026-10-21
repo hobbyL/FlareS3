@@ -400,6 +400,10 @@ test("batchPermanentDeleteFiles routes explicit provider deletes and R2 queue in
     allHandlers: [selectByIdsHandler(rows)],
     runHandlers: [
       {
+        match: /UPDATE files SET deletion_started_at = COALESCE/,
+        value: { meta: { changes: 1 } },
+      },
+      {
         match: /UPDATE upload_reservations SET status = \?/,
         value: { meta: { changes: 0 } },
       },

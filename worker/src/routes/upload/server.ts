@@ -13,11 +13,16 @@ import {
   uploadErrorResponse,
 } from '../../services/uploadErrors'
 import { createProvider } from '../../services/storage/factory'
+import { StorageError } from '../../services/storage/types'
 import { rejectInvalidContentLength } from '../../services/requestBodyPolicy'
-import { prepareConsumeUploadReservation } from '../../services/uploadReservations'
+import {
+  prepareConsumeUploadReservation,
+  prepareReleaseUploadReservation,
+} from '../../services/uploadReservations'
 import { resolveServerUploadConfigForUser } from '../../services/uploadConfigPolicy'
 import { generateRandomCode } from '../../utils/random'
 import { FILE_SHORT_CODE_LENGTH } from '../../utils/codePolicy'
+import { prepareEnqueueFileDeletionIfNeeded } from '../../services/deleteQueue'
 import {
   SHORT_CODE_MAX_ATTEMPTS,
   normalizeExpiresIn,
@@ -110,6 +115,9 @@ function formatServerError(error: unknown): { status: number; message: string } 
  *
  * // 上传配置不存在或不可用 (404)
  * { "error": { "code": "UPLOAD_CONFIG_NOT_FOUND", "message": "配置不存在或不可用" } }
+ *
+ * // 同名候选耗尽或远端目标已存在 (409)
+ * { "error": "同名文件过多，请修改文件名后重试" }
  *
  * // R2 配置不支持服务端上传 (400)
  * { "error": "R2 配置请使用预签名上传" }
@@ -233,7 +241,7 @@ export async function serverUpload(request: Request, env: Env): Promise<Response
       const r2Key = buildProviderScopedStorageKey(configId, relativeKey)
       const id = crypto.randomUUID()
       const shortCode = customShortCode || generateRandomCode(FILE_SHORT_CODE_LENGTH)
-      uploadFile = { id, r2Key, shortCode, expiresAt, filename: resolvedFilename }
+      const candidate = { id, r2Key, shortCode, expiresAt, filename: resolvedFilename }
 
       const occupied = await withD1Retry(env.DB)
         .prepare('SELECT id FROM files WHERE r2_key = ? LIMIT 1')
@@ -245,7 +253,9 @@ export async function serverUpload(request: Request, env: Env): Promise<Response
         await createPendingUploadFileRecord(
           env,
           user.id,
-          uploadFile,
+          // 在条件创建成功前只登记本次专用占位 key。即使失败后的 D1 清理失败，
+          // 回收站任务也不会持有已有远端目标的 key。
+          { ...candidate, r2Key: buildProviderScopedStorageKey(configId, `.pending/${id}`) },
           declaredSize,
           contentTypeStr,
           expiresIn,
@@ -254,6 +264,7 @@ export async function serverUpload(request: Request, env: Env): Promise<Response
           user.quota_bytes,
           Boolean(customShortCode)
         )
+        uploadFile = candidate
         lastError = null
         break
       } catch (error) {
@@ -265,6 +276,9 @@ export async function serverUpload(request: Request, env: Env): Promise<Response
       }
     }
     if (!uploadFile || lastError) {
+      if (!uploadFile && !lastError) {
+        return jsonResponse({ error: '同名文件过多，请修改文件名后重试' }, 409)
+      }
       throw lastError || new Error('create_file_record_failed')
     }
 
@@ -285,8 +299,18 @@ export async function serverUpload(request: Request, env: Env): Promise<Response
       }
 
       const body = await file.arrayBuffer()
-      await provider.upload(r2Key, body, contentTypeStr, fileSize)
+      await provider.upload(r2Key, body, contentTypeStr, fileSize, { ifNoneMatch: '*' })
     } catch (error) {
+      if (error instanceof StorageError && error.code === 'TargetExists') {
+        // 条件 PUT 未创建对象，不能留下稍后会删除已有目标的回收站记录。
+        await withD1Retry(env.DB).batch([
+          prepareReleaseUploadReservation(env.DB, uploadFile.id),
+          withD1Retry(env.DB)
+            .prepare("DELETE FROM files WHERE id = ? AND upload_status = 'pending'")
+            .bind(uploadFile.id),
+        ])
+        return jsonResponse({ error: '目标文件已存在，请修改文件名后重试' }, 409)
+      }
       await markFileUploadDeleted(env, uploadFile.id)
       const formatted = formatServerError(error)
       return jsonResponse({ error: `上传失败（${formatted.message}）` }, formatted.status)
@@ -294,12 +318,27 @@ export async function serverUpload(request: Request, env: Env): Promise<Response
 
     try {
       const now = new Date().toISOString()
+      const placeholderKey = buildProviderScopedStorageKey(configId, `.pending/${uploadFile.id}`)
+      // 仅在条件 PUT 已确认成功后登记实际对象，先补齐并发删除留下的队列快照。
+      const [ownedResult] = await withD1Retry(env.DB).batch([
+        withD1Retry(env.DB)
+          .prepare(
+            "UPDATE files SET r2_key = ?, upload_updated_at = ? WHERE id = ? AND r2_key = ? AND upload_status IN ('pending','deleted') AND deletion_token IS NULL"
+          )
+          .bind(uploadFile.r2Key, now, uploadFile.id, placeholderKey),
+        withD1Retry(env.DB)
+          .prepare(
+            'UPDATE delete_queue SET r2_key = ? WHERE file_id = ? AND processed_at IS NULL AND orphan_multipart = 0 AND EXISTS (SELECT 1 FROM files WHERE id = ? AND r2_key = ?)'
+          )
+          .bind(uploadFile.r2Key, uploadFile.id, uploadFile.id, uploadFile.r2Key),
+      ])
+      if (!ownedResult?.meta?.changes) throw new Error('persist_server_upload_object_failed')
       const [updateResult] = await withD1Retry(env.DB).batch([
         withD1Retry(env.DB)
           .prepare(
-            "UPDATE files SET upload_status = 'completed', size = ? WHERE id = ? AND upload_status = 'pending'"
+            "UPDATE files SET upload_status = 'completed', size = ?, r2_key = ?, upload_key = NULL WHERE id = ? AND upload_status = 'pending' AND deleted_at IS NULL"
           )
-          .bind(fileSize, uploadFile.id),
+          .bind(fileSize, uploadFile.r2Key, uploadFile.id),
         prepareConsumeUploadReservation(env.DB, uploadFile.id, now),
         prepareAuditLogInsert(
           env.DB,
@@ -325,11 +364,45 @@ export async function serverUpload(request: Request, env: Env): Promise<Response
         throw new Error('complete_server_upload_file_record_failed')
       }
     } catch (error) {
-      await Promise.allSettled([
-        provider.delete(uploadFile.r2Key),
-        markFileUploadDeleted(env, uploadFile.id),
-      ])
-      throw error
+      // 超时可能发生在提交之后；复核成功记录后禁止盲目补偿删除。
+      const current = await withD1Retry(env.DB)
+        .prepare('SELECT upload_status, r2_key, deleted_at FROM files WHERE id = ? LIMIT 1')
+        .bind(uploadFile.id)
+        .first<{ upload_status: string; r2_key: string; deleted_at: string | null }>()
+      if (
+        !(
+          current?.upload_status === 'completed' &&
+          current.r2_key === uploadFile.r2Key &&
+          !current.deleted_at
+        )
+      ) {
+        const now = new Date().toISOString()
+        const placeholderKey = buildProviderScopedStorageKey(configId, `.pending/${uploadFile.id}`)
+        const [cleanupResult] = await withD1Retry(env.DB).batch([
+          withD1Retry(env.DB)
+            .prepare(
+              "UPDATE files SET r2_key = ?, upload_status = 'deleted', deleted_at = COALESCE(deleted_at, ?), deletion_started_at = COALESCE(deletion_started_at, ?) WHERE id = ? AND r2_key IN (?, ?) AND upload_status IN ('pending','deleted') AND deletion_token IS NULL"
+            )
+            .bind(uploadFile.r2Key, now, now, uploadFile.id, placeholderKey, uploadFile.r2Key),
+          withD1Retry(env.DB)
+            .prepare(
+              'UPDATE delete_queue SET r2_key = ? WHERE file_id = ? AND processed_at IS NULL AND orphan_multipart = 0 AND EXISTS (SELECT 1 FROM files WHERE id = ? AND r2_key = ?)'
+            )
+            .bind(uploadFile.r2Key, uploadFile.id, uploadFile.id, uploadFile.r2Key),
+          prepareReleaseUploadReservation(env.DB, uploadFile.id, now),
+          prepareEnqueueFileDeletionIfNeeded(
+            env.DB,
+            { id: uploadFile.id, r2_key: uploadFile.r2Key },
+            now
+          ),
+        ])
+        console.error(
+          '[serverUpload] completion failed; compensation queued',
+          { fileId: uploadFile.id, queued: Boolean(cleanupResult?.meta?.changes) },
+          error
+        )
+        throw error
+      }
     }
 
     const downloadUrl = `/api/files/${uploadFile.id}/download`

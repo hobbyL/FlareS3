@@ -2,7 +2,14 @@ import { withD1Retry } from '../../utils/db'
 import type { Env } from '../../config/env'
 import { getMaxFileSize } from '../../config/env'
 import { jsonResponse, parseJson, getUser, calcPresignedDownloadUrlTtlSeconds } from '../utils'
-import { generateDownloadUrl, generateUploadUrl, resolveR2ConfigForKey } from '../../services/r2'
+import {
+  generateDownloadUrl,
+  generateUploadUrl,
+  resolveR2ConfigForKey,
+  getObjectMetadata,
+  copyObject,
+  summarizeS3Error,
+} from '../../services/r2'
 import { logAudit } from '../../services/audit'
 import { getClientIp } from '../../middleware/rateLimit'
 import { resolveUploadConfigForUser } from '../../services/uploadConfigPolicy'
@@ -19,6 +26,8 @@ import {
   uploadErrorResponse,
   uploadFileExpiredError,
   uploadFileNotFoundError,
+  uploadObjectMissingError,
+  uploadObjectSizeMismatchError,
 } from '../../services/uploadErrors'
 import { prepareConsumeUploadReservation } from '../../services/uploadReservations'
 import {
@@ -28,12 +37,13 @@ import {
   calcDownloadTtlSeconds,
   createUploadConfigPolicyErrorResponse,
   markFileUploadDeleted,
-  verifyUploadedObjectSizeOrReject,
   allocateUploadFileIdentity,
   createPendingUploadFileRecord,
   normalizeCustomShortCode,
   isShortCodeTaken,
 } from './helpers'
+
+const MAX_SINGLE_PUT_BYTES = 5 * 1024 ** 3
 
 /**
  * 获取预签名上传 URL（小文件上传）
@@ -91,7 +101,7 @@ export async function presignUpload(request: Request, env: Env): Promise<Respons
     }
     const customShortCode = customCode.kind === 'ok' ? customCode.code : undefined
 
-    const maxSize = getMaxFileSize(env)
+    const maxSize = Math.min(getMaxFileSize(env), MAX_SINGLE_PUT_BYTES)
     if (declaredSize > maxSize) {
       return uploadErrorResponse(fileTooLargeError(declaredSize, maxSize))
     }
@@ -123,6 +133,7 @@ export async function presignUpload(request: Request, env: Env): Promise<Respons
       shortCode: string
       expiresAt: Date
       filename: string
+      uploadKey?: string
     } | null = null
     let lastCreateError: unknown = null
     for (let attempt = 0; attempt < SHORT_CODE_MAX_ATTEMPTS; attempt += 1) {
@@ -134,6 +145,7 @@ export async function presignUpload(request: Request, env: Env): Promise<Respons
         dir,
         customShortCode
       )
+      file.uploadKey = `flares3/${loaded.id}/.uploads/${file.id}`
       try {
         await createPendingUploadFileRecord(
           env,
@@ -163,7 +175,13 @@ export async function presignUpload(request: Request, env: Env): Promise<Respons
 
     let uploadUrl = ''
     try {
-      uploadUrl = await generateUploadUrl(loaded.config, file.r2Key, contentType, 3600)
+      uploadUrl = await generateUploadUrl(
+        loaded.config,
+        file.uploadKey!,
+        contentType,
+        3600,
+        declaredSize
+      )
     } catch (error) {
       await markFileUploadDeleted(env, file.id)
       throw error
@@ -237,7 +255,7 @@ export async function confirmUpload(request: Request, env: Env): Promise<Respons
 
     const file = await withD1Retry(env.DB)
       .prepare(
-        'SELECT id, owner_id, filename, r2_key, expires_at, short_code, require_login, size, upload_status, deleted_at FROM files WHERE id = ? LIMIT 1'
+        'SELECT id, owner_id, filename, r2_key, expires_at, short_code, require_login, size, upload_status, deleted_at, upload_key, upload_etag FROM files WHERE id = ? LIMIT 1'
       )
       .bind(body.file_id)
       .first()
@@ -258,32 +276,44 @@ export async function confirmUpload(request: Request, env: Env): Promise<Respons
     const loaded = await resolveR2ConfigForKey(env, r2Key)
     if (!loaded) return uploadErrorResponse(uploadConfigUnavailableError())
 
-    const sizeValidation = await verifyUploadedObjectSizeOrReject(
-      env,
-      {
-        id: String(file.id),
-        size: Number(file.size),
-        r2_key: r2Key,
-      },
-      loaded,
-      {
-        actorUserId: user.id,
-        ip: getClientIp(request),
-        userAgent: request.headers.get('User-Agent') || undefined,
-        stage: 'confirm_upload',
+    // 旧直传凭据指向最终 key，无法保证发布后不可写；要求重新上传。
+    const uploadKey = String(file.upload_key || '')
+    if (!uploadKey || uploadKey === r2Key)
+      return uploadErrorResponse(confirmUploadNotPendingError())
+    const source = await getObjectMetadata(loaded.config, uploadKey)
+    if (!source) return uploadErrorResponse(uploadObjectMissingError())
+    if (source.size !== Number(file.size) || source.size > MAX_SINGLE_PUT_BYTES) {
+      await markFileUploadDeleted(env, String(file.id))
+      return uploadErrorResponse(uploadObjectSizeMismatchError())
+    }
+    const bound = await withD1Retry(env.DB)
+      .prepare(
+        "UPDATE files SET upload_etag = ?, upload_updated_at = ? WHERE id = ? AND upload_status = 'pending' AND deleted_at IS NULL AND (upload_etag IS NULL OR upload_etag = ?)"
+      )
+      .bind(source.etag, new Date().toISOString(), file.id, source.etag)
+      .run()
+    if (!bound.meta?.changes) return uploadErrorResponse(confirmUploadNotPendingError())
+    try {
+      await copyObject(loaded.config, uploadKey, r2Key, {
+        sourceEtag: source.etag,
+        createOnly: true,
+      })
+    } catch (error) {
+      if (summarizeS3Error(error).httpStatusCode !== 412) throw error
+      // 同一版本的并发确认或上次 COPY 成功但 D1 落库失败，可安全重试收口。
+      const published = await getObjectMetadata(loaded.config, r2Key)
+      if (!published || published.etag !== source.etag || published.size !== source.size) {
+        return uploadErrorResponse(confirmUploadNotPendingError())
       }
-    )
-    if ('response' in sizeValidation) {
-      return sizeValidation.response
     }
 
     const now = new Date().toISOString()
     const [updateResult] = await withD1Retry(env.DB).batch([
       withD1Retry(env.DB)
         .prepare(
-          "UPDATE files SET size = ?, upload_status = 'completed' WHERE id = ? AND upload_status = 'pending' AND deleted_at IS NULL"
+          "UPDATE files SET size = ?, upload_status = 'completed' WHERE id = ? AND upload_status = 'pending' AND deleted_at IS NULL AND upload_etag = ?"
         )
-        .bind(sizeValidation.actualSize, body.file_id),
+        .bind(source.size, body.file_id, source.etag),
       prepareConsumeUploadReservation(env.DB, body.file_id, now),
     ])
 

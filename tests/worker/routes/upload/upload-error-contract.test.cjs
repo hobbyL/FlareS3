@@ -90,6 +90,15 @@ function createDb({
   allHandlers = [],
   runHandlers = [],
 } = {}) {
+  runHandlers.push({
+    match:
+      /UPDATE files SET upload_updated_at = \? WHERE id = \? AND upload_status = 'uploading' AND deleted_at IS NULL AND multipart_upload_id = \?/,
+    value: (args) => {
+      assert.equal(args[1], "file-1");
+      assert.equal(args[2], "upload-1");
+      return { meta: { changes: 1 } };
+    },
+  });
   function consume(list, sql, args, kind) {
     const index = list.findIndex((handler) => handler.match.test(sql));
     if (index === -1) {
@@ -208,7 +217,7 @@ function createDbForUploadLifecycle() {
                 sql.includes(
                   "SELECT COALESCE(SUM(size), 0) AS completedUsed",
                 ) &&
-                sql.includes("config_id = ?")
+                sql.includes("TRIM(files.config_id)")
               ) {
                 return 0;
               }
@@ -234,6 +243,12 @@ function createDbForUploadLifecycle() {
               );
             },
             async run() {
+              if (
+                sql.startsWith("UPDATE files SET r2_key = ?") ||
+                sql.startsWith("UPDATE delete_queue SET r2_key = ?")
+              ) {
+                return { meta: { changes: 1 } };
+              }
               if (sql.includes("INSERT INTO upload_reservations")) {
                 state.reservationInsertCount += 1;
                 return { meta: { changes: 1 } };
@@ -631,7 +646,7 @@ test("presignUpload releases reservation when upload URL generation fails", asyn
   assert.deepEqual(await response.json(), {
     error: {
       code: "UPLOAD_STORAGE_REQUEST_FAILED",
-      message: "upstream down",
+      message: "存储服务请求失败，请稍后重试",
       details: {
         upstreamCode: "UpstreamError",
       },
@@ -671,7 +686,7 @@ test("initMultipart releases reservation when multipart initialization fails", a
   assert.deepEqual(await response.json(), {
     error: {
       code: "UPLOAD_STORAGE_REQUEST_FAILED",
-      message: "upstream down",
+      message: "存储服务请求失败，请稍后重试",
       details: {
         upstreamCode: "UpstreamError",
       },

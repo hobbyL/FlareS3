@@ -13,6 +13,7 @@ export const SHARE_ACCESS_LOG_RETENTION_MS = AUDIT_LOG_RETENTION_MS
 export const TEXTS_TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 /** 回收站软删除 files 的保留窗口（30 天），与 texts 对齐；超期入队物理删除并连带删分享行 */
 export const FILES_TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
+export const OPERATION_HISTORY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 
 /** audit_logs 每轮 DELETE 的批量上限，避免首次清理 90 天积压时长事务阻塞 */
 export const AUDIT_LOG_DELETE_BATCH_SIZE = 500
@@ -164,7 +165,7 @@ async function deleteExpiredTrashFilesInBatches(
         `SELECT id, r2_key FROM files
      WHERE deleted_at IS NOT NULL AND deleted_at < ?
        AND NOT EXISTS (
-         SELECT 1 FROM delete_queue dq WHERE dq.file_id = files.id AND dq.processed_at IS NULL
+         SELECT 1 FROM delete_queue dq WHERE dq.file_id = files.id AND dq.processed_at IS NULL AND dq.orphan_multipart = 0
        )
      ORDER BY id ASC
      LIMIT ${FILES_TRASH_DELETE_BATCH_SIZE}`
@@ -262,6 +263,26 @@ export async function cleanupRetention(env: Env, now = new Date()): Promise<JobE
     nowIso
   )
 
+  const historyThreshold = new Date(now.getTime() - OPERATION_HISTORY_RETENTION_MS).toISOString()
+  // 每表每轮最多 500 条；保留活跃预约、运行中任务及尚有效的 PAT。
+  const historyResults = await withD1Retry(env.DB).batch([
+    withD1Retry(env.DB)
+      .prepare(
+        "DELETE FROM upload_reservations WHERE file_id IN (SELECT file_id FROM upload_reservations WHERE status IN ('consumed','released') AND updated_at < ? LIMIT 500)"
+      )
+      .bind(historyThreshold),
+    withD1Retry(env.DB)
+      .prepare(
+        "DELETE FROM job_runs WHERE id IN (SELECT id FROM job_runs WHERE status <> 'running' AND finished_at < ? LIMIT 500)"
+      )
+      .bind(historyThreshold),
+    withD1Retry(env.DB)
+      .prepare(
+        'DELETE FROM api_tokens WHERE id IN (SELECT id FROM api_tokens WHERE (revoked_at IS NOT NULL AND revoked_at < ?) OR (expires_at IS NOT NULL AND expires_at < ?) LIMIT 500)'
+      )
+      .bind(historyThreshold, historyThreshold),
+  ])
+
   const details = {
     sessions: getChanges(sessionResult),
     rateLimits: getChanges(rateLimitResult),
@@ -269,6 +290,9 @@ export async function cleanupRetention(env: Env, now = new Date()): Promise<JobE
     shareAccessLogs: shareAccessLogsDeleted,
     textsTrash: textsTrashDeleted,
     filesTrash: filesTrashDeleted,
+    uploadReservations: getChanges(historyResults[0]),
+    jobRuns: getChanges(historyResults[1]),
+    apiTokens: getChanges(historyResults[2]),
   }
 
   const processed =
@@ -277,7 +301,10 @@ export async function cleanupRetention(env: Env, now = new Date()): Promise<JobE
     details.auditLogs +
     details.shareAccessLogs +
     details.textsTrash +
-    details.filesTrash
+    details.filesTrash +
+    details.uploadReservations +
+    details.jobRuns +
+    details.apiTokens
 
   return buildJobResult('cleanupRetention', startedAtMs, {
     status: 'success',

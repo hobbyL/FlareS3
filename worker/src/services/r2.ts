@@ -40,6 +40,7 @@ import {
   generatePreviewUrl as objectsGeneratePreviewUrl,
   generateUploadUrl as objectsGenerateUploadUrl,
   getObjectSize as objectsGetObjectSize,
+  getObjectMetadata as objectsGetObjectMetadata,
   listObjectsV2 as objectsListObjectsV2,
   testConnection as objectsTestConnection,
   type DeleteByPrefixResult,
@@ -115,9 +116,11 @@ export async function generateUploadUrl(
   config: R2Config,
   key: string,
   contentType: string,
-  expiresInSeconds: number
+  expiresInSeconds: number,
+  declaredSize?: number,
+  options?: { ifNoneMatch?: '*' }
 ): Promise<string> {
-  return objectsGenerateUploadUrl(config, key, contentType, expiresInSeconds)
+  return objectsGenerateUploadUrl(config, key, contentType, expiresInSeconds, declaredSize, options)
 }
 
 export async function generateDownloadUrl(
@@ -147,6 +150,8 @@ export async function getObjectSize(config: R2Config, key: string): Promise<numb
   return objectsGetObjectSize(config, key)
 }
 
+export const getObjectMetadata = objectsGetObjectMetadata
+
 export async function deleteObject(config: R2Config, key: string): Promise<void> {
   return objectsDeleteObject(config, key)
 }
@@ -154,9 +159,10 @@ export async function deleteObject(config: R2Config, key: string): Promise<void>
 export async function copyObject(
   config: R2Config,
   sourceKey: string,
-  destKey: string
+  destKey: string,
+  options?: { sourceEtag: string; createOnly: true }
 ): Promise<void> {
-  return objectsCopyObject(config, sourceKey, destKey)
+  return objectsCopyObject(config, sourceKey, destKey, options)
 }
 
 export async function deleteObjectsByPrefix(

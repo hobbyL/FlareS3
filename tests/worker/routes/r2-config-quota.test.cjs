@@ -139,7 +139,7 @@ test("presignUpload rejects when selected config quota is exhausted", async () =
       },
       {
         match:
-          /COALESCE\(SUM\(size\), 0\) AS completedUsed[\s\S]*config_id = \?/,
+          /COALESCE\(SUM\(size\), 0\) AS completedUsed[\s\S]*TRIM\(files.config_id\)/,
         value: 900,
       },
       {
@@ -220,7 +220,7 @@ test("initMultipart rejects when selected config quota is exhausted", async () =
       },
       {
         match:
-          /COALESCE\(SUM\(size\), 0\) AS completedUsed[\s\S]*config_id = \?/,
+          /COALESCE\(SUM\(size\), 0\) AS completedUsed[\s\S]*TRIM\(files.config_id\)/,
         value: 900,
       },
       {
@@ -296,7 +296,7 @@ test("presignUpload rejects when active reservation exhausts user quota", async 
       },
       {
         match:
-          /COALESCE\(SUM\(size\), 0\) AS completedUsed[\s\S]*config_id = \?/,
+          /COALESCE\(SUM\(size\), 0\) AS completedUsed[\s\S]*TRIM\(files.config_id\)/,
         value: 0,
       },
       {
@@ -370,7 +370,7 @@ test("presignUpload rejects when active reservation exhausts selected config quo
       },
       {
         match:
-          /COALESCE\(SUM\(size\), 0\) AS completedUsed[\s\S]*config_id = \?/,
+          /COALESCE\(SUM\(size\), 0\) AS completedUsed[\s\S]*TRIM\(files.config_id\)/,
         value: 900,
       },
       {

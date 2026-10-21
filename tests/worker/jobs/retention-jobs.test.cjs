@@ -29,6 +29,8 @@ function createDb({ runHandlers = [], allHandlers = [] }) {
   function consume(list, sql, args) {
     const index = list.findIndex((handler) => handler.match.test(sql));
     if (index === -1) {
+      if (/DELETE FROM (upload_reservations|job_runs|api_tokens)/.test(sql))
+        return { meta: { changes: 0 } };
       throw new Error(`unexpected run SQL: ${sql} / ${JSON.stringify(args)}`);
     }
     const [handler] = list.splice(index, 1);
@@ -101,6 +103,8 @@ function createLifecycleDb({
   function consume(list, sql, args, kind) {
     const index = list.findIndex((handler) => handler.match.test(sql));
     if (index === -1) {
+      if (/DELETE FROM (upload_reservations|job_runs|api_tokens)/.test(sql))
+        return { meta: { changes: 0 } };
       if (kind === "run" && /^(CREATE|ALTER TABLE)/.test(sql.trim())) {
         return { meta: { changes: 0 } };
       }
@@ -227,6 +231,9 @@ test("cleanupRetention deletes stale sessions, rate limits and audit logs using 
     shareAccessLogs: 5,
     textsTrash: 0,
     filesTrash: 0,
+    uploadReservations: 0,
+    jobRuns: 0,
+    apiTokens: 0,
   });
 
   const sessionRun = state.runs.find((entry) =>
@@ -394,7 +401,7 @@ test("cleanupExpired releases active upload reservation after marking expired fi
     allHandlers: [
       {
         match:
-          /SELECT id, r2_key, upload_status, multipart_upload_id, config_id FROM files[\s\S]*WHERE expires_at < \? AND upload_status IN \('pending','uploading','completed'\) AND deleted_at IS NULL/,
+          /SELECT id, r2_key, upload_status, multipart_upload_id, config_id, upload_key, expires_at FROM files[\s\S]*expires_at < \?[\s\S]*COALESCE\(upload_updated_at, created_at\) < \?/,
         value: {
           results: [
             {
@@ -416,7 +423,11 @@ test("cleanupExpired releases active upload reservation after marking expired fi
       },
       {
         match:
-          /UPDATE files SET upload_status = 'deleted', deleted_at = \?, multipart_upload_id = NULL WHERE id = \?/,
+          /UPDATE files SET upload_status = 'deleted', deleted_at = \?, deletion_started_at = COALESCE/,
+        value: { meta: { changes: 1 } },
+      },
+      {
+        match: /INSERT INTO delete_queue/,
         value: { meta: { changes: 1 } },
       },
       {
@@ -453,7 +464,7 @@ test("cleanupExpired releases stale orphan upload reservations even when no file
     allHandlers: [
       {
         match:
-          /SELECT id, r2_key, upload_status, multipart_upload_id, config_id FROM files[\s\S]*WHERE expires_at < \? AND upload_status IN \('pending','uploading','completed'\) AND deleted_at IS NULL/,
+          /SELECT id, r2_key, upload_status, multipart_upload_id, config_id, upload_key, expires_at FROM files[\s\S]*expires_at < \?[\s\S]*COALESCE\(upload_updated_at, created_at\) < \?/,
         value: { results: [] },
       },
     ],
@@ -489,7 +500,7 @@ test("cleanupExpired releases stale orphan upload reservations even when no file
   ]);
 });
 
-test("cleanupExpired deletes expired explicit provider file before marking it deleted", async () => {
+test("cleanupExpired enqueues expired explicit provider file without deleting before the claim", async () => {
   clearModule("jobs/cleanupExpired.js");
   clearModule("services/storage/factory.js");
   const storageFactory = loadModule("services/storage/factory.js");
@@ -509,7 +520,7 @@ test("cleanupExpired deletes expired explicit provider file before marking it de
     allHandlers: [
       {
         match:
-          /SELECT id, r2_key, upload_status, multipart_upload_id, config_id FROM files[\s\S]*WHERE expires_at < \? AND upload_status IN \('pending','uploading','completed'\) AND deleted_at IS NULL/,
+          /SELECT id, r2_key, upload_status, multipart_upload_id, config_id, upload_key, expires_at FROM files[\s\S]*expires_at < \?[\s\S]*COALESCE\(upload_updated_at, created_at\) < \?/,
         value: {
           results: [
             {
@@ -531,7 +542,11 @@ test("cleanupExpired deletes expired explicit provider file before marking it de
       },
       {
         match:
-          /UPDATE files SET upload_status = 'deleted', deleted_at = \?, multipart_upload_id = NULL WHERE id = \?/,
+          /UPDATE files SET upload_status = 'deleted', deleted_at = \?, deletion_started_at = COALESCE/,
+        value: { meta: { changes: 1 } },
+      },
+      {
+        match: /INSERT INTO delete_queue/,
         value: { meta: { changes: 1 } },
       },
       {
@@ -546,7 +561,7 @@ test("cleanupExpired deletes expired explicit provider file before marking it de
 
   assert.equal(result.status, "success");
   assert.equal(result.succeeded, 1);
-  assert.equal(deletedKey, "storage/webdav-1/demo.bin");
+  assert.equal(deletedKey, "");
   assert.equal(state.batches.length, 1);
 });
 
@@ -563,7 +578,7 @@ test("cleanupDeleteQueue releases active upload reservation before deleting file
     allHandlers: [
       {
         match:
-          /SELECT dq\.id, dq\.file_id, dq\.r2_key, f\.config_id, f\.multipart_upload_id[\s\S]*FROM delete_queue dq[\s\S]*WHERE dq\.processed_at IS NULL[\s\S]*ORDER BY dq\.created_at ASC[\s\S]*LIMIT \?/,
+          /SELECT dq\.id, dq\.file_id, dq\.r2_key, COALESCE[\s\S]*FROM delete_queue dq[\s\S]*WHERE dq\.processed_at IS NULL[\s\S]*ORDER BY dq\.created_at ASC[\s\S]*LIMIT \?/,
         value: {
           results: [
             {
@@ -578,6 +593,14 @@ test("cleanupDeleteQueue releases active upload reservation before deleting file
       },
     ],
     runHandlers: [
+      {
+        match: /DELETE FROM delete_queue WHERE id IN/,
+        value: { meta: { changes: 0 } },
+      },
+      {
+        match: /UPDATE files SET deletion_started_at = COALESCE/,
+        value: { meta: { changes: 1 } },
+      },
       {
         match:
           /UPDATE upload_reservations SET status = \?, updated_at = \? WHERE file_id = \? AND status = 'active'/,
@@ -645,7 +668,7 @@ test("cleanupDeleteQueue deletes explicit provider object before clearing queue 
     allHandlers: [
       {
         match:
-          /SELECT dq\.id, dq\.file_id, dq\.r2_key, f\.config_id, f\.multipart_upload_id[\s\S]*FROM delete_queue dq[\s\S]*WHERE dq\.processed_at IS NULL[\s\S]*ORDER BY dq\.created_at ASC[\s\S]*LIMIT \?/,
+          /SELECT dq\.id, dq\.file_id, dq\.r2_key, COALESCE[\s\S]*FROM delete_queue dq[\s\S]*WHERE dq\.processed_at IS NULL[\s\S]*ORDER BY dq\.created_at ASC[\s\S]*LIMIT \?/,
         value: {
           results: [
             {
@@ -660,6 +683,14 @@ test("cleanupDeleteQueue deletes explicit provider object before clearing queue 
       },
     ],
     runHandlers: [
+      {
+        match: /DELETE FROM delete_queue WHERE id IN/,
+        value: { meta: { changes: 0 } },
+      },
+      {
+        match: /UPDATE files SET deletion_started_at = COALESCE/,
+        value: { meta: { changes: 1 } },
+      },
       {
         match:
           /UPDATE upload_reservations SET status = \?, updated_at = \? WHERE file_id = \? AND status = 'active'/,
@@ -737,7 +768,7 @@ test("cleanupRetention physically deletes expired trash texts and cascades share
   assert.equal(result.details.textsTrash, 2);
   assert.equal(result.processed, 2);
   // shares 级联删除走 batch（text_shares / text_one_time_shares / texts 同批）
-  assert.equal(state.batches.length, 1);
+  assert.equal(state.batches.length, 2);
   assert.deepEqual(
     state.batches[0].map((statement) => statement.sql),
     [
@@ -774,5 +805,5 @@ test("cleanupRetention keeps recent soft-deleted texts within retention window",
   // 无软删除数据：textsTrash 为 0 且不触发任何 texts DELETE batch
   assert.equal(result.status, "success");
   assert.equal(result.details.textsTrash, 0);
-  assert.equal(state.batches.length, 0);
+  assert.equal(state.batches.length, 1);
 });

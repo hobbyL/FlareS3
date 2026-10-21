@@ -21,6 +21,7 @@ import type {
   StoragePreviewResult,
   StorageProvider,
   StorageUploadResult,
+  StorageUploadOptions,
 } from './types'
 import { StorageError } from './types'
 import { logWarn } from '../../utils/log'
@@ -143,12 +144,13 @@ export class R2Provider implements StorageProvider {
 
   async upload(
     key: string,
-    _body: ArrayBuffer,
+    _body: ArrayBuffer | Uint8Array<ArrayBuffer>,
     contentType: string,
-    _size: number
+    _size: number,
+    options?: StorageUploadOptions
   ): Promise<StorageUploadResult> {
     try {
-      const url = await generateUploadUrl(this.config, key, contentType, 3600)
+      const url = await generateUploadUrl(this.config, key, contentType, 3600, _size, options)
       return { kind: 'redirect', url }
     } catch (error) {
       throw wrapS3Error(error)

@@ -45,6 +45,11 @@ export type StorageMoveOptions = {
   size?: number
 }
 
+export type StorageUploadOptions = {
+  /** 只创建新对象，已有目标必须返回冲突，不得覆盖。 */
+  ifNoneMatch?: '*'
+}
+
 // ── 错误 ──
 
 export class StorageError extends Error {
@@ -77,9 +82,10 @@ export interface StorageProvider {
   testConnection(): Promise<void>
   upload(
     key: string,
-    body: ArrayBuffer,
+    body: ArrayBuffer | Uint8Array<ArrayBuffer>,
     contentType: string,
-    size: number
+    size: number,
+    options?: StorageUploadOptions
   ): Promise<StorageUploadResult>
   createFolder(key: string): Promise<void>
   /** 同一配置内移动/重命名对象（key 均为路由层校验后的规范 key）。 */

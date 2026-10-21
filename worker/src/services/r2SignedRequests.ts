@@ -84,6 +84,10 @@ export async function fetchSigned(
       // 内层 retries 固定为 0：重试由本层统一控制，避免两层重试相乘放大尝试次数
       const url = await getSignedUrl(client, command as any, {
         expiresIn: expiresInSeconds,
+        // COPY 条件须作为签名头发送，避免 SDK 将 x-amz-* 提升到查询后与头重复。
+        unhoistableHeaders: new Set(
+          Object.keys(fetchInit.headers || {}).map((header) => header.toLowerCase())
+        ),
       })
       return await fetchWithUpstreamTimeout(url, fetchInit, { retries: 0 })
     } catch (error) {

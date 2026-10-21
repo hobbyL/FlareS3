@@ -8,7 +8,7 @@
  * - testConnection: 先测试 WebDAV，再测试 REST API（验证 mountId）
  */
 
-import type { StorageUploadResult } from './types'
+import type { StorageUploadResult, StorageUploadOptions } from './types'
 import { StorageError } from './types'
 import { WebDAVProvider, type WebDAVConfig } from './webdav-provider'
 import { readBoundedResponseJson } from '../upstreamResponsePolicy'
@@ -185,10 +185,13 @@ export class KoofrProvider extends WebDAVProvider {
 
   async upload(
     key: string,
-    body: ArrayBuffer,
+    body: ArrayBuffer | Uint8Array<ArrayBuffer>,
     contentType: string,
-    size: number
+    size: number,
+    options?: StorageUploadOptions
   ): Promise<StorageUploadResult> {
+    // REST 上传不保证条件创建；此类操作必须使用 WebDAV 条件 PUT，且不得回退覆盖。
+    if (options?.ifNoneMatch) return super.upload(key, body, contentType, size, options)
     try {
       return await this.restApiUpload(key, body, contentType)
     } catch {
@@ -199,7 +202,7 @@ export class KoofrProvider extends WebDAVProvider {
 
   private async restApiUpload(
     key: string,
-    body: ArrayBuffer,
+    body: ArrayBuffer | Uint8Array<ArrayBuffer>,
     contentType: string
   ): Promise<StorageUploadResult> {
     // 将 key 拆分为目录路径和文件名

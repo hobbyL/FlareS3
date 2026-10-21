@@ -301,7 +301,7 @@ test("deleteUser deactivates texts and deletes public share records", async () =
     allHandlers: [
       {
         match:
-          /SELECT id, r2_key FROM files WHERE owner_id = \? AND deleted_at IS NULL/,
+          /SELECT id, r2_key FROM files WHERE owner_id = \?[\s\S]*ORDER BY id ASC LIMIT \?/,
         value: { results: [] },
       },
     ],
@@ -394,7 +394,7 @@ test("deleteUser releases active upload reservations for queued files immediatel
     allHandlers: [
       {
         match:
-          /SELECT id, r2_key FROM files WHERE owner_id = \? AND deleted_at IS NULL/,
+          /SELECT id, r2_key FROM files WHERE owner_id = \?[\s\S]*ORDER BY id ASC LIMIT \?/,
         value: {
           results: [
             { id: "file-pending-1", r2_key: "flares3/cfg-1/pending-1.bin" },
@@ -436,8 +436,9 @@ test("deleteUser releases active upload reservations for queued files immediatel
       },
       {
         match:
-          /UPDATE files SET upload_status = 'deleted', deleted_at = \?, multipart_upload_id = NULL WHERE owner_id = \? AND deleted_at IS NULL/,
-        value: { meta: { changes: 2 } },
+          /UPDATE files SET upload_status = 'deleted', deleted_at = COALESCE\(deleted_at, \?\) WHERE id = \? AND owner_id = \?/,
+        reusable: true,
+        value: { meta: { changes: 1 } },
       },
       {
         match:
@@ -446,7 +447,7 @@ test("deleteUser releases active upload reservations for queued files immediatel
       },
       {
         match:
-          /INSERT INTO delete_queue \(id, file_id, r2_key, created_at\)[\s\S]*WHERE NOT EXISTS \([\s\S]*SELECT 1 FROM delete_queue WHERE file_id = \? AND processed_at IS NULL[\s\S]*\)/,
+          /INSERT INTO delete_queue \(id, file_id, r2_key, created_at, config_id, multipart_upload_id, upload_key\)[\s\S]*AND NOT EXISTS \([\s\S]*SELECT 1 FROM delete_queue WHERE file_id = \? AND processed_at IS NULL[\s\S]*\)/,
         value: { meta: { changes: 1 } },
       },
       {
@@ -460,7 +461,7 @@ test("deleteUser releases active upload reservations for queued files immediatel
       },
       {
         match:
-          /INSERT INTO delete_queue \(id, file_id, r2_key, created_at\)[\s\S]*WHERE NOT EXISTS \([\s\S]*SELECT 1 FROM delete_queue WHERE file_id = \? AND processed_at IS NULL[\s\S]*\)/,
+          /INSERT INTO delete_queue \(id, file_id, r2_key, created_at, config_id, multipart_upload_id, upload_key\)[\s\S]*AND NOT EXISTS \([\s\S]*SELECT 1 FROM delete_queue WHERE file_id = \? AND processed_at IS NULL[\s\S]*\)/,
         value: { meta: { changes: 1 } },
       },
     ],
@@ -473,8 +474,8 @@ test("deleteUser releases active upload reservations for queued files immediatel
   );
 
   assert.equal(response.status, 200);
-  // 分批执行：用户状态/会话/公开资源、文件状态、文件队列共 3 批
-  assert.equal(state.batches.length, 3);
+  // 文件状态、预约释放与队列同批提交，失败时整页可重试。
+  assert.equal(state.batches.length, 2);
   const reservationRuns = state.runs.filter((entry) =>
     /UPDATE upload_reservations SET status = \?, updated_at = \? WHERE file_id = \? AND status = 'active'/.test(
       entry.sql,
@@ -504,8 +505,9 @@ test("deleteUser caps statements per batch when the owner has many files", async
     allHandlers: [
       {
         match:
-          /SELECT id, r2_key FROM files WHERE owner_id = \? AND deleted_at IS NULL/,
-        value: { results: files },
+          /SELECT id, r2_key FROM files WHERE owner_id = \?[\s\S]*ORDER BY id ASC LIMIT \?/,
+        reusable: true,
+        value: (args) => ({ results: files.splice(0, args[1]) }),
       },
     ],
     runHandlers: [
@@ -527,7 +529,8 @@ test("deleteUser caps statements per batch when the owner has many files", async
       { match: /DELETE FROM folder_shares/, value: { meta: { changes: 1 } } },
       {
         match: /UPDATE files SET upload_status = 'deleted'/,
-        value: { meta: { changes: fileCount } },
+        reusable: true,
+        value: { meta: { changes: 1 } },
       },
       {
         match: /UPDATE upload_reservations SET status = \?/,
@@ -563,7 +566,7 @@ test("deleteUser caps statements per batch when the owner has many files", async
   // 单批语句数有界：文件批最多 25 × 2 = 50 条，加上固定语句也远低于 60×2+6
   for (const batch of state.batches) {
     assert.ok(
-      batch.length <= 50,
+      batch.length <= 75,
       `batch too large: ${batch.length} statements`,
     );
   }
@@ -599,7 +602,7 @@ test("permanentlyDeleteFile avoids duplicate delete_queue records on retry", asy
     runHandlers: [
       {
         match:
-          /INSERT INTO delete_queue \(id, file_id, r2_key, created_at\)[\s\S]*WHERE NOT EXISTS \([\s\S]*SELECT 1 FROM delete_queue WHERE file_id = \? AND processed_at IS NULL[\s\S]*\)/,
+          /INSERT INTO delete_queue \(id, file_id, r2_key, created_at, config_id, multipart_upload_id, upload_key\)[\s\S]*AND NOT EXISTS \([\s\S]*SELECT 1 FROM delete_queue WHERE file_id = \? AND processed_at IS NULL[\s\S]*\)/,
         value: { meta: { changes: 0 } },
       },
       {
@@ -624,7 +627,7 @@ test("permanentlyDeleteFile avoids duplicate delete_queue records on retry", asy
   assert.equal(state.batches[0].length, 2);
   assert.equal(
     state.runs.filter((entry) =>
-      /INSERT INTO delete_queue \(id, file_id, r2_key, created_at\)/.test(
+      /INSERT INTO delete_queue \(id, file_id, r2_key, created_at, config_id, multipart_upload_id, upload_key\)/.test(
         entry.sql,
       ),
     ).length,

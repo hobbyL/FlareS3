@@ -332,6 +332,9 @@ export async function updateUser(request: Request, env: Env, userId: string): Pr
     if (!target) {
       return jsonResponse({ error: '用户不存在' }, 404)
     }
+    if (target.status === 'deleted') {
+      return jsonResponse({ error: '已删除用户不能重新启用或修改' }, 409)
+    }
 
     const targetRole = String(target.role || '')
     const targetStatus = String(target.status || '')
@@ -487,19 +490,6 @@ export async function resetPassword(request: Request, env: Env, userId: string):
 const USER_DELETE_FILE_BATCH_SIZE = 25
 
 /**
- * 按固定大小切块顺序执行 IO，避免单个 batch / 单次请求承载过多语句。
- */
-async function runInBatches<T>(
-  items: T[],
-  size: number,
-  run: (chunk: T[]) => Promise<unknown>
-): Promise<void> {
-  for (let index = 0; index < items.length; index += size) {
-    await run(items.slice(index, index + size))
-  }
-}
-
-/**
  * 删除用户
  *
  * @route DELETE /api/users/:id
@@ -535,15 +525,6 @@ export async function deleteUser(request: Request, env: Env, userId: string): Pr
   }
 
   const now = new Date().toISOString()
-  const files = await withD1Retry(env.DB)
-    .prepare(`SELECT id, r2_key FROM files WHERE owner_id = ? AND deleted_at IS NULL`)
-    .bind(userId)
-    .all()
-  const activeFiles = (files.results || []).map((file) => ({
-    id: String(file.id),
-    r2_key: String(file.r2_key),
-  }))
-
   const actor = getUser(request)
   const actorId = actor?.id
   const ip = getClientIp(request)
@@ -565,20 +546,30 @@ export async function deleteUser(request: Request, env: Env, userId: string): Pr
   ])
   invalidateUserAuthTokens(userId, Date.parse(now) || Date.now())
 
-  if (activeFiles.length) {
-    await withD1Retry(env.DB).batch([
-      withD1Retry(env.DB)
-        .prepare(
-          `UPDATE files SET upload_status = 'deleted', deleted_at = ?, multipart_upload_id = NULL WHERE owner_id = ? AND deleted_at IS NULL`
-        )
-        .bind(now, userId),
-    ])
-    await runInBatches(activeFiles, USER_DELETE_FILE_BATCH_SIZE, (chunk) =>
-      withD1Retry(env.DB).batch([
-        ...chunk.map((file) => prepareReleaseUploadReservation(env.DB, file.id, now)),
-        ...chunk.map((file) => prepareEnqueueFileDeletionIfNeeded(env.DB, file, now)),
+  let queuedFiles = 0
+  for (let round = 0; round < 20; round++) {
+    const { results } = await withD1Retry(env.DB)
+      .prepare(
+        `SELECT id, r2_key FROM files WHERE owner_id = ?
+        AND NOT EXISTS (SELECT 1 FROM delete_queue WHERE file_id = files.id AND processed_at IS NULL AND orphan_multipart = 0)
+        ORDER BY id ASC LIMIT ?`
+      )
+      .bind(userId, USER_DELETE_FILE_BATCH_SIZE)
+      .all<{ id: string; r2_key: string }>()
+    if (!results.length) break
+    await withD1Retry(env.DB).batch(
+      results.flatMap((file) => [
+        withD1Retry(env.DB)
+          .prepare(
+            "UPDATE files SET upload_status = 'deleted', deleted_at = COALESCE(deleted_at, ?) WHERE id = ? AND owner_id = ?"
+          )
+          .bind(now, file.id, userId),
+        prepareReleaseUploadReservation(env.DB, file.id, now),
+        prepareEnqueueFileDeletionIfNeeded(env.DB, file, now),
       ])
     )
+    queuedFiles += results.length
+    if (results.length < USER_DELETE_FILE_BATCH_SIZE) break
   }
 
   await prepareAuditLogInsert(
@@ -591,7 +582,7 @@ export async function deleteUser(request: Request, env: Env, userId: string): Pr
       ip,
       userAgent,
       metadata: {
-        queuedFiles: activeFiles.length,
+        queuedFiles,
         sessionsRevoked: true,
       },
     },

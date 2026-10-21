@@ -246,6 +246,7 @@ function createGuardDb() {
     { match: /SELECT id FROM users LIMIT 1/, value: "user-1" },
   ];
   return {
+    AUTH_TOKEN_SECRET: "test-auth-secret-at-least-32-characters",
     DB: {
       prepare(sql) {
         return {

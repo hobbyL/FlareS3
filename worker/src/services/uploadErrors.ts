@@ -1,6 +1,7 @@
 import { jsonResponse } from '../utils/response'
 import { isRequestBodyPolicyError } from './requestBodyPolicy'
 import { summarizeS3Error } from './r2'
+import { logWarn } from '../utils/log'
 
 export type UploadErrorDetails = Record<string, unknown>
 
@@ -297,12 +298,20 @@ export function mapUnexpectedUploadError(
     })
   }
   if (summary.code || summary.httpStatusCode) {
+    logWarn('upload.storage_request_failed', {
+      upstreamCode: summary.code,
+      upstreamStatus: summary.httpStatusCode,
+      message: String(summary.message || '').slice(0, 4096),
+    })
     return createUploadError({
       status: 502,
       code: 'UPLOAD_STORAGE_REQUEST_FAILED',
-      message: summary.message || '存储服务请求失败',
+      message: '存储服务请求失败，请稍后重试',
       details: {
-        upstreamCode: summary.code,
+        upstreamCode:
+          typeof summary.code === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(summary.code)
+            ? summary.code
+            : undefined,
         upstreamStatus: summary.httpStatusCode,
       },
     })

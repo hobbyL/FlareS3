@@ -221,3 +221,26 @@ test("api tokens table and owner guards are managed by migrations", () => {
   assert.match(migration, /SELECT RAISE\(ABORT,/);
   assert.match(migration, /FROM users WHERE id = NEW\.user_id/);
 });
+
+test("upload lifecycle migration protects credentials issued before upgrade", async () => {
+  const { createSqliteDb } = require("../helpers/sqlite-db.cjs");
+  const { sqlite } = createSqliteDb({ throughMigration: "0009" });
+  sqlite.exec(`INSERT INTO users(id,username,password_hash,role,status,quota_bytes,created_at,updated_at)
+    VALUES('u','user','hash','user','active',100,'2026-01-01','2026-01-01');
+    INSERT INTO files(id,owner_id,filename,r2_key,size,content_type,expires_in,created_at,expires_at,upload_status)
+    VALUES('f','u','file','flares3/c/file',10,'text/plain',0,'2026-01-01','9999-01-01','pending');`);
+  sqlite.exec(
+    fs.readFileSync(
+      path.join(workerRoot, "migrations/0010_file_operation_lifecycle.sql"),
+      "utf8",
+    ),
+  );
+  const file = sqlite
+    .prepare(
+      "SELECT r2_key,upload_key,upload_updated_at FROM files WHERE id = 'f'",
+    )
+    .get();
+  assert.equal(file.upload_key, file.r2_key);
+  assert.ok(Math.abs(Date.now() - Date.parse(file.upload_updated_at)) < 5000);
+  sqlite.close();
+});

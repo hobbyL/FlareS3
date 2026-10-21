@@ -113,6 +113,11 @@ function loadFilesRouteModules() {
 const TRASH_RUN_HANDLERS = [
   {
     persistent: true,
+    match: /UPDATE files SET deletion_started_at = COALESCE/,
+    value: { meta: { changes: 1 } },
+  },
+  {
+    persistent: true,
     match:
       /UPDATE upload_reservations SET status = \?, updated_at = \? WHERE file_id = \? AND status = 'active'/,
     value: { meta: { changes: 0 } },
@@ -225,6 +230,11 @@ test("permanentlyDeleteTrashFiles keeps already-processed rows committed when a 
 
   let filesDeleteCount = 0;
   const runHandlers = [
+    {
+      persistent: true,
+      match: /UPDATE files SET deletion_started_at = COALESCE/,
+      value: { meta: { changes: 1 } },
+    },
     {
       persistent: true,
       match:

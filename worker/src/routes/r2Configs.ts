@@ -23,7 +23,7 @@ import {
   type RouteTimingEntry,
 } from '../utils/routeTiming'
 
-const ACTIVE_COMPLETED_STORAGE_USAGE_WHERE = "upload_status = 'completed' AND deleted_at IS NULL"
+const PHYSICAL_STORAGE_USAGE_WHERE = "upload_status IN ('completed', 'deleted')"
 
 type R2ConfigInput = {
   name: string
@@ -118,7 +118,7 @@ export async function listConfigs(_request: Request, env: Env): Promise<Response
     .prepare(
       `SELECT COALESCE(SUM(size), 0) AS usedSpace
        FROM files
-      WHERE ${ACTIVE_COMPLETED_STORAGE_USAGE_WHERE}
+      WHERE ${PHYSICAL_STORAGE_USAGE_WHERE}
         AND (config_id IS NULL OR TRIM(config_id) = '')
         AND r2_key NOT LIKE 'flares3/%/%'`
     )
@@ -136,7 +136,7 @@ export async function listConfigs(_request: Request, env: Env): Promise<Response
       .prepare(
         `SELECT COALESCE(SUM(size), 0) AS usedSpace
          FROM files
-        WHERE ${ACTIVE_COMPLETED_STORAGE_USAGE_WHERE}
+        WHERE ${PHYSICAL_STORAGE_USAGE_WHERE}
           AND (
             config_id = ?
             OR ((config_id IS NULL OR TRIM(config_id) = '') AND r2_key LIKE ?)
@@ -454,7 +454,9 @@ export async function deleteConfig(_request: Request, env: Env, id: string): Pro
       .bind(prefix)
       .first('count')
     const queueCount = await withD1Retry(env.DB)
-      .prepare('SELECT COUNT(*) AS count FROM delete_queue WHERE r2_key LIKE ?')
+      .prepare(
+        'SELECT COUNT(*) AS count FROM delete_queue WHERE r2_key LIKE ? AND processed_at IS NULL'
+      )
       .bind(prefix)
       .first('count')
     const reservationCount = await withD1Retry(env.DB)

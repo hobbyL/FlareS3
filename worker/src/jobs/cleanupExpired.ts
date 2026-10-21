@@ -1,64 +1,13 @@
 import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
 import { logError } from '../utils/log'
-import {
-  extractR2ConfigIdFromKey,
-  resolveR2ConfigForKey,
-  deleteObject,
-  abortMultipartUpload,
-  summarizeS3Error,
-} from '../services/r2'
+import { resolveR2ConfigForKey, deleteObject } from '../services/r2'
 import { buildJobResult, type JobExecutionResult } from '../services/jobRuns'
-import {
-  cleanupOrphanUploadReservations,
-  prepareReleaseUploadReservation,
-} from '../services/uploadReservations'
-import { createProvider } from '../services/storage/factory'
-import { StorageError } from '../services/storage/types'
+import { cleanupOrphanUploadReservations } from '../services/uploadReservations'
+import { prepareEnqueueFileDeletionIfNeeded } from '../services/deleteQueue'
 
 const BATCH_SIZE = 100
-
-function extractProviderConfigIdFromKey(key: string): string | null {
-  const parts = String(key || '')
-    .split('/')
-    .filter(Boolean)
-  if (parts.length >= 3 && parts[0] === 'storage') {
-    return parts[1] || null
-  }
-  return null
-}
-
-function getExplicitProviderConfigId(row: {
-  r2_key?: unknown
-  config_id?: unknown
-}): string | null {
-  const r2Key = String(row.r2_key || '')
-  if (extractR2ConfigIdFromKey(r2Key)) return null
-
-  const configId = String(row.config_id || '').trim()
-  if (configId) return configId
-
-  return extractProviderConfigIdFromKey(r2Key)
-}
-
-async function deleteProviderObject(env: Env, configId: string, key: string): Promise<void> {
-  const provider = await createProvider(env, configId)
-  if (!provider) {
-    throw new Error('storage_config_unavailable')
-  }
-
-  try {
-    await provider.delete(key)
-  } catch (error) {
-    if (
-      error instanceof StorageError &&
-      (error.httpStatusCode === 404 || error.code === 'NoSuchKey')
-    ) {
-      return
-    }
-    throw error
-  }
-}
+export const UPLOAD_IDLE_TIMEOUT_MS = 24 * 60 * 60 * 1000
 
 export async function cleanupExpired(
   env: Env,
@@ -66,14 +15,22 @@ export async function cleanupExpired(
 ): Promise<JobExecutionResult> {
   const startedAtMs = Date.now()
   const now = nowDate.toISOString()
+  const cutoff = new Date(nowDate.getTime() - UPLOAD_IDLE_TIMEOUT_MS).toISOString()
   const orphanReservationsReleased = await cleanupOrphanUploadReservations(env.DB, nowDate)
   const { results } = await withD1Retry(env.DB)
     .prepare(
-      `SELECT id, r2_key, upload_status, multipart_upload_id, config_id FROM files
-     WHERE expires_at < ? AND upload_status IN ('pending','uploading','completed') AND deleted_at IS NULL
+      `SELECT id, r2_key, upload_status, multipart_upload_id, config_id, upload_key, expires_at FROM files
+     WHERE (deleted_at IS NULL OR EXISTS (SELECT 1 FROM users WHERE users.id = files.owner_id AND users.status = 'deleted')) AND (
+       (expires_at < ? AND upload_status IN ('pending','uploading','completed'))
+       OR (upload_status IN ('pending','uploading') AND COALESCE(upload_updated_at, created_at) < ?)
+       OR (upload_status = 'completed' AND upload_key IS NOT NULL AND COALESCE(upload_updated_at, created_at) < ?)
+       OR EXISTS (SELECT 1 FROM users WHERE users.id = files.owner_id AND users.status = 'deleted')
+     ) AND (upload_status <> 'deleted' OR NOT EXISTS (
+       SELECT 1 FROM delete_queue WHERE file_id = files.id AND processed_at IS NULL AND orphan_multipart = 0
+     )) ORDER BY created_at ASC
      LIMIT ?`
     )
-    .bind(now, BATCH_SIZE)
+    .bind(now, cutoff, cutoff, BATCH_SIZE)
     .all()
   if (!results.length) {
     return buildJobResult('cleanupExpired', startedAtMs, {
@@ -93,52 +50,45 @@ export async function cleanupExpired(
   for (const row of results) {
     try {
       const r2Key = String(row.r2_key)
-      const explicitProviderConfigId = getExplicitProviderConfigId(row)
-      if (explicitProviderConfigId) {
-        await deleteProviderObject(env, explicitProviderConfigId, r2Key)
-        await withD1Retry(env.DB).batch([
-          withD1Retry(env.DB)
-            .prepare(
-              `UPDATE files SET upload_status = 'deleted', deleted_at = ?, multipart_upload_id = NULL WHERE id = ?`
-            )
-            .bind(now, row.id),
-          prepareReleaseUploadReservation(env.DB, String(row.id), now),
-        ])
-        succeeded += 1
-        deletedFiles += 1
-        continue
-      }
-
-      const loaded = await resolveR2ConfigForKey(env, r2Key)
-      if (!loaded) {
-        failed += 1
-        missingConfigs += 1
-        continue
-      }
-      const multipartUploadId = String((row as any).multipart_upload_id || '').trim()
-      if (multipartUploadId) {
-        try {
-          await abortMultipartUpload(loaded.config, r2Key, multipartUploadId)
-        } catch (error) {
-          const summary = summarizeS3Error(error)
-          if (summary.httpStatusCode !== 404 && summary.code !== 'NoSuchUpload') {
-            throw error
-          }
-          await deleteObject(loaded.config, r2Key)
+      if (
+        row.upload_status === 'completed' &&
+        row.upload_key &&
+        String(row.expires_at || '') > now
+      ) {
+        const loaded = await resolveR2ConfigForKey(env, r2Key)
+        if (!loaded) {
+          failed += 1
+          missingConfigs += 1
+          continue
         }
-      } else {
-        await deleteObject(loaded.config, r2Key)
+        await deleteObject(loaded.config, String(row.upload_key))
+        await withD1Retry(env.DB)
+          .prepare(
+            "UPDATE files SET upload_key = NULL WHERE id = ? AND upload_status = 'completed' AND upload_key = ?"
+          )
+          .bind(row.id, row.upload_key)
+          .run()
+        succeeded += 1
+        continue
       }
-      await withD1Retry(env.DB).batch([
+      const [deleted] = await withD1Retry(env.DB).batch([
         withD1Retry(env.DB)
           .prepare(
-            `UPDATE files SET upload_status = 'deleted', deleted_at = ?, multipart_upload_id = NULL WHERE id = ?`
+            `UPDATE files SET upload_status = 'deleted', deleted_at = ?, deletion_started_at = COALESCE(deletion_started_at, ?)
+             WHERE id = ? AND r2_key = ? AND (deleted_at IS NULL OR EXISTS (SELECT 1 FROM users WHERE users.id = files.owner_id AND users.status = 'deleted')) AND (
+               expires_at < ? OR (upload_status IN ('pending','uploading') AND COALESCE(upload_updated_at, created_at) < ?)
+               OR EXISTS (SELECT 1 FROM users WHERE users.id = files.owner_id AND users.status = 'deleted'))`
           )
-          .bind(now, row.id),
-        prepareReleaseUploadReservation(env.DB, String(row.id), now),
+          .bind(now, now, row.id, r2Key, now, cutoff),
+        prepareEnqueueFileDeletionIfNeeded(env.DB, { id: String(row.id), r2_key: r2Key }, now),
+        withD1Retry(env.DB)
+          .prepare(
+            "UPDATE upload_reservations SET status = ?, updated_at = ? WHERE file_id = ? AND status = 'active' AND EXISTS (SELECT 1 FROM files WHERE id = ? AND upload_status = 'deleted')"
+          )
+          .bind('released', now, row.id, row.id),
       ])
-      succeeded += 1
-      deletedFiles += 1
+      succeeded += Number(deleted.meta?.changes || 0)
+      deletedFiles += Number(deleted.meta?.changes || 0)
     } catch (error) {
       failed += 1
       logError('cleanupExpired.item_failed', error, { fileId: String(row.id) })

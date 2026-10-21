@@ -12,13 +12,14 @@ export type AuditEntry = {
 export function prepareAuditLogInsert(
   db: D1Database,
   entry: AuditEntry,
-  createdAt: string = new Date().toISOString()
+  createdAt: string = new Date().toISOString(),
+  condition?: { sql: string; params: unknown[] }
 ): D1PreparedStatement {
   const id = crypto.randomUUID()
   return withD1Retry(db)
     .prepare(
       `INSERT INTO audit_logs (id, actor_user_id, action, target_type, target_id, ip, user_agent, metadata, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     ${condition ? `SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${condition.sql}` : 'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'}`
     )
     .bind(
       id,
@@ -29,7 +30,8 @@ export function prepareAuditLogInsert(
       entry.ip || null,
       entry.userAgent || null,
       entry.metadata ? JSON.stringify(entry.metadata) : null,
-      createdAt
+      createdAt,
+      ...(condition?.params || [])
     )
 }
 

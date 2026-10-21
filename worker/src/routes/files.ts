@@ -1,5 +1,7 @@
 import { withD1Retry } from '../utils/db'
+import { claimFileDeletion, prepareClaimedFileCleanup } from '../services/fileDeletion'
 import type { Env } from '../config/env'
+import { getTotalStorage } from '../config/env'
 import {
   invalidJsonBodyResponse,
   jsonResponse,
@@ -22,7 +24,7 @@ import { normalizeStorageFilename, normalizeStoragePath } from '../services/stor
 import { extractDirFromR2Key } from '../utils/r2Dir'
 import { prepareEnqueueFileDeletionIfNeeded } from '../services/deleteQueue'
 import { getClientIp } from '../middleware/rateLimit'
-import { prepareReleaseUploadReservation } from '../services/uploadReservations'
+import { prepareReleaseUploadReservation, fileConfigIdSql } from '../services/uploadReservations'
 import {
   MAX_PREVIEW_RESPONSE_BYTES,
   limitedPreviewResponse,
@@ -307,7 +309,8 @@ export async function previewFile(request: Request, env: Env, fileId: string): P
   }
   if (!response.ok) {
     const text = await readBoundedResponseText(response).catch(() => '')
-    return jsonResponse({ error: text || '预览内容获取失败' }, response.status || 502)
+    console.error('[files] upstream preview rejected', { status: response.status, detail: text })
+    return jsonResponse({ error: '预览内容获取失败' }, response.status || 502)
   }
 
   return limitedPreviewResponse(response, mode.responseContentType)
@@ -376,14 +379,20 @@ export async function restoreFile(request: Request, env: Env, fileId: string): P
     const provider = await createProvider(env, explicitProviderConfigId)
     if (!provider) return jsonResponse({ error: '存储配置未找到' }, 503)
 
-    const exists = await provider.checkExists(r2Key)
-    if (!exists) {
-      return jsonResponse({ error: '文件对象不存在，无法恢复' }, 409)
+    try {
+      const exists = await provider.checkExists(r2Key)
+      if (!exists) return jsonResponse({ error: '文件对象不存在，无法恢复' }, 409)
+    } catch (error) {
+      return jsonResponse({ error: `文件恢复校验失败：${formatUpstreamFetchError(error)}` }, 502)
     }
 
     const now = new Date().toISOString()
-    await withD1Retry(env.DB).batch(prepareRestoreFileStatements(env, user, request, fileId, now))
-    return jsonResponse({ success: true })
+    const [restored] = await withD1Retry(env.DB).batch(
+      prepareRestoreFileStatements(env, user, request, fileId, now)
+    )
+    return restored?.meta?.changes
+      ? jsonResponse({ success: true })
+      : jsonResponse({ error: '文件已变更或正在永久删除，无法恢复' }, 409)
   }
 
   const loaded = await resolveR2ConfigForKey(env, r2Key)
@@ -401,7 +410,11 @@ export async function restoreFile(request: Request, env: Env, fileId: string): P
   }
 
   const now = new Date().toISOString()
-  await withD1Retry(env.DB).batch(prepareRestoreFileStatements(env, user, request, fileId, now))
+  const [restored] = await withD1Retry(env.DB).batch(
+    prepareRestoreFileStatements(env, user, request, fileId, now)
+  )
+  if (!restored?.meta?.changes)
+    return jsonResponse({ error: '文件已变更或正在永久删除，无法恢复' }, 409)
 
   return jsonResponse({ success: true })
 }
@@ -423,10 +436,14 @@ function prepareRecycleFileStatements(
   return [
     withD1Retry(env.DB)
       .prepare(
-        "UPDATE files SET upload_status = 'deleted', deleted_at = ?, multipart_upload_id = NULL WHERE id = ?"
+        "UPDATE files SET upload_status = 'deleted', deleted_at = ? WHERE id = ? AND deleted_at IS NULL"
       )
       .bind(nowIso, fileId),
-    prepareReleaseUploadReservation(env.DB, fileId, nowIso),
+    withD1Retry(env.DB)
+      .prepare(
+        "UPDATE upload_reservations SET status = ?, updated_at = ? WHERE file_id = ? AND status = 'active' AND EXISTS (SELECT 1 FROM files WHERE id = ? AND upload_status = 'deleted')"
+      )
+      .bind('released', nowIso, fileId, fileId),
     prepareAuditLogInsert(
       env.DB,
       {
@@ -446,12 +463,8 @@ function prepareRecycleFileStatements(
 /**
  * 组装「恢复」batch 语句：状态回滚 + reservation 释放 + 关闭未处理入队 + audit（FILE_RESTORE）。
  *
- * 恢复必须**无条件**关闭该文件所有未处理的 delete_queue 行。回收站保留期清理
- * （cleanupRetention）会为任意 provider（含 WebDAV/Koofr explicit-provider）的
- * 超期软删除行入队物理删除，入队与 cleanupDeleteQueue 实删之间存在时间窗；若恢复
- * 不关闭入队，cleanupDeleteQueue 随后会把刚恢复的对象与 files 行一并删除，造成
- * 「恢复成功随后被删」的数据丢失。该 UPDATE 幂等（无未处理行时命中 0 行），故对
- * 历史上不产生入队行的 explicit-provider 路径亦为无副作用的 no-op。
+ * 只有尚未开始物理删除的回收站行可以恢复。队列关闭语句校验恢复后的状态，
+ * 清理任务读取快照后仍需原子领取，不能仅凭旧快照删除恢复后的对象。
  */
 function prepareRestoreFileStatements(
   env: Env,
@@ -463,13 +476,29 @@ function prepareRestoreFileStatements(
   return [
     withD1Retry(env.DB)
       .prepare(
-        "UPDATE files SET upload_status = 'completed', deleted_at = NULL, multipart_upload_id = NULL WHERE id = ?"
+        `UPDATE files SET upload_status = 'completed', deleted_at = NULL, multipart_upload_id = NULL WHERE id = ? AND upload_status = 'deleted' AND deleted_at IS NOT NULL AND deletion_started_at IS NULL
+         AND EXISTS (SELECT 1 FROM users u WHERE u.id = files.owner_id AND u.status = 'active'
+           AND files.size + COALESCE((SELECT SUM(size) FROM files used WHERE used.owner_id = u.id
+             AND used.upload_status = 'completed' AND used.deleted_at IS NULL AND used.expires_at > ?), 0)
+             + COALESCE((SELECT SUM(reserved_bytes) FROM upload_reservations WHERE user_id = u.id AND status = 'active'), 0) <= u.quota_bytes)
+         AND (SELECT COALESCE(SUM(used.size), 0) FROM files used
+           WHERE used.upload_status IN ('completed', 'deleted') AND (
+             ${fileConfigIdSql('used')} = ${fileConfigIdSql('files')}
+           )) + COALESCE((SELECT SUM(reserved_bytes) FROM upload_reservations WHERE status = 'active'
+             AND r2_config_id = ${fileConfigIdSql('files')}), 0)
+           <= COALESCE(
+             (SELECT quota_bytes FROM r2_configs WHERE id = ${fileConfigIdSql('files')} AND quota_bytes > 0),
+             (SELECT quota_bytes FROM webdav_configs WHERE id = ${fileConfigIdSql('files')} AND quota_bytes > 0), ?)`
       )
-      .bind(fileId),
-    prepareReleaseUploadReservation(env.DB, fileId, nowIso),
+      .bind(fileId, nowIso, getTotalStorage(env)),
     withD1Retry(env.DB)
       .prepare(
-        'UPDATE delete_queue SET processed_at = ? WHERE file_id = ? AND processed_at IS NULL'
+        "UPDATE upload_reservations SET status = ?, updated_at = ? WHERE file_id = ? AND status = 'active' AND EXISTS (SELECT 1 FROM files WHERE id = ? AND upload_status = 'completed' AND deleted_at IS NULL AND deletion_started_at IS NULL)"
+      )
+      .bind('released', nowIso, fileId, fileId),
+    withD1Retry(env.DB)
+      .prepare(
+        "UPDATE delete_queue SET processed_at = ? WHERE file_id = ? AND processed_at IS NULL AND orphan_multipart = 0 AND EXISTS (SELECT 1 FROM files WHERE files.id = delete_queue.file_id AND upload_status = 'completed' AND deleted_at IS NULL AND deletion_started_at IS NULL)"
       )
       .bind(nowIso, fileId),
     prepareAuditLogInsert(
@@ -482,7 +511,11 @@ function prepareRestoreFileStatements(
         ip: getClientIp(request),
         userAgent: request.headers.get('User-Agent') || undefined,
       },
-      nowIso
+      nowIso,
+      {
+        sql: "EXISTS (SELECT 1 FROM files WHERE id = ? AND upload_status = 'completed' AND deleted_at IS NULL AND deletion_started_at IS NULL)",
+        params: [fileId],
+      }
     ),
   ]
 }
@@ -503,13 +536,12 @@ function preparePermanentDeleteFileStatements(
   request: Request,
   fileId: string,
   nowIso: string,
-  opts: { explicit: boolean; r2Key?: string }
+  opts: { explicit: boolean; r2Key?: string; deletionToken?: string }
 ): D1PreparedStatement[] {
   if (opts.explicit) {
+    if (!opts.deletionToken) throw new Error('物理删除缺少领取凭据')
     return [
-      prepareReleaseUploadReservation(env.DB, fileId, nowIso),
-      withD1Retry(env.DB).prepare('DELETE FROM file_shares WHERE file_id = ?').bind(fileId),
-      withD1Retry(env.DB).prepare('DELETE FROM files WHERE id = ?').bind(fileId),
+      ...prepareClaimedFileCleanup(env.DB, fileId, opts.deletionToken, nowIso),
       prepareAuditLogInsert(
         env.DB,
         {
@@ -620,20 +652,26 @@ export async function permanentlyDeleteTrashFiles(request: Request, env: Env): P
       if (explicitProviderConfigId) {
         const provider = await createProvider(env, explicitProviderConfigId)
         if (!provider) return jsonResponse({ error: '存储配置未找到' }, 503)
+        const deletionToken = await claimFileDeletion(env.DB, fileId, r2Key)
+        if (!deletionToken) continue
 
         try {
           await provider.delete(r2Key)
         } catch (error) {
-          // 远端文件可能已不存在，永久删除继续清理本地记录；非 404 类真实失败补 warn 日志便于排障。
+          // 404 可以完成本地清理；其他失败保留行并入队重试。
           if (!isRemoteObjectMissingError(error)) {
-            console.warn('[files] provider delete failed', { fileId, key: r2Key, error })
+            console.warn('[files] provider delete failed', { fileId, error })
+            await prepareEnqueueFileDeletionIfNeeded(
+              env.DB,
+              { id: fileId, r2_key: r2Key },
+              now
+            ).run()
+            throw error
           }
         }
 
         const batchResults = await withD1Retry(env.DB).batch([
-          prepareReleaseUploadReservation(env.DB, fileId, now),
-          withD1Retry(env.DB).prepare('DELETE FROM file_shares WHERE file_id = ?').bind(fileId),
-          withD1Retry(env.DB).prepare('DELETE FROM files WHERE id = ?').bind(fileId),
+          ...prepareClaimedFileCleanup(env.DB, fileId, deletionToken, now),
           prepareAuditLogInsert(
             env.DB,
             {
@@ -727,18 +765,25 @@ export async function permanentlyDeleteFile(
   if (explicitProviderConfigId) {
     const provider = await createProvider(env, explicitProviderConfigId)
     if (!provider) return jsonResponse({ error: '存储配置未找到' }, 503)
+    const deletionToken = await claimFileDeletion(env.DB, fileId, r2Key)
+    if (!deletionToken) return jsonResponse({ error: '文件已变更或正在永久删除' }, 409)
 
     try {
       await provider.delete(r2Key)
     } catch (error) {
-      // 远端文件可能已不存在，永久删除继续清理本地记录；非 404 类真实失败补 warn 日志便于排障。
+      // 404 可以完成本地清理；其他失败保留行并入队重试。
       if (!isRemoteObjectMissingError(error)) {
-        console.warn('[files] provider delete failed', { fileId, key: r2Key, error })
+        console.warn('[files] provider delete failed', { fileId, error })
+        await prepareEnqueueFileDeletionIfNeeded(env.DB, { id: fileId, r2_key: r2Key }, now).run()
+        throw error
       }
     }
 
     await withD1Retry(env.DB).batch(
-      preparePermanentDeleteFileStatements(env, user, request, fileId, now, { explicit: true })
+      preparePermanentDeleteFileStatements(env, user, request, fileId, now, {
+        explicit: true,
+        deletionToken,
+      })
     )
 
     return jsonResponse({ success: true, queued: false })
@@ -1615,8 +1660,11 @@ export async function batchRestoreFiles(request: Request, env: Env): Promise<Res
       }
     }
 
-    await withD1Retry(env.DB).batch(prepareRestoreFileStatements(env, user, request, fileId, now))
-    restored += 1
+    const [restoreResult] = await withD1Retry(env.DB).batch(
+      prepareRestoreFileStatements(env, user, request, fileId, now)
+    )
+    if (restoreResult?.meta?.changes) restored += 1
+    else skipped.push(buildSkipped(fileId, 'not_in_trash'))
   }
 
   return jsonResponse({ success: true, restored, skipped })
@@ -1695,17 +1743,27 @@ export async function batchPermanentDeleteFiles(request: Request, env: Env): Pro
         skipped.push(buildSkipped(fileId, 'config_missing'))
         continue
       }
+      const deletionToken = await claimFileDeletion(env.DB, fileId, r2Key)
+      if (!deletionToken) {
+        skipped.push(buildSkipped(fileId, 'not_in_trash'))
+        continue
+      }
 
       try {
         await provider.delete(r2Key)
       } catch (error) {
         if (!isRemoteObjectMissingError(error)) {
-          console.warn('[files] provider delete failed', { fileId, key: r2Key, error })
+          console.warn('[files] provider delete failed', { fileId, error })
+          await prepareEnqueueFileDeletionIfNeeded(env.DB, { id: fileId, r2_key: r2Key }, now).run()
+          throw error
         }
       }
 
       const batchResults = await withD1Retry(env.DB).batch(
-        preparePermanentDeleteFileStatements(env, user, request, fileId, now, { explicit: true })
+        preparePermanentDeleteFileStatements(env, user, request, fileId, now, {
+          explicit: true,
+          deletionToken,
+        })
       )
       deleted += Number(batchResults?.[2]?.meta?.changes || 0)
       continue

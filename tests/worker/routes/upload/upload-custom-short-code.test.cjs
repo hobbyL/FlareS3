@@ -104,6 +104,12 @@ function createPresignDb({ shortCodeTaken = false } = {}) {
               throw new Error(`unexpected first SQL: ${sql}`);
             },
             async run() {
+              if (
+                sql.startsWith("UPDATE files SET r2_key = ?") ||
+                sql.startsWith("UPDATE delete_queue SET r2_key = ?")
+              ) {
+                return { meta: { changes: 1 } };
+              }
               if (sql.includes("INSERT INTO upload_reservations")) {
                 return { meta: { changes: 1 } };
               }

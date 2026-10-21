@@ -46,6 +46,15 @@ function createAuthedRequest(url, body) {
 
 function createDb({ firstHandlers = [], runHandlers = [] } = {}) {
   const lateFirstHandlers = [];
+  runHandlers.push({
+    match:
+      /UPDATE files SET upload_updated_at = \? WHERE id = \? AND upload_status = 'uploading' AND deleted_at IS NULL AND multipart_upload_id = \?/,
+    value: (args) => {
+      assert.equal(args[1], "file-1");
+      assert.equal(args[2], "upload-1");
+      return { meta: { changes: 1 } };
+    },
+  });
 
   function consume(list, sql, args, kind) {
     const index = list.findIndex((handler) => handler.match.test(sql));
@@ -100,7 +109,7 @@ function createDb({ firstHandlers = [], runHandlers = [] } = {}) {
 }
 
 const CONFIRM_FILE_SELECT =
-  /SELECT id, owner_id, filename, r2_key, expires_at, short_code, require_login, size, upload_status, deleted_at FROM files WHERE id = \? LIMIT 1/;
+  /SELECT id, owner_id, filename, r2_key, expires_at, short_code, require_login, size, upload_status, deleted_at, upload_key, upload_etag FROM files WHERE id = \? LIMIT 1/;
 const COMPLETE_FILE_SELECT =
   /SELECT id, owner_id, filename, r2_key, expires_at, short_code, require_login, upload_status, multipart_upload_id, size FROM files WHERE id = \?/;
 const STATUS_SELECT = /SELECT upload_status FROM files WHERE id = \?/;
@@ -120,6 +129,7 @@ function confirmFileRow(overrides = {}) {
     size: 128,
     upload_status: "pending",
     deleted_at: null,
+    upload_key: "flares3/config/.uploads/file-1",
     ...overrides,
   };
 }
@@ -256,7 +266,8 @@ test("confirmUpload rejects files not in pending state", async () => {
 test("confirmUpload returns conflict when guarded update races to zero changes", async () => {
   const { r2, upload } = loadUploadModules();
   r2.resolveR2ConfigForKey = async () => ({ id: "config-1", config: {} });
-  r2.getObjectSize = async () => 128;
+  r2.getObjectMetadata = async () => ({ size: 128, etag: '"v1"' });
+  r2.copyObject = async () => {};
 
   const response = await upload.confirmUpload(
     createAuthedRequest("https://example.com/api/upload/confirm", {
@@ -268,6 +279,10 @@ test("confirmUpload returns conflict when guarded update races to zero changes",
           { match: CONFIRM_FILE_SELECT, value: confirmFileRow() },
         ],
         runHandlers: [
+          {
+            match: /UPDATE files SET upload_etag =/,
+            value: { meta: { changes: 1 } },
+          },
           { match: COMPLETED_UPDATE, value: { meta: { changes: 0 } } },
           { match: RESERVATION_UPDATE, value: { meta: { changes: 0 } } },
         ],
@@ -495,7 +510,7 @@ test("completeMultipart keeps upstream InvalidPart error without recovery", asyn
   assert.deepEqual(await response.json(), {
     error: {
       code: "UPLOAD_STORAGE_REQUEST_FAILED",
-      message: "One or more of the specified parts could not be found",
+      message: "存储服务请求失败，请稍后重试",
       details: {
         upstreamCode: "InvalidPart",
         upstreamStatus: 400,

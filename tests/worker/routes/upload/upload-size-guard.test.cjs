@@ -82,6 +82,20 @@ function createDb(fileRow) {
               );
             },
             async run() {
+              if (sql.startsWith("UPDATE files SET upload_updated_at = ?")) {
+                assert.match(
+                  sql,
+                  /AND upload_status = 'uploading' AND deleted_at IS NULL AND multipart_upload_id = \?/,
+                );
+                assert.deepEqual(args.slice(1), [
+                  fileRow.id,
+                  fileRow.multipart_upload_id,
+                ]);
+                return { meta: { changes: 1 } };
+              }
+              if (sql.includes("UPDATE files SET upload_etag =")) {
+                return { meta: { changes: 1 } };
+              }
               if (sql.includes("SET upload_status = 'deleted'")) {
                 state.deletedUpdates += 1;
                 return { meta: { changes: 1 } };
@@ -212,13 +226,14 @@ test("confirmUpload rejects mismatched uploaded object size", async () => {
     size: 128,
     upload_status: "pending",
     deleted_at: null,
+    upload_key: "flares3/config/.uploads/file-1",
   };
   const { db, state } = createDb(fileRow);
   const { r2, upload } = loadUploadModules();
 
   let deleteCalls = 0;
   r2.resolveR2ConfigForKey = async () => ({ id: "config-1", config: {} });
-  r2.getObjectSize = async () => 256;
+  r2.getObjectMetadata = async () => ({ size: 256, etag: '"v1"' });
   r2.deleteObject = async () => {
     deleteCalls += 1;
   };
@@ -240,9 +255,11 @@ test("confirmUpload rejects mismatched uploaded object size", async () => {
   assert.equal(state.completedUpdates, 0);
   assert.equal(state.deletedUpdates, 1);
   assert.equal(state.reservationUpdates, 1);
-  assert.equal(deleteCalls, 1);
-  assert.equal(state.auditEntries.length, 1);
-  assert.equal(state.auditEntries[0][2], "UPLOAD_SIZE_MISMATCH");
+  assert.equal(
+    deleteCalls,
+    0,
+    "临时对象由持久化清理路径回收，不能误删最终对象",
+  );
 });
 
 test("completeMultipart rejects mismatched uploaded object size", async () => {
@@ -353,12 +370,18 @@ test("confirmUpload persists actual object size on success", async () => {
     size: 128,
     upload_status: "pending",
     deleted_at: null,
+    upload_key: "flares3/config/.uploads/file-1",
   };
   const { db, state } = createDb(fileRow);
   const { r2, upload } = loadUploadModules();
 
   r2.resolveR2ConfigForKey = async () => ({ id: "config-1", config: {} });
-  r2.getObjectSize = async () => 128;
+  r2.getObjectMetadata = async () => ({ size: 128, etag: '"v1"' });
+  r2.copyObject = async (_config, source, dest, options) => {
+    assert.equal(source, fileRow.upload_key);
+    assert.equal(dest, fileRow.r2_key);
+    assert.deepEqual(options, { sourceEtag: '"v1"', createOnly: true });
+  };
 
   const response = await upload.confirmUpload(
     createAuthedRequest("https://example.com/api/upload/confirm", {
@@ -371,7 +394,7 @@ test("confirmUpload persists actual object size on success", async () => {
   assert.equal(state.deletedUpdates, 0);
   assert.equal(state.completedUpdates, 1);
   assert.equal(state.reservationUpdates, 1);
-  assert.deepEqual(state.completedUpdateArgs[0], [128, "file-1"]);
+  assert.deepEqual(state.completedUpdateArgs[0], [128, "file-1", '"v1"']);
 });
 
 test("completeMultipart persists actual object size on success", async () => {

@@ -13,7 +13,7 @@ import {
   type RouteTimingEntry,
 } from '../utils/routeTiming'
 
-const ACTIVE_COMPLETED_STORAGE_USAGE_WHERE = "upload_status = 'completed' AND deleted_at IS NULL"
+const PHYSICAL_STORAGE_USAGE_WHERE = "upload_status IN ('completed', 'deleted')"
 
 function toUsageMap(
   rows: Array<{ config_id?: unknown; used_space?: unknown }>
@@ -34,7 +34,7 @@ async function listCompletedConfigUsage(db: D1Database): Promise<Map<string, num
     .prepare(
       `SELECT config_id, COALESCE(SUM(size), 0) AS used_space
          FROM files
-        WHERE ${ACTIVE_COMPLETED_STORAGE_USAGE_WHERE}
+        WHERE ${PHYSICAL_STORAGE_USAGE_WHERE}
           AND config_id IS NOT NULL
           AND TRIM(config_id) <> ''
         GROUP BY config_id
@@ -44,7 +44,7 @@ async function listCompletedConfigUsage(db: D1Database): Promise<Map<string, num
          FROM (
                 SELECT SUBSTR(r2_key, 9) AS rest, size
                   FROM files
-                 WHERE ${ACTIVE_COMPLETED_STORAGE_USAGE_WHERE}
+                 WHERE ${PHYSICAL_STORAGE_USAGE_WHERE}
                    AND (config_id IS NULL OR TRIM(config_id) = '')
                    AND r2_key LIKE 'flares3/%/%'
               )
@@ -75,7 +75,7 @@ async function getLegacyUsedSpace(db: D1Database): Promise<number> {
     .prepare(
       `SELECT COALESCE(SUM(size), 0) AS usedSpace
          FROM files
-        WHERE ${ACTIVE_COMPLETED_STORAGE_USAGE_WHERE}
+        WHERE ${PHYSICAL_STORAGE_USAGE_WHERE}
           AND (config_id IS NULL OR TRIM(config_id) = '')
           AND r2_key NOT LIKE 'flares3/%/%'`
     )

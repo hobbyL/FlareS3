@@ -220,10 +220,14 @@ export async function markFileUploadDeleted(env: Env, fileId: string): Promise<v
   await withD1Retry(env.DB).batch([
     withD1Retry(env.DB)
       .prepare(
-        "UPDATE files SET upload_status = 'deleted', deleted_at = ?, multipart_upload_id = NULL WHERE id = ?"
+        "UPDATE files SET upload_status = 'deleted', deleted_at = ? WHERE id = ? AND upload_status IN ('pending','uploading')"
       )
       .bind(now, fileId),
-    prepareReleaseUploadReservation(env.DB, fileId, now),
+    withD1Retry(env.DB)
+      .prepare(
+        "UPDATE upload_reservations SET status = ?, updated_at = ? WHERE file_id = ? AND status = 'active' AND EXISTS (SELECT 1 FROM files WHERE id = ? AND upload_status = 'deleted')"
+      )
+      .bind('released', now, fileId, fileId),
   ])
 }
 
@@ -375,7 +379,14 @@ export async function allocateUploadFileIdentity(
 export async function createPendingUploadFileRecord(
   env: Env,
   userId: string,
-  file: { id: string; r2Key: string; shortCode: string; expiresAt: Date; filename: string },
+  file: {
+    id: string
+    r2Key: string
+    shortCode: string
+    expiresAt: Date
+    filename: string
+    uploadKey?: string
+  },
   size: number,
   contentType: string,
   expiresIn: number,
@@ -395,8 +406,8 @@ export async function createPendingUploadFileRecord(
   const now = new Date().toISOString()
   const result = await withD1Retry(env.DB)
     .prepare(
-      `INSERT INTO files (id, owner_id, filename, r2_key, size, content_type, expires_in, created_at, expires_at, upload_status, short_code, require_login, config_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`
+      `INSERT INTO files (id, owner_id, filename, r2_key, size, content_type, expires_in, created_at, expires_at, upload_status, short_code, require_login, config_id, upload_key, upload_updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)`
     )
     .bind(
       file.id,
@@ -410,7 +421,9 @@ export async function createPendingUploadFileRecord(
       file.expiresAt.toISOString(),
       file.shortCode,
       requireLogin ? 1 : 0,
-      r2ConfigId || null
+      r2ConfigId || null,
+      file.uploadKey || null,
+      now
     )
     .run()
 
