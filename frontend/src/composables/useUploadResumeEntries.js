@@ -6,7 +6,7 @@ import { deleteUploadProgress, generateFileId, listUploadProgress } from '../uti
  *
  * api / t / message 由调用方注入，便于在无浏览器环境下单测（对标 useUploadConfigOptions）。
  */
-export function useUploadResumeEntries({ api, t, message }) {
+export function useUploadResumeEntries({ api, t, message, getOwnerId }) {
   const resumeEntries = ref([])
   const discardTarget = ref(null)
   const discarding = ref(false)
@@ -15,7 +15,9 @@ export function useUploadResumeEntries({ api, t, message }) {
 
   // listUploadProgress 已完成结构校验与过期过滤，这里拿到的就是可信数据
   const refreshResumeEntries = () => {
-    resumeEntries.value = listUploadProgress()
+    resumeEntries.value = listUploadProgress().filter(
+      (entry) => !getOwnerId || (entry.ownerId === getOwnerId() && entry.scope)
+    )
   }
 
   const requestDiscard = (fileId) => {
@@ -51,7 +53,7 @@ export function useUploadResumeEntries({ api, t, message }) {
   // 身份校验：name / size / lastModified 三要素必须完全一致，不做模糊匹配、不迁移记录
   const matchResumeFile = (entry, file) => {
     if (!entry?.fileId || !file) return false
-    return generateFileId(file) === entry.fileId
+    return generateFileId(file) === (entry.fingerprint || entry.fileId)
   }
 
   return {

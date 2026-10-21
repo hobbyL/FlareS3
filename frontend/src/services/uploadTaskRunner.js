@@ -8,6 +8,8 @@ import {
 } from '../utils/uploadPanel.js'
 import {
   generateFileId,
+  generateScopedFileId,
+  buildUploadScope,
   getUploadProgress,
   saveUploadProgress,
   updateUploadedParts,
@@ -50,7 +52,7 @@ const ensureTaskActive = (taskState, isCancelled) => {
   }
 }
 
-export function createUploadTaskRunner({ api, t, onUploaded }) {
+export function createUploadTaskRunner({ api, t, onUploaded, getOwnerId = () => '' }) {
   const formatDuration = (seconds) => {
     if (seconds < 60) return t('upload.seconds', { value: Number(seconds).toFixed(1) })
     if (seconds < 3600) {
@@ -160,7 +162,11 @@ export function createUploadTaskRunner({ api, t, onUploaded }) {
   }
 
   const uploadLargeFile = async (taskFile, taskState, updateItem, isCancelled, waitWhilePaused) => {
-    const fileId = generateFileId(taskFile.rawFile)
+    const ownerId = getOwnerId()
+    const scope = buildUploadScope(ownerId, taskFile)
+    const fileId = ownerId
+      ? generateScopedFileId(taskFile.rawFile, scope)
+      : generateFileId(taskFile.rawFile)
     let serverFileId = ''
     let resumeProgress = null
 
@@ -177,6 +183,7 @@ export function createUploadTaskRunner({ api, t, onUploaded }) {
             resumeProgress.serverFileId,
             resumeProgress.uploadId
           )
+          ensureTaskActive(taskState, isCancelled)
           // 服务端已有的分片
           serverParts.parts?.forEach((part) => uploadedPartsSet.add(part.PartNumber))
 
@@ -196,6 +203,7 @@ export function createUploadTaskRunner({ api, t, onUploaded }) {
             `[Resume] 恢复上传: ${taskFile.name}, 已完成 ${uploadedPartsSet.size}/${resumeProgress.totalParts} 个分片`
           )
         } catch (error) {
+          if (isCancelledError(error) || isCancelled()) throw createCancelledError()
           console.warn('[Resume] 恢复上传失败，将重新开始:', error)
           deleteUploadProgress(fileId)
           resumeProgress = null
@@ -203,6 +211,7 @@ export function createUploadTaskRunner({ api, t, onUploaded }) {
       }
 
       if (!resumeProgress) {
+        ensureTaskActive(taskState, isCancelled)
         // 新上传：初始化分片上传
         initResponse = await api.initMultipartUpload({
           filename: taskFile.name,
@@ -220,6 +229,19 @@ export function createUploadTaskRunner({ api, t, onUploaded }) {
 
         // 保存进度到 localStorage
         saveUploadProgress(fileId, {
+          ...(ownerId
+            ? {
+                ownerId,
+                scope,
+                fingerprint: generateFileId(taskFile.rawFile),
+                settings: {
+                  configId: taskFile.configId,
+                  dir: taskFile.dir,
+                  expiresIn: taskFile.expiresIn,
+                  requireLogin: taskFile.requireLogin,
+                },
+              }
+            : {}),
           serverFileId: file_id,
           uploadId: upload_id,
           filename: taskFile.name,
@@ -363,7 +385,7 @@ export function createUploadTaskRunner({ api, t, onUploaded }) {
     }
   }
 
-  const uploadServerFile = async (taskFile, taskState, updateItem) => {
+  const uploadServerFile = async (taskFile, taskState, updateItem, isCancelled) => {
     updateItem({
       progress: 0,
       uploadedBytes: 0,
@@ -371,17 +393,26 @@ export function createUploadTaskRunner({ api, t, onUploaded }) {
       speed: t('upload.preparing'),
       remainingTime: t('upload.calculating'),
     })
-    const result = await api.serverUpload({
-      configId: taskFile.configId,
-      file: taskFile.rawFile,
-      filename: taskFile.name,
-      expiresIn: taskFile.expiresIn,
-      requireLogin: taskFile.requireLogin,
-      dir: taskFile.dir || undefined,
-      customShortCode: taskFile.customShortCode || undefined,
-      onProgress: (_percent, loaded, total) =>
-        updateUploadStats(taskState, taskFile, updateItem, loaded, total),
-    })
+    ensureTaskActive(taskState, isCancelled)
+    const controller = registerController(taskState)
+    let result
+    try {
+      result = await api.serverUpload({
+        configId: taskFile.configId,
+        file: taskFile.rawFile,
+        filename: taskFile.name,
+        expiresIn: taskFile.expiresIn,
+        requireLogin: taskFile.requireLogin,
+        dir: taskFile.dir || undefined,
+        customShortCode: taskFile.customShortCode || undefined,
+        signal: controller.signal,
+        onProgress: (_percent, loaded, total) =>
+          updateUploadStats(taskState, taskFile, updateItem, loaded, total),
+      })
+    } finally {
+      taskState.inFlightControllers.delete(controller)
+    }
+    ensureTaskActive(taskState, isCancelled)
     return resolveTaskResult(taskFile, result, result, taskState)
   }
 
@@ -391,6 +422,8 @@ export function createUploadTaskRunner({ api, t, onUploaded }) {
   ) => {
     const taskFile = item.file
     const taskState = createTaskState()
+    const ownerId = getOwnerId()
+    const shouldCancel = () => isCancelled() || getOwnerId() !== ownerId
     updateItem({
       progress: 0,
       uploadedBytes: 0,
@@ -403,14 +436,15 @@ export function createUploadTaskRunner({ api, t, onUploaded }) {
     try {
       const result =
         taskFile.configType !== 'r2'
-          ? await uploadServerFile(taskFile, taskState, updateItem)
+          ? await uploadServerFile(taskFile, taskState, updateItem, shouldCancel)
           : taskFile.size < MULTIPART_THRESHOLD
-            ? await uploadSmallFile(taskFile, taskState, updateItem, isCancelled)
-            : await uploadLargeFile(taskFile, taskState, updateItem, isCancelled, waitWhilePaused)
+            ? await uploadSmallFile(taskFile, taskState, updateItem, shouldCancel)
+            : await uploadLargeFile(taskFile, taskState, updateItem, shouldCancel, waitWhilePaused)
+      ensureTaskActive(taskState, shouldCancel)
       onUploaded(taskFile)
       return result
     } catch (error) {
-      if (isCancelledError(error) || taskState.cancelRequested || isCancelled()) {
+      if (isCancelledError(error) || taskState.cancelRequested || shouldCancel()) {
         throw createCancelledError()
       }
       throw new Error(resolveUploadErrorMessage(error, t('upload.uploadFailed')))

@@ -103,7 +103,7 @@ test("放弃确认弹窗保持父组件持有可见性与提交动作", () => {
 test("UploadPanel 承接续传副作用：composable + 隐藏 input + 条件渲染", () => {
   assert.match(
     panelSource,
-    /useUploadResumeEntries\(\{ api, t, message \}\)/,
+    /useUploadResumeEntries\(\{ api, t, message, getOwnerId:/,
     "副作用应集中在 UploadPanel 注入的 composable 里",
   );
   assert.match(

@@ -12,6 +12,20 @@ export function generateFileId(file) {
   return `${file.name}_${file.size}_${file.lastModified}`
 }
 
+export function buildUploadScope(ownerId, settings = {}) {
+  return JSON.stringify([
+    String(ownerId || ''),
+    String(settings.configId || ''),
+    String(settings.dir || ''),
+    settings.expiresIn ?? 7,
+    settings.requireLogin !== false,
+  ])
+}
+
+export function generateScopedFileId(file, scope) {
+  return `${scope}:${generateFileId(file)}`
+}
+
 /**
  * 获取所有上传进度
  */
@@ -78,6 +92,16 @@ function normalizeProgressEntry(fileId, progress, now) {
   if (!isPositiveFinite(size) || !isPositiveFinite(totalParts)) return null
   // lastUploadAt 非法时无法判定过期、也无法展示时间，按结构非法处理
   if (!isPositiveFinite(lastUploadAt) || now - lastUploadAt > MAX_AGE) return null
+  if (
+    progress.scope &&
+    (!isNonEmptyString(progress.ownerId) ||
+      !progress.settings ||
+      typeof progress.settings !== 'object' ||
+      progress.scope !== buildUploadScope(progress.ownerId, progress.settings) ||
+      !isNonEmptyString(progress.fingerprint) ||
+      fileId !== `${progress.scope}:${progress.fingerprint}`)
+  )
+    return null
 
   return {
     fileId,
@@ -89,6 +113,14 @@ function normalizeProgressEntry(fileId, progress, now) {
     totalParts,
     uploadedParts: Array.isArray(uploadedParts) ? uploadedParts : [],
     lastUploadAt,
+    ...(progress.scope
+      ? {
+          scope: progress.scope,
+          ownerId: progress.ownerId,
+          settings: progress.settings,
+          fingerprint: progress.fingerprint || fileId,
+        }
+      : {}),
   }
 }
 

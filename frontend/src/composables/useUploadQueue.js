@@ -19,6 +19,7 @@ function createUploadQueueItem(file) {
     result: null,
     error: '',
     cancel: null,
+    generation: 0,
   }
 }
 
@@ -47,6 +48,7 @@ export function useUploadQueue({ runTask, concurrency = DEFAULT_UPLOAD_CONCURREN
   // 暂停闸门：进行中的分片任务在相邻分片之间 await waitWhilePaused()，暂停时挂起
   // （不中止已发出的分片请求），恢复 / 取消 / 销毁时放行。
   const pauseGate = new Set()
+  const runningItemIds = new Set()
 
   const activeItem = computed(
     () => items.value.find((item) => item.id === activeItemId.value) || null
@@ -80,6 +82,9 @@ export function useUploadQueue({ runTask, concurrency = DEFAULT_UPLOAD_CONCURREN
     })
 
   const runSingleItem = async (item) => {
+    const generation = ++item.generation
+    const isCurrent = () => item.generation === generation
+    runningItemIds.add(item.id)
     runningCount.value += 1
     activeItemId.value = item.id
     item.status = 'uploading'
@@ -90,16 +95,23 @@ export function useUploadQueue({ runTask, concurrency = DEFAULT_UPLOAD_CONCURREN
 
     try {
       const result = await runTask(item, {
-        updateItem: (patch = {}) => patchItem(item.id, patch),
+        updateItem: (patch = {}) => {
+          if (isCurrent() && item.status === 'uploading') patchItem(item.id, patch)
+        },
         setCancel: (handler) => {
+          if (!isCurrent()) {
+            handler?.()
+            return
+          }
           cancelHandler = typeof handler === 'function' ? handler : null
           item.cancel = cancelHandler
         },
-        isCancelled: () => item.status === 'cancelled' || disposed,
-        waitWhilePaused: () => waitWhilePaused(() => item.status === 'cancelled' || disposed),
+        isCancelled: () => !isCurrent() || item.status === 'cancelled' || disposed,
+        waitWhilePaused: () =>
+          waitWhilePaused(() => !isCurrent() || item.status === 'cancelled' || disposed),
       })
 
-      if (item.status !== 'cancelled') {
+      if (isCurrent() && item.status !== 'cancelled') {
         item.status = 'success'
         item.progress = 100
         item.uploadedBytes = item.totalBytes
@@ -108,6 +120,7 @@ export function useUploadQueue({ runTask, concurrency = DEFAULT_UPLOAD_CONCURREN
         latestSuccessItem.value = item
       }
     } catch (error) {
+      if (!isCurrent()) return
       if (item.status === 'cancelled' || error?.message === 'UPLOAD_CANCELLED') {
         item.status = 'cancelled'
         item.error = ''
@@ -116,10 +129,11 @@ export function useUploadQueue({ runTask, concurrency = DEFAULT_UPLOAD_CONCURREN
         item.error = error?.message || 'Upload failed'
       }
     } finally {
-      if (item.cancel === cancelHandler) {
+      if (isCurrent() && item.cancel === cancelHandler) {
         item.cancel = null
       }
       runningCount.value -= 1
+      runningItemIds.delete(item.id)
       // activeItemId 是续传列表刷新的触发源，必须在任务 settle（含 runner 内部
       // deleteUploadProgress）之后复位。并发下它指向“当前代表的在跑任务”：代表结束时
       // 移交给另一个仍在上传的任务，全部结束时复位为 ''，保证最后一次 settle 之后必然
@@ -133,7 +147,9 @@ export function useUploadQueue({ runTask, concurrency = DEFAULT_UPLOAD_CONCURREN
 
   const canStartMore = () => !disposed && !paused.value && runningCount.value < concurrencyLimit
 
-  const nextQueuedItem = () => items.value.find((item) => item.status === 'queued') || null
+  // 同一条目的重试等待旧 runner 完成补偿，避免它删除新上传的续传记录。
+  const nextQueuedItem = () =>
+    items.value.find((item) => item.status === 'queued' && !runningItemIds.has(item.id)) || null
 
   const settleDrainIfIdle = () => {
     if (runningCount.value === 0 && drainResolve) {
@@ -193,7 +209,7 @@ export function useUploadQueue({ runTask, concurrency = DEFAULT_UPLOAD_CONCURREN
 
   const cancelItem = (itemId) => {
     const item = items.value.find((entry) => entry.id === itemId)
-    if (!item || item.status !== 'uploading') {
+    if (!item || !['queued', 'uploading'].includes(item.status)) {
       return
     }
 
@@ -212,6 +228,7 @@ export function useUploadQueue({ runTask, concurrency = DEFAULT_UPLOAD_CONCURREN
     if (!item || !['error', 'cancelled'].includes(item.status)) {
       return
     }
+    item.generation += 1
 
     Object.assign(item, {
       status: 'queued',

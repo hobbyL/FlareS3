@@ -525,6 +525,7 @@ export default {
     dir,
     customShortCode,
     onProgress,
+    signal,
   }) {
     const formData = new FormData()
     formData.append('config_id', configId)
@@ -538,6 +539,7 @@ export default {
       .post('/api/upload/server', formData, {
         withCredentials: true,
         timeout: 300000,
+        signal,
         onUploadProgress: createUploadProgressHandler(onProgress),
       })
       .then((res) => res.data)

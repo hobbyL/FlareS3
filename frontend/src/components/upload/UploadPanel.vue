@@ -149,8 +149,9 @@ import { useUploadConfigOptions } from '../../composables/useUploadConfigOptions
 import { useUploadQueue } from '../../composables/useUploadQueue.js'
 import { useUploadResumeEntries } from '../../composables/useUploadResumeEntries.js'
 import { createUploadTaskRunner } from '../../services/uploadTaskRunner.js'
+import { useAuthStore } from '../../stores/auth.js'
 import { buildFolderEntryDir, formatBytes } from '../../utils/uploadPanel.js'
-import { generateFileId } from '../../utils/uploadResume.js'
+import { buildUploadScope, generateScopedFileId } from '../../utils/uploadResume.js'
 
 const emit = defineEmits(['uploaded'])
 
@@ -164,6 +165,7 @@ const props = defineProps({
 })
 
 const message = useMessage()
+const authStore = useAuthStore()
 const { t, locale } = useI18n({ useScope: 'global' })
 
 const uploadRef = ref(null)
@@ -199,7 +201,7 @@ const {
   cancelDiscard,
   confirmDiscard,
   matchResumeFile,
-} = useUploadResumeEntries({ api, t, message })
+} = useUploadResumeEntries({ api, t, message, getOwnerId: () => authStore.user?.id || '' })
 
 const formatDateTime = (value) => new Date(value).toLocaleString(locale.value)
 
@@ -221,6 +223,7 @@ const MAX_FILE_SIZE = 5 * 1024 * 1024 * 1024
 const MAX_SERVER_UPLOAD_SIZE = 100 * 1024 * 1024
 const uploadQueue = useUploadQueue({
   runTask: createUploadTaskRunner({
+    getOwnerId: () => authStore.user?.id || '',
     api,
     t,
     onUploaded: (taskFile) => {
@@ -240,7 +243,8 @@ const activeQueueFileIds = computed(() => {
   for (const item of queueItems.value) {
     if (item.status !== 'queued' && item.status !== 'uploading') continue
     const rawFile = item.file?.rawFile
-    if (rawFile) ids.add(generateFileId(rawFile))
+    if (rawFile)
+      ids.add(generateScopedFileId(rawFile, buildUploadScope(authStore.user?.id || '', item.file)))
   }
   return ids
 })
@@ -338,15 +342,13 @@ const handleResumeFileChange = (event) => {
         name: file.name,
         type: file.type || 'application/octet-stream',
         size: Number(file.size || 0),
-        expiresIn: expiresIn.value,
-        requireLogin: requireLogin.value,
-        // 续传命中时 uploadLargeFile 不读这些字段；仅当服务端记录已失效、回退成
-        // 新上传时才生效，此时与当前面板设置一致
-        configId:
-          selectedConfigType.value === 'r2' ? resolvedUploadConfigId.value || undefined : undefined,
+        expiresIn: entry.settings?.expiresIn ?? expiresIn.value,
+        requireLogin: entry.settings?.requireLogin ?? requireLogin.value,
+        // 续传和失效后的新上传都沿用记录创建时的目标与访问设置。
+        configId: entry.settings?.configId,
         // 记录本身来自 R2 分片上传，必须走 uploadLargeFile 才能命中续传
         configType: 'r2',
-        dir: uploadDir.value.trim() || undefined,
+        dir: entry.settings?.dir,
       },
     ])
     refreshResumeEntries()
@@ -404,6 +406,17 @@ const copyDownloadUrl = () => {
 watch(uploadQueue.activeItemId, () => {
   refreshResumeEntries()
 })
+
+watch(
+  () => authStore.user?.id,
+  () => {
+    for (const item of uploadQueue.items.value) uploadQueue.cancelItem(item.id)
+    uploadQueue.latestSuccessItem.value = null
+    pendingResumeFileId.value = ''
+    cancelDiscard()
+    refreshResumeEntries()
+  }
+)
 
 onMounted(() => {
   loadUploadConfigOptions()
