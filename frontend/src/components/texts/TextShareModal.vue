@@ -268,7 +268,7 @@ const loadShare = async () => {
 const buildPayload = ({ regenerate = false } = {}) => {
   const maxViewsRaw = String(form.value.maxViews ?? '').trim()
   const maxViews = maxViewsRaw ? Number(maxViewsRaw) : 0
-  if (!Number.isFinite(maxViews) || maxViews < 0) {
+  if (!Number.isSafeInteger(maxViews) || maxViews < 0) {
     message.error(t('texts.share.maxViewsInvalid'))
     return null
   }

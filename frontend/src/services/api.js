@@ -153,6 +153,9 @@ export default {
   revokeOtherSessions() {
     return api.post('/auth/sessions/revoke-others')
   },
+  revokeAllCredentials() {
+    return api.post('/auth/revoke-all')
+  },
 
   // ========== API Token（个人访问令牌）==========
 

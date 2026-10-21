@@ -31,6 +31,7 @@ export default {
       submit: '修改密码',
       changed: '密码已修改，请使用新密码重新登录',
       minLength: '新密码至少 8 位',
+      maxBytes: '新密码的 UTF-8 长度不能超过 72 字节',
       mismatch: '两次输入的新密码不一致',
       sameAsCurrent: '新密码不能与当前密码相同',
     },
@@ -58,7 +59,12 @@ export default {
       revoke: '下线',
       revokeOthers: '下线其他设备',
       revokeOthersTitle: '确认下线其他设备',
-      confirmRevokeOthers: '将立即结束除当前设备外的全部登录会话，这些设备需要重新登录。确定继续？',
+      confirmRevokeOthers:
+        '将结束其他设备的登录会话，最多 5 秒生效；API Token 保持有效。这些设备需要重新登录。确定继续？',
+      revokeAll: '撤销全部登录与令牌',
+      revokeAllTitle: '确认撤销全部凭据',
+      confirmRevokeAll:
+        '将撤销全部 API Token 和登录会话，包含当前设备。会话最多 5 秒生效，完成后需要重新登录。确定继续？',
       revokeSuccess: '该设备已下线',
       revokeFailed: '下线设备失败',
       revokeOthersSuccess: '已下线其他设备（{count} 个）',
@@ -68,7 +74,8 @@ export default {
     },
     tokens: {
       sectionTitle: 'API Token',
-      description: '用于脚本 / CI 以 Bearer 方式调用业务接口；改密与会话管理不支持 Token。',
+      description:
+        '用于脚本 / CI 以 Bearer 方式调用业务接口；改密不会撤销 Token。可单独撤销，或使用“撤销全部登录与令牌”。',
       namePlaceholder: '令牌名称（如 CI 部署）',
       expiresPlaceholder: '有效期天数（留空 = 永不过期）',
       create: '创建令牌',

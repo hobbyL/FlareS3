@@ -204,6 +204,15 @@
             <Button type="danger" size="small" block @click="openLogoutConfirm">
               {{ t('more.actions.logout') }}
             </Button>
+            <Button
+              type="danger"
+              size="small"
+              block
+              :disabled="sessionActionPending"
+              @click="showRevokeAllModal = true"
+            >
+              {{ t('more.sessions.revokeAll') }}
+            </Button>
           </div>
         </Card>
 
@@ -324,6 +333,22 @@
       </template>
     </Modal>
 
+    <Modal
+      :show="showRevokeAllModal"
+      :title="t('more.sessions.revokeAllTitle')"
+      width="420px"
+      @update:show="showRevokeAllModal = $event"
+    >
+      <p>{{ t('more.sessions.confirmRevokeAll') }}</p>
+      <template #footer>
+        <Button :disabled="revokingAll" @click="showRevokeAllModal = false">{{
+          t('common.cancel')
+        }}</Button>
+        <Button type="danger" :loading="revokingAll" @click="handleRevokeAll">{{
+          t('more.sessions.revokeAll')
+        }}</Button>
+      </template>
+    </Modal>
     <Modal
       :show="createdTokenVisible"
       :title="t('more.tokens.createdTitle')"
@@ -486,6 +511,10 @@ const handleChangePassword = async () => {
     message.error(t('more.password.minLength'))
     return
   }
+  if (new TextEncoder().encode(newPassword).byteLength > 72) {
+    message.error(t('more.password.maxBytes'))
+    return
+  }
   if (newPassword !== confirmPassword) {
     message.error(t('more.password.mismatch'))
     return
@@ -556,8 +585,12 @@ const sessionsError = ref(false)
 const revokingId = ref('')
 const revokingOthers = ref(false)
 const showRevokeOthersModal = ref(false)
+const showRevokeAllModal = ref(false)
+const revokingAll = ref(false)
 
-const sessionActionPending = computed(() => Boolean(revokingId.value) || revokingOthers.value)
+const sessionActionPending = computed(
+  () => Boolean(revokingId.value) || revokingOthers.value || revokingAll.value
+)
 const otherSessionCount = computed(() => sessions.value.filter((item) => !item.is_current).length)
 
 const formatSessionTime = (value) => {
@@ -637,6 +670,20 @@ const handleRevokeOthers = async () => {
 }
 
 // ── API Token ──
+const handleRevokeAll = async () => {
+  if (revokingAll.value) return
+  revokingAll.value = true
+  try {
+    await api.revokeAllCredentials()
+    authStore.logoutLocal()
+    await router.push('/login')
+  } catch (error) {
+    message.error(error.response?.data?.error || t('more.sessions.revokeFailed'))
+  } finally {
+    revokingAll.value = false
+  }
+}
+
 const tokens = ref([])
 const tokensLoading = ref(false)
 const tokensError = ref(false)

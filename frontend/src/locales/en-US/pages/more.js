@@ -33,6 +33,7 @@ export default {
       submit: 'Change password',
       changed: 'Password changed. Please sign in again with the new password',
       minLength: 'New password must be at least 8 characters',
+      maxBytes: 'New password must not exceed 72 UTF-8 bytes',
       mismatch: 'The two new passwords do not match',
       sameAsCurrent: 'New password must differ from the current password',
     },
@@ -61,7 +62,11 @@ export default {
       revokeOthers: 'Sign out other devices',
       revokeOthersTitle: 'Confirm signing out other devices',
       confirmRevokeOthers:
-        'All sessions except this device will end immediately and those devices must sign in again. Continue?',
+        'Other sessions will end within 5 seconds. API tokens stay active. Those devices must sign in again. Continue?',
+      revokeAll: 'Revoke all sessions and tokens',
+      revokeAllTitle: 'Confirm revoking all credentials',
+      confirmRevokeAll:
+        'Revoke every API token and session, including this device. Sessions expire within 5 seconds. You will need to sign in again. Continue?',
       revokeSuccess: 'Device signed out',
       revokeFailed: 'Failed to sign out device',
       revokeOthersSuccess: 'Other devices signed out ({count})',
@@ -72,7 +77,7 @@ export default {
     tokens: {
       sectionTitle: 'API Token',
       description:
-        'For scripts / CI to call business APIs via Bearer auth; change-password and session management do not accept tokens.',
+        'For scripts / CI via Bearer auth. Password changes do not revoke tokens. Revoke them individually or use “Revoke all sessions and tokens”.',
       namePlaceholder: 'Token name (e.g. CI deploy)',
       expiresPlaceholder: 'Valid days (leave blank = never expires)',
       create: 'Create token',
