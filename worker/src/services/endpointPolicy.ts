@@ -8,6 +8,29 @@ const BLOCKED_HOSTNAMES = new Set([
 
 const BLOCKED_HOSTNAME_SUFFIXES = ['.localhost', '.local', '.internal', '.lan']
 
+/**
+ * 通配 DNS 解析服务的域名后缀。
+ *
+ * 这类服务把「任意子域名」解析回内嵌的 IP：`127.0.0.1.nip.io` → `127.0.0.1`、
+ * `169.254.169.254.sslip.io` → `169.254.169.254`。字面上它们是普通公网域名，
+ * 不命中任何 IP 字面量黑名单，但 Workers 运行时会在 fetch 时真实解析 DNS，
+ * 从而构成指向本机 / 内网 / 云元数据端点的盲 SSRF。
+ *
+ * Workers 无 DNS 解析能力，无法在配置期判定「域名最终解析到哪」；这一层只能
+ * 覆盖已知的通配解析服务商。其余「攻击者自建域名解析到私网」的场景属已知边界，
+ * 依赖 endpoint 仅管理员（且已是仅会话登录）可配置这一约束兜底。
+ */
+const WILDCARD_DNS_SUFFIXES = [
+  '.nip.io',
+  '.sslip.io',
+  '.xip.io',
+  '.localtest.me',
+  '.lvh.me',
+  '.vcap.me',
+  '.traefik.me',
+  '.local.gd',
+]
+
 function normalizeHostname(hostname: string): string {
   return hostname
     .trim()
@@ -160,6 +183,7 @@ function isBlockedHostname(hostname: string): boolean {
   if (!hostname) return true
   if (BLOCKED_HOSTNAMES.has(hostname)) return true
   if (BLOCKED_HOSTNAME_SUFFIXES.some((suffix) => hostname.endsWith(suffix))) return true
+  if (WILDCARD_DNS_SUFFIXES.some((suffix) => hostname.endsWith(suffix))) return true
   if (isPrivateIpv4(hostname)) return true
   if (isBlockedIpv6(hostname)) return true
   return false

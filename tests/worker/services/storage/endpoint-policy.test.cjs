@@ -76,6 +76,53 @@ test("validateExternalEndpoint rejects non-decimal IPv4 notation that maps to pr
   });
 });
 
+test("validateExternalEndpoint rejects wildcard-DNS hostnames that resolve to internal addresses", () => {
+  const { validateExternalEndpoint } = require(
+    compiledPath("services/endpointPolicy.js"),
+  );
+
+  // 这类域名在字面上是普通公网域名，不命中任何 IP 字面量黑名单，
+  // 但会解析回内嵌 IP（含云元数据端点），构成盲 SSRF。
+  const blocked = [
+    "https://127.0.0.1.nip.io",
+    "https://169.254.169.254.nip.io",
+    "https://10.0.0.1.nip.io",
+    "https://127.0.0.1.sslip.io",
+    "https://169.254.169.254.sslip.io",
+    "https://127.0.0.1.xip.io",
+    "https://foo.localtest.me",
+    "https://foo.lvh.me",
+    "https://foo.vcap.me",
+    "https://foo.traefik.me",
+    "https://127-0-0-1.local.gd",
+  ];
+
+  for (const endpoint of blocked) {
+    assert.deepEqual(
+      validateExternalEndpoint(endpoint),
+      { ok: false, message: "endpoint 不能指向本机、内网或保留地址" },
+      endpoint,
+    );
+  }
+});
+
+test("wildcard-DNS blocking does not reject legitimate hosts", () => {
+  const { validateExternalEndpoint } = require(
+    compiledPath("services/endpointPolicy.js"),
+  );
+
+  // 合法域名中若仅「包含」这些字符串但不以其结尾，必须继续放行，
+  // 避免把 storage.nip.io.example.com、nil.io 之类误杀。
+  for (const endpoint of [
+    "https://storage.example.com",
+    "https://nip.io.example.com",
+    "https://data.my-nip.io.example.com",
+    "https://r2.cloudflarestorage.com",
+  ]) {
+    assert.equal(validateExternalEndpoint(endpoint).ok, true, endpoint);
+  }
+});
+
 test("validateExternalEndpoint rejects local, private and reserved address endpoints", () => {
   const { validateExternalEndpoint } = require(
     compiledPath("services/endpointPolicy.js"),
