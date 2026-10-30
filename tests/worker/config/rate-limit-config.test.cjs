@@ -15,8 +15,12 @@ const {
   DEFAULT_LOGIN_RATE_LIMIT_MAX,
   DEFAULT_LOGIN_MAX_FAILED_ATTEMPTS,
   DEFAULT_LOGIN_BLOCK_DURATION_MS,
+  DEFAULT_LOGIN_USERNAME_MAX_FAILED_ATTEMPTS,
+  DEFAULT_LOGIN_USERNAME_BLOCK_DURATION_MS,
   DEFAULT_SHARE_MAX_FAILED_ATTEMPTS,
   DEFAULT_SHARE_BLOCK_DURATION_MS,
+  DEFAULT_SHARE_CODE_MAX_FAILED_ATTEMPTS,
+  DEFAULT_SHARE_CODE_BLOCK_DURATION_MS,
   DEFAULT_PUBLIC_RATE_LIMIT_WINDOW_MS,
   DEFAULT_PUBLIC_RATE_LIMIT_MAX,
   SHARE_SCOPE_PREFIX,
@@ -28,8 +32,12 @@ const DEFAULTS = {
   loginMax: DEFAULT_LOGIN_RATE_LIMIT_MAX,
   loginMaxFailedAttempts: DEFAULT_LOGIN_MAX_FAILED_ATTEMPTS,
   loginBlockDurationMs: DEFAULT_LOGIN_BLOCK_DURATION_MS,
+  loginUsernameMaxFailedAttempts: DEFAULT_LOGIN_USERNAME_MAX_FAILED_ATTEMPTS,
+  loginUsernameBlockDurationMs: DEFAULT_LOGIN_USERNAME_BLOCK_DURATION_MS,
   shareMaxFailedAttempts: DEFAULT_SHARE_MAX_FAILED_ATTEMPTS,
   shareBlockDurationMs: DEFAULT_SHARE_BLOCK_DURATION_MS,
+  shareCodeMaxFailedAttempts: DEFAULT_SHARE_CODE_MAX_FAILED_ATTEMPTS,
+  shareCodeBlockDurationMs: DEFAULT_SHARE_CODE_BLOCK_DURATION_MS,
   publicWindowMs: DEFAULT_PUBLIC_RATE_LIMIT_WINDOW_MS,
   publicMax: DEFAULT_PUBLIC_RATE_LIMIT_MAX,
 };
@@ -44,11 +52,36 @@ test("默认值与整改前硬编码的阈值保持一致", () => {
     loginMax: 300,
     loginMaxFailedAttempts: 10,
     loginBlockDurationMs: 5 * 60 * 1000,
+    loginUsernameMaxFailedAttempts: 50,
+    loginUsernameBlockDurationMs: 60 * 1000,
     shareMaxFailedAttempts: 5,
     shareBlockDurationMs: 10 * 60 * 1000,
+    shareCodeMaxFailedAttempts: 30,
+    shareCodeBlockDurationMs: 60 * 1000,
     publicWindowMs: 60 * 1000,
     publicMax: 120,
   });
+});
+
+test("全局维度（不含 IP）阈值更宽松，避免匿名定向拒绝服务", () => {
+  // 这两个计数器可被任何匿名访客公开推到阈值：若能锁死真实用户/分享，
+  // 就构成零成本的定向 DoS。阈值必须显著高于 IP 维度，封禁必须更短。
+  assert.ok(
+    DEFAULTS.loginUsernameMaxFailedAttempts > DEFAULTS.loginMaxFailedAttempts,
+    "用户名维度阈值必须高于 IP 维度",
+  );
+  assert.ok(
+    DEFAULTS.loginUsernameBlockDurationMs < DEFAULTS.loginBlockDurationMs,
+    "用户名维度封禁必须短于 IP 维度",
+  );
+  assert.ok(
+    DEFAULTS.shareCodeMaxFailedAttempts > DEFAULTS.shareMaxFailedAttempts,
+    "分享码维度阈值必须高于 IP 维度",
+  );
+  assert.ok(
+    DEFAULTS.shareCodeBlockDurationMs < DEFAULTS.shareBlockDurationMs,
+    "分享码维度封禁必须短于 IP 维度",
+  );
 });
 
 test("每个字段都能被对应的环境变量单独覆盖", () => {
@@ -57,12 +90,36 @@ test("每个字段都能被对应的环境变量单独覆盖", () => {
     ["RATE_LIMIT_MAX", "50", "loginMax", 50],
     ["RATE_LIMIT_MAX_FAILED_ATTEMPTS", "3", "loginMaxFailedAttempts", 3],
     ["RATE_LIMIT_BLOCK_DURATION_MS", "900000", "loginBlockDurationMs", 900000],
+    [
+      "LOGIN_USERNAME_RATE_LIMIT_MAX_FAILED_ATTEMPTS",
+      "12",
+      "loginUsernameMaxFailedAttempts",
+      12,
+    ],
+    [
+      "LOGIN_USERNAME_RATE_LIMIT_BLOCK_DURATION_MS",
+      "30000",
+      "loginUsernameBlockDurationMs",
+      30000,
+    ],
     ["SHARE_RATE_LIMIT_MAX_FAILED_ATTEMPTS", "2", "shareMaxFailedAttempts", 2],
     [
       "SHARE_RATE_LIMIT_BLOCK_DURATION_MS",
       "60000",
       "shareBlockDurationMs",
       60000,
+    ],
+    [
+      "SHARE_CODE_RATE_LIMIT_MAX_FAILED_ATTEMPTS",
+      "40",
+      "shareCodeMaxFailedAttempts",
+      40,
+    ],
+    [
+      "SHARE_CODE_RATE_LIMIT_BLOCK_DURATION_MS",
+      "15000",
+      "shareCodeBlockDurationMs",
+      15000,
     ],
     ["PUBLIC_RATE_LIMIT_WINDOW_MS", "10000", "publicWindowMs", 10000],
     ["PUBLIC_RATE_LIMIT_MAX", "20", "publicMax", 20],

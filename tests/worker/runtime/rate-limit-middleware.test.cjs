@@ -426,6 +426,9 @@ test("分享码密码错误计数使用 share: 前缀且阈值可配置", async 
   const env = makeEnv(db, {
     SHARE_RATE_LIMIT_MAX_FAILED_ATTEMPTS: "2",
     SHARE_RATE_LIMIT_BLOCK_DURATION_MS: "30000",
+    // 全局维度单独配置，验证两个维度各用各的阈值
+    SHARE_CODE_RATE_LIMIT_MAX_FAILED_ATTEMPTS: "2",
+    SHARE_CODE_RATE_LIMIT_BLOCK_DURATION_MS: "15000",
   });
 
   assert.equal(await isSharePasswordBlocked(env, "code1", "6.6.6.6"), false);

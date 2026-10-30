@@ -12,6 +12,7 @@ import { hashPassword, verifyPassword, isPasswordWithinByteLimit } from '../serv
 import {
   recordFailedAttempt,
   recordFailedAttemptForUsername,
+  clearLoginFailedAttempts,
   isUsernameBlocked,
   getClientIp,
 } from '../middleware/rateLimit'
@@ -199,6 +200,9 @@ export async function login(request: Request, env: Env): Promise<Response> {
         ip,
         userAgent,
       }),
+      // 成功登录说明持有正确凭据，清零 IP 与用户名两个维度的失败计数，
+      // 避免偶发输错的正常用户被跨会话累积推向封禁。
+      clearLoginFailedAttempts(env, ip, body.username),
     ])
     return jsonResponse(
       {

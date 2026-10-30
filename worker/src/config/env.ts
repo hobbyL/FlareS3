@@ -28,8 +28,20 @@ export type Env = {
   RATE_LIMIT_MAX?: string
   RATE_LIMIT_MAX_FAILED_ATTEMPTS?: string
   RATE_LIMIT_BLOCK_DURATION_MS?: string
+  /**
+   * 用户名维度（不含 IP）的全局失败阈值与封禁时长。
+   * 该计数器可被匿名攻击者公开触发，因此阈值显著高于 IP 维度、封禁时间更短。
+   */
+  LOGIN_USERNAME_RATE_LIMIT_MAX_FAILED_ATTEMPTS?: string
+  LOGIN_USERNAME_RATE_LIMIT_BLOCK_DURATION_MS?: string
   SHARE_RATE_LIMIT_MAX_FAILED_ATTEMPTS?: string
   SHARE_RATE_LIMIT_BLOCK_DURATION_MS?: string
+  /**
+   * 分享码维度（不含 IP）的全局口令失败阈值与封禁时长。
+   * 分享码公开可见，该计数器同样可被匿名触发，故阈值高于 IP 维度、封禁更短。
+   */
+  SHARE_CODE_RATE_LIMIT_MAX_FAILED_ATTEMPTS?: string
+  SHARE_CODE_RATE_LIMIT_BLOCK_DURATION_MS?: string
   PUBLIC_RATE_LIMIT_WINDOW_MS?: string
   PUBLIC_RATE_LIMIT_MAX?: string
   /**

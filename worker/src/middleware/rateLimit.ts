@@ -151,8 +151,10 @@ export async function recordFailedAttempt(env: Env, ip: string): Promise<void> {
 /**
  * 用户名维度的登录失败计数 key。
  *
- * 用 SHA-256 摘要前 16 字符避免明文用户名入库；与 IP 维度同阈值，
- * 换 IP 的分布式爆破在同一用户名上仍会触发封禁。
+ * 用 SHA-256 摘要前 16 字符避免明文用户名入库；与 IP 维度互补，
+ * 换 IP 的分布式爆破在同一用户名上仍会触发封禁。阈值与 IP 维度**不同**：
+ * 该计数器可被匿名公开触发，故采用更宽松的 `loginUsername*` 阈值（见
+ * `recordFailedAttemptForUsername`）。
  */
 async function buildUsernameScopeKey(username: string): Promise<string> {
   const data = new TextEncoder().encode(username)
@@ -165,11 +167,14 @@ async function buildUsernameScopeKey(username: string): Promise<string> {
 
 /**
  * 记录用户名维度登录失败（与 IP 维度互补，防换 IP 绕过）。
+ *
+ * 使用独立的 `loginUsername*` 阈值（高于 IP 维度、封禁更短）：该计数器不含 IP，
+ * 任何知道用户名的人都能把真实用户推到封禁，因此不能沿用 IP 维度的 10 次 / 5 分钟。
  */
 export async function recordFailedAttemptForUsername(env: Env, username: string): Promise<void> {
   const key = await buildUsernameScopeKey(username)
   const config = getRateLimitConfig(env)
-  const blockedUntil = new Date(Date.now() + config.loginBlockDurationMs).toISOString()
+  const blockedUntil = new Date(Date.now() + config.loginUsernameBlockDurationMs).toISOString()
   await withD1Retry(env.DB)
     .prepare(
       `INSERT INTO rate_limits (ip, failed_attempts, blocked_until)
@@ -181,7 +186,28 @@ export async function recordFailedAttemptForUsername(env: Env, username: string)
            ELSE blocked_until
          END`
     )
-    .bind(key, config.loginMaxFailedAttempts, blockedUntil)
+    .bind(key, config.loginUsernameMaxFailedAttempts, blockedUntil)
+    .run()
+}
+
+/**
+ * 登录成功后清零失败计数（IP 维度 + 用户名维度）。
+ *
+ * 此前只在封禁窗口自然过期时才归零，导致 `failed_attempts` 跨会话累积：正常用户
+ * 偶发输错会被逐步推向封禁，而这些计数又无法通过正常登录抵消。成功登录说明持有
+ * 正确凭据，此时清零不会削弱爆破防护（爆破无法产生成功登录）。
+ *
+ * 任何失败都只记 warn：计数清理属尽力而为，不能阻断登录主流程。
+ */
+export async function clearLoginFailedAttempts(
+  env: Env,
+  ip: string,
+  username: string
+): Promise<void> {
+  const usernameKey = await buildUsernameScopeKey(username)
+  await withD1Retry(env.DB)
+    .prepare('UPDATE rate_limits SET failed_attempts = 0, blocked_until = NULL WHERE ip IN (?, ?)')
+    .bind(ip, usernameKey)
     .run()
 }
 
@@ -201,6 +227,8 @@ function buildShareRateLimitKey(shareCode: string, ip: string): string {
  * 分享码维度的口令失败计数 key（不含 IP）。
  *
  * 与 share:{code}:{ip} 互补：换 IP 的分布式口令爆破在同一分享码上仍触发封禁。
+ * 阈值与 IP 维度**不同**（`shareCodeMaxFailedAttempts`）：分享码在分享页公开可见，
+ * 该计数器可被匿名访客直接推到阈值，沿用 IP 维度的 5 次会造成定向拒绝服务。
  */
 function buildShareCodeScopeKey(shareCode: string): string {
   return `share-pass:${String(shareCode || '').trim()}`
@@ -215,6 +243,9 @@ export async function recordSharePasswordFailedAttempt(
   const codeKey = buildShareCodeScopeKey(shareCode)
   const config = getRateLimitConfig(env)
   const blockedUntil = new Date(Date.now() + config.shareBlockDurationMs).toISOString()
+  // 全局（分享码维度）计数器不含 IP，可被匿名公开触发，故用独立且更宽松的阈值与更短封禁，
+  // 避免「5 个错误口令锁死所有人 10 分钟」的定向拒绝服务。
+  const codeBlockedUntil = new Date(Date.now() + config.shareCodeBlockDurationMs).toISOString()
   const statement = withD1Retry(env.DB).prepare(
     `INSERT INTO rate_limits (ip, failed_attempts, blocked_until)
      VALUES (?, 1, NULL)
@@ -225,10 +256,10 @@ export async function recordSharePasswordFailedAttempt(
          ELSE blocked_until
        END`
   )
-  // 同时记录 IP 维度与分享码维度，任一达到阈值都封禁
+  // 同时记录 IP 维度与分享码维度，任一达到各自阈值都封禁
   await withD1Retry(env.DB).batch([
     statement.bind(key, config.shareMaxFailedAttempts, blockedUntil),
-    statement.bind(codeKey, config.shareMaxFailedAttempts, blockedUntil),
+    statement.bind(codeKey, config.shareCodeMaxFailedAttempts, codeBlockedUntil),
   ])
 }
 
