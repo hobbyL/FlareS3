@@ -1,6 +1,12 @@
 import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
-import { jsonResponse, parseJson, getUser, requestBodyPolicyErrorResponse } from './utils'
+import {
+  jsonResponse,
+  parseJson,
+  getUser,
+  patForbiddenResponse,
+  requestBodyPolicyErrorResponse,
+} from './utils'
 import { encryptString, validateBase64KeyLength } from '../services/crypto'
 import { createS3Client, summarizeS3Error, testConnection, type R2Config } from '../services/r2'
 import { logAudit } from '../services/audit'
@@ -81,11 +87,17 @@ export async function status(_request: Request, env: Env): Promise<Response> {
  * // 缺少 R2_MASTER_KEY (500)
  * { "error": "缺少 R2_MASTER_KEY" }
  *
+ * // 以 API Token 访问被拒 (403)
+ * { "error": "此操作需会话登录，不支持 API Token" }
+ *
  * // R2_MASTER_KEY 无效 (500)
  * { "error": "R2_MASTER_KEY 无效：不是合法的 base64 字符串" }
  * { "error": "R2_MASTER_KEY 无效：需要 32 字节 base64（当前解码为 16 字节）" }
  */
 export async function saveConfig(request: Request, env: Env): Promise<Response> {
+  // 写入对象存储主凭据：PAT 不得执行，防止被泄露的自动化令牌替换存储后端
+  const patBlocked = patForbiddenResponse(request)
+  if (patBlocked) return patBlocked
   const masterKey = String(env.R2_MASTER_KEY || '').trim()
   if (!masterKey) {
     return jsonResponse({ error: '缺少 R2_MASTER_KEY' }, 500)
@@ -181,6 +193,10 @@ export async function saveConfig(request: Request, env: Env): Promise<Response> 
  * { "error": "所有字段都是必填的" }
  */
 export async function testConfig(request: Request): Promise<Response> {
+  // 接受请求体内联 endpoint + 凭据并发起真实出网请求：这是最强的 SSRF 探测面，
+  // 仅允许会话登录的管理员使用，PAT 一律拒绝。
+  const patBlocked = patForbiddenResponse(request)
+  if (patBlocked) return patBlocked
   try {
     const body = await parseJson<{
       endpoint: string

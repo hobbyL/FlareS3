@@ -6,7 +6,13 @@ import { withD1Retry } from '../utils/db'
  */
 
 import type { Env } from '../config/env'
-import { jsonResponse, parseJson, getUser, requestBodyPolicyErrorResponse } from './utils'
+import {
+  jsonResponse,
+  parseJson,
+  getUser,
+  patForbiddenResponse,
+  requestBodyPolicyErrorResponse,
+} from './utils'
 import { encryptString, validateBase64KeyLength } from '../services/crypto'
 import { validateExternalEndpoint } from '../services/endpointPolicy'
 import { formatBytes } from '../utils/format'
@@ -143,6 +149,9 @@ export async function listConfigs(_request: Request, env: Env): Promise<Response
  * { "error": "quota_bytes 必须为大于 0 的数字" }
  */
 export async function createConfig(request: Request, env: Env): Promise<Response> {
+  // 存储凭据写入口：PAT 不得管理，避免被泄露的自动化令牌植入自己的存储后端
+  const patBlocked = patForbiddenResponse(request)
+  if (patBlocked) return patBlocked
   const masterKey = String(env.R2_MASTER_KEY || '').trim()
   if (!masterKey) {
     return jsonResponse({ error: '缺少 R2_MASTER_KEY' }, 500)
@@ -229,10 +238,16 @@ export async function createConfig(request: Request, env: Env): Promise<Response
  * // 无更新字段 (400)
  * { "error": "无有效更新字段" }
  *
+ * // 以 API Token 访问被拒 (403)
+ * { "error": "此操作需会话登录，不支持 API Token" }
+ *
  * // 类型无效 (400)
  * { "error": "type 必须为 webdav 或 koofr" }
  */
 export async function updateConfig(request: Request, env: Env, id: string): Promise<Response> {
+  // 改 endpoint 会保留原加密口令并 Basic 发往新主机，PAT 必须拒绝
+  const patBlocked = patForbiddenResponse(request)
+  if (patBlocked) return patBlocked
   if (!id) return jsonResponse({ error: '配置 ID 不能为空' }, 400)
 
   const masterKey = String(env.R2_MASTER_KEY || '').trim()
@@ -317,6 +332,8 @@ export async function updateConfig(request: Request, env: Env, id: string): Prom
  * { "error": "该配置仍有关联文件或上传预约，无法删除" }
  */
 export async function deleteConfig(_request: Request, env: Env, id: string): Promise<Response> {
+  const patBlocked = patForbiddenResponse(_request)
+  if (patBlocked) return patBlocked
   if (!id) return jsonResponse({ error: '配置 ID 不能为空' }, 400)
 
   try {
@@ -395,6 +412,9 @@ export async function deleteConfig(_request: Request, env: Env, id: string): Pro
  * }
  */
 export async function testById(_request: Request, env: Env, id: string): Promise<Response> {
+  // 连接测试会对已保存 endpoint 发起真实出网请求（且 Koofr 分支会提交账号口令），PAT 不得使用
+  const patBlocked = patForbiddenResponse(_request)
+  if (patBlocked) return patBlocked
   if (!id) return jsonResponse({ success: false, message: '缺少 id' }, 400)
 
   try {

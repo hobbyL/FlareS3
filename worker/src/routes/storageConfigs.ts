@@ -1,7 +1,7 @@
 import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
 import { getTotalStorage } from '../config/env'
-import { jsonResponse } from './utils'
+import { jsonResponse, patForbiddenResponse } from './utils'
 import { formatBytes } from '../utils/format'
 import { listR2ConfigSummaries, loadR2ConfigById } from '../services/r2'
 import { listWebDAVConfigs, loadWebDAVConfigById } from '../services/storage/webdav-config'
@@ -260,6 +260,9 @@ export async function listAllConfigs(_request: Request, env: Env): Promise<Respo
  *
  * // type 无效 (400)
  * { "error": "type 必须为 r2、webdav 或 koofr" }
+ *
+ * // 以 API Token 访问被拒 (403)
+ * { "error": "此操作需会话登录，不支持 API Token" }
  */
 function maskSecretPrefix(value: string): string {
   const raw = String(value || '')
@@ -269,6 +272,9 @@ function maskSecretPrefix(value: string): string {
 }
 
 export async function getConfigSecrets(request: Request, env: Env, id: string): Promise<Response> {
+  // 存储凭据元数据同属敏感面：拒绝 PAT，防止被泄露的自动化令牌枚举配置
+  const patBlocked = patForbiddenResponse(request)
+  if (patBlocked) return patBlocked
   if (!id) return secretJsonResponse({ error: '配置 ID 不能为空' }, 400)
 
   const type = new URL(request.url).searchParams.get('type')
@@ -338,12 +344,19 @@ const SECRETS_REVEAL_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000
  *
  * // 超出限流阈值 (429)
  * { "error": "操作过于频繁，请稍后再试" }
+ *
+ * // 以 API Token 访问被拒 (403)
+ * { "error": "此操作需会话登录，不支持 API Token" }
  */
 export async function revealConfigSecrets(
   request: Request,
   env: Env,
   id: string
 ): Promise<Response> {
+  // 明文密钥导出是最敏感的凭据面：必须会话登录，PAT 一律拒绝。
+  // 被泄露的 PAT 不应能换取对象存储主密钥（可绕开全部配额/审计/分享约束）。
+  const patBlocked = patForbiddenResponse(request)
+  if (patBlocked) return patBlocked
   if (!id) return secretJsonResponse({ error: '配置 ID 不能为空' }, 400)
 
   const req = request as Request & { user?: { id?: string } }

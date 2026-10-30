@@ -1,7 +1,13 @@
 import { withD1Retry } from '../utils/db'
 import type { Env } from '../config/env'
 import { getTotalStorage } from '../config/env'
-import { jsonResponse, parseJson, getUser, requestBodyPolicyErrorResponse } from './utils'
+import {
+  jsonResponse,
+  parseJson,
+  getUser,
+  patForbiddenResponse,
+  requestBodyPolicyErrorResponse,
+} from './utils'
 import { encryptString, validateBase64KeyLength } from '../services/crypto'
 import { validateExternalEndpoint } from '../services/endpointPolicy'
 import { formatBytes } from '../utils/format'
@@ -204,8 +210,15 @@ export async function listConfigs(_request: Request, env: Env): Promise<Response
  *
  * // 缺少主密钥 (500)
  * { "error": "缺少 R2_MASTER_KEY" }
+ *
+ * // 以 API Token 访问被拒 (403)
+ * { "error": "此操作需会话登录，不支持 API Token" }
  */
 export async function createConfig(request: Request, env: Env): Promise<Response> {
+  // 存储配置可写入凭据与 endpoint：PAT 不得管理，防止被泄露的自动化令牌
+  // 替换 endpoint 窃取口令或植入自己的存储后端。
+  const patBlocked = patForbiddenResponse(request)
+  if (patBlocked) return patBlocked
   const masterKey = String(env.R2_MASTER_KEY || '').trim()
   if (!masterKey) {
     return jsonResponse({ error: '缺少 R2_MASTER_KEY' }, 500)
@@ -315,10 +328,16 @@ export async function createConfig(request: Request, env: Env): Promise<Response
  * // 不可修改的配置 (400)
  * { "error": "该配置不可修改" }
  *
+ * // 以 API Token 访问被拒 (403)
+ * { "error": "此操作需会话登录，不支持 API Token" }
+ *
  * // 配额无效 (400)
  * { "error": "quota_bytes 必须为大于 0 的数字" }
  */
 export async function updateConfig(request: Request, env: Env, id: string): Promise<Response> {
+  // 改 endpoint 会保留原加密凭据并在下次访问时发往新主机的经典窃取路径，PAT 必须拒绝
+  const patBlocked = patForbiddenResponse(request)
+  if (patBlocked) return patBlocked
   if (!id) return jsonResponse({ error: '配置 ID 不能为空' }, 400)
   if (id === LEGACY_R2_CONFIG_ID) {
     return jsonResponse({ error: '该配置不可修改' }, 400)
@@ -438,10 +457,15 @@ export async function updateConfig(request: Request, env: Env, id: string): Prom
  * // 不可删除的配置 (400)
  * { "error": "该配置不可删除" }
  *
+ * // 以 API Token 访问被拒 (403)
+ * { "error": "此操作需会话登录，不支持 API Token" }
+ *
  * // 配置有关联文件 (409)
  * { "error": "该配置仍有关联文件或上传预约，无法删除" }
  */
 export async function deleteConfig(_request: Request, env: Env, id: string): Promise<Response> {
+  const patBlocked = patForbiddenResponse(_request)
+  if (patBlocked) return patBlocked
   if (!id) return jsonResponse({ error: '配置 ID 不能为空' }, 400)
   if (id === LEGACY_R2_CONFIG_ID) {
     return jsonResponse({ error: '该配置不可删除' }, 400)
@@ -518,6 +542,8 @@ export async function deleteConfig(_request: Request, env: Env, id: string): Pro
  * { "error": "配置不存在或不可用" }
  */
 export async function setDefault(request: Request, env: Env): Promise<Response> {
+  const patBlocked = patForbiddenResponse(request)
+  if (patBlocked) return patBlocked
   try {
     const body = await parseJson<{ id: string }>(request)
     const id = body?.id
@@ -568,6 +594,8 @@ export async function setDefault(request: Request, env: Env): Promise<Response> 
  * { "error": "配置不存在或不可用" }
  */
 export async function setLegacyFiles(request: Request, env: Env): Promise<Response> {
+  const patBlocked = patForbiddenResponse(request)
+  if (patBlocked) return patBlocked
   try {
     const body = await parseJson<{ id?: string | null }>(request)
     const id = body?.id
@@ -630,6 +658,9 @@ export async function setLegacyFiles(request: Request, env: Env): Promise<Respon
  * }
  */
 export async function testById(_request: Request, env: Env, id: string): Promise<Response> {
+  // 连接测试会对已保存 endpoint 发起真实出网请求，构成 SSRF 探测面，PAT 不得使用
+  const patBlocked = patForbiddenResponse(_request)
+  if (patBlocked) return patBlocked
   if (!id) return jsonResponse({ success: false, message: '缺少 id' }, 400)
   try {
     const loaded = await loadR2ConfigById(env, id)
