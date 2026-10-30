@@ -49,6 +49,12 @@ export { listFiles, listTrashFiles } from './fileListing'
  * require_login=1 仅 owner / admin 可下，require_login=0 任何登录用户可下
  * （公开访客须走 /s、/f 分享链路，受口令/有效期/次数约束）。
  *
+ * 已知边界（产品设计，非缺陷）：`require_login=0` 的语义是「登录后人人可下」，
+ * 因此多租户部署下任何登录用户只要拿到文件 UUID 即可下载，且返回的预签名 URL
+ * 在有效期内可被再次外传。该行为由 `.trellis/spec/worker/storage-security.md`
+ * 的「Public Download Direct Link Login Gate」场景锁定；若要改为「必须走分享链路」，
+ * 需先修改该规范与产品契约，不能只改这一处代码。
+ *
  * @route GET /api/files/:id/download
  * @param request - HTTP 请求对象（未登录时 302 跳转登录页）
  * @param env - Cloudflare Workers 环境变量
