@@ -12,14 +12,14 @@
   },
   "dependencies": {
     "axios": "^1.20.0",
-    "dompurify": "^3.4.16",
+    "dompurify": "^3.4.17",
     "lucide-vue-next": "^0.562.0",
     "markdown-it": "^14.3.3",
     "pinia": "^2.1.7",
     "qrcode": "^1.5.3",
     "radix-vue": "^1.9.17",
     "vue": "^3.4.0",
-    "vue-i18n": "^9.14.5",
+    "vue-i18n": "^11.4.16",
     "vue-router": "^4.2.5"
   },
   "devDependencies": {
@@ -34,7 +34,7 @@
   },
   "overrides": {
     "defu": "6.1.7",
-    "follow-redirects": "1.16.1",
+    "follow-redirects": "1.16.2",
     "postcss": "8.5.23",
     "brace-expansion@^1": "1.1.21",
     "postcss-selector-parser@^7": "7.1.6"
